@@ -30,6 +30,9 @@ class NewsBot:
         
         # Cache for recently published news (for COPY button)
         self.news_cache = {}  # news_id -> {'title', 'text', 'source', 'url'}
+        
+        # Global category filter (None = show all)
+        self.category_filter = None  # 'world', 'russia', 'moscow_region', or None
     
     def create_application(self) -> Application:
         """Создает и конфигурирует Telegram Application"""
@@ -43,6 +46,7 @@ class NewsBot:
         self.application.add_handler(CommandHandler("status", self.cmd_status))
         self.application.add_handler(CommandHandler("pause", self.cmd_pause))
         self.application.add_handler(CommandHandler("resume", self.cmd_resume))
+        self.application.add_handler(CommandHandler("filter", self.cmd_filter))
         
         # Обработчик inline кнопок
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
@@ -109,11 +113,52 @@ class NewsBot:
         self.is_paused = False
         await update.message.reply_text("▶️ Сбор новостей возобновлен")
     
+    async def cmd_filter(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /filter - выбор категорий для фильтрации"""
+        # Создаем inline кнопки для выбора категорий
+        keyboard = [
+            [
+                InlineKeyboardButton("#Мир", callback_data="filter_world"),
+                InlineKeyboardButton("#Россия", callback_data="filter_russia"),
+            ],
+            [
+                InlineKeyboardButton("#Подмосковье", callback_data="filter_moscow_region"),
+                InlineKeyboardButton("Все новости", callback_data="filter_all"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "Выберите категорию для фильтрации новостей в канале:\n\n"
+            "#Мир - Новости со всего мира\n"
+            "#Россия - Новости России\n"
+            "#Подмосковье - Новости Московской области\n"
+            "Все новости - Показывать все",
+            reply_markup=reply_markup
+        )
+    
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик нажатия на кнопку"""
         query = update.callback_query
         
-        if query.data.startswith("copy_"):
+        if query.data.startswith("filter_"):
+            # Фильтрация по категориям
+            filter_type = query.data.replace("filter_", "")
+            self.category_filter = filter_type if filter_type != 'all' else None
+            
+            filter_names = {
+                'world': '#Мир',
+                'russia': '#Россия',
+                'moscow_region': '#Подмосковье',
+                'all': 'Все новости'
+            }
+            
+            await query.answer(f"✅ Фильтр установлен: {filter_names.get(filter_type, 'Неизвестно')}", show_alert=False)
+            await query.edit_message_text(
+                text=f"✅ Установлена фильтрация: {filter_names.get(filter_type, 'Неизвестно')}\n\n"
+                     "Новости будут отправляться в канал только выбранной категории."
+            )
+        
+        elif query.data.startswith("copy_"):
             # Копирование новости
             news_id = int(query.data.replace("copy_", ""))
             
@@ -163,6 +208,11 @@ class NewsBot:
             
             # Публикуем каждую новость
             for news in news_items:
+                # Проверяем фильтр по категориям
+                if self.category_filter and news.get('category') != self.category_filter:
+                    logger.debug(f"Skipping news (category filter): {news.get('title')[:50]}")
+                    continue
+                
                 # Попытка атомарно зарегистрировать новость в БД
                 inserted = self.db.add_news(
                     url=news['url'],
