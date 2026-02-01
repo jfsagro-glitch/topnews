@@ -297,7 +297,7 @@ class NewsBot:
                         # Send summary with copy button
                         copy_text = cached_summary[:4096] if len(cached_summary) > 4096 else cached_summary
                         keyboard = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("📋 Копировать", copy_text=copy_text)]
+                            [InlineKeyboardButton("📋 Копировать", copy_text={"text": copy_text})]
                         ])
                         
                         await context.bot.send_message(
@@ -332,7 +332,7 @@ class NewsBot:
                         # Send summary with copy button
                         copy_text = summary[:4096] if len(summary) > 4096 else summary
                         keyboard = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("📋 Копировать", copy_text=copy_text)]
+                            [InlineKeyboardButton("📋 Копировать", copy_text={"text": copy_text})]
                         ])
                         
                         await context.bot.send_message(
