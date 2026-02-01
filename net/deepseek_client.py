@@ -57,11 +57,16 @@ class DeepSeekClient:
     async def summarize(self, title: str, text: str) -> tuple[Optional[str], int]:
         # Always try to read API key from environment first (for Railway support)
         # Fall back to instance variable if set
-        api_key = (os.getenv('DEEPSEEK_API_KEY') or self.api_key or '').strip()
+        env_key = os.getenv('DEEPSEEK_API_KEY')
+        api_key = (env_key or self.api_key or '').strip()
         
         if not api_key:
-            env_val = os.getenv('DEEPSEEK_API_KEY')
-            logger.warning(f"DeepSeek API key not configured. Env set: {bool(env_val)}, Instance: {bool(self.api_key)}")
+            logger.warning(
+                f"DeepSeek API key not configured. "
+                f"Env var exists: {env_key is not None}, "
+                f"Env var empty: {env_key == ''}, "
+                f"Instance key: {bool(self.api_key)}"
+            )
             return None, 0
 
         text = _truncate_input(text)
