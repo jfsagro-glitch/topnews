@@ -7,6 +7,43 @@ from html import unescape
 from bs4 import BeautifulSoup
 import logging
 
+# Универсальные ключевые слова для строк навигации/служебных блоков
+NAVIGATION_KEYWORDS = {
+    'главное', 'россия', 'мир', 'политика', 'общество', 'происшествия', 'конфликты',
+    'преступность', 'экономика', 'спорт', 'наука', 'культура', 'технологии', 'ценности',
+    'путешествия', 'жизни', 'вернуться', 'обычную', 'ленту', 'войти', 'реклама', 'все',
+    'новости', 'редакция', 'контакты', 'подписка', 'подписаться', 'rss', 'search', 'menu',
+    'mobile', 'канал', 'telegram', 'vk', 'вконтакте', 'одноклассники', 'rutube', 'tiktok',
+    'youtube', 'dzen', 'mail', 'smi2', 'картина', 'дня', 'лента', 'добра', 'partners',
+    'partnerов', 'пресс-релизы', 'promo', 'школа', 'окно', 'россию', 'rt', 'programmy',
+    'текущие', 'закупки', 'партнеров', 'обсудить', 'оцени', 'соглашение', 'cookies'
+}
+
+SOCIAL_DOMAINS = (
+    'vk.com', 'vkvideo', 'telegram', 't.me', 'ok.ru', 'youtube', 'rutube', 'max.ru',
+    'smi2.ru', 'twitter', 'instagram', 'facebook', 'zen.yandex', 'dzen.ru'
+)
+
+NAVIGATION_PATTERNS = [
+    re.compile(r'^\d{1,2}:\d{2}(,\s*\d{1,2}\s+[а-я]+\s+\d{4})?(\s+[а-я]+)?$', re.IGNORECASE),
+    re.compile(r'вернуться в обычную ленту', re.IGNORECASE),
+    re.compile(r'что думаешь\?\s*оцени', re.IGNORECASE),
+    re.compile(r'ошибка в тексте\?', re.IGNORECASE),
+    re.compile(r'нашли опечатку', re.IGNORECASE),
+    re.compile(r'сегодня в сми', re.IGNORECASE),
+    re.compile(r'новости сми2', re.IGNORECASE),
+    re.compile(r'лента новостей', re.IGNORECASE),
+    re.compile(r'картина дня', re.IGNORECASE),
+    re.compile(r'последние новости', re.IGNORECASE),
+    re.compile(r'материалы по теме', re.IGNORECASE),
+    re.compile(r'похожие материалы', re.IGNORECASE),
+    re.compile(r'english\s+deutsch\s+français', re.IGNORECASE),
+    re.compile(r'автономная некоммерческая организация', re.IGNORECASE),
+    re.compile(r'главный редактор', re.IGNORECASE),
+    re.compile(r'адрес редакции', re.IGNORECASE),
+    re.compile(r'телефон:\s*\+7', re.IGNORECASE),
+]
+
 logger = logging.getLogger(__name__)
 
 
@@ -42,8 +79,8 @@ def clean_html(html_text: str) -> str:
         for tag in soup(['script', 'style', 'noscript']):
             tag.decompose()
 
-        # Берём текст
-        text = soup.get_text(separator=' ')
+        # Берём текст с сохранением границ блоков
+        text = soup.get_text(separator='\n')
         
         # Убираем HTML entities
         text = unescape(text)
@@ -288,6 +325,9 @@ def clean_html(html_text: str) -> str:
         for pattern in junk_patterns:
             text = re.sub(pattern, '', text, flags=re.IGNORECASE)
         
+        # Дополнительная универсальная фильтрация строк навигации/служебных блоков
+        text = _filter_navigation_lines(text)
+
         # Очищаем от множественных пробелов и переводов строк
         text = re.sub(r'\s+', ' ', text)  # Множественные пробелы → один
         text = text.strip()
@@ -296,6 +336,33 @@ def clean_html(html_text: str) -> str:
     except Exception as e:
         logger.error(f"Error cleaning HTML: {e}")
         return html_text
+
+
+def _filter_navigation_lines(text: str) -> str:
+    """Удаляет строки навигации, футеров и соцблоков по универсальным правилам"""
+    lines = text.splitlines()
+    filtered = []
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        lower = line.lower()
+
+        # Пропускаем строки с явными паттернами
+        if any(pattern.search(lower) for pattern in NAVIGATION_PATTERNS):
+            continue
+        if any(domain in lower for domain in SOCIAL_DOMAINS):
+            continue
+
+        tokens = re.findall(r'[а-яa-z0-9]+', lower)
+        if tokens:
+            nav_matches = sum(1 for token in tokens if token in NAVIGATION_KEYWORDS)
+            if nav_matches >= max(3, int(len(tokens) * 0.7)):
+                continue
+
+        filtered.append(line)
+
+    return '\n'.join(filtered)
 
 
 def extract_first_paragraph(text: str, min_length: int = 30) -> str:
