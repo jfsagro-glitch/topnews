@@ -47,6 +47,17 @@ def clean_html(html_text: str) -> str:
         
         # Убираем HTML entities
         text = unescape(text)
+
+        # Фильтруем мусорный текст от РИА Новости (формы регистрации)
+        junk_patterns = [
+            r'Регистрация пройдена успешно',
+            r'Пожалуйста.*перейдите по ссылке из письма',
+            r'Отправить еще раз',
+            r'Войти через',
+            r'Авторизуйтесь'
+        ]
+        for pattern in junk_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
         
         # Очищаем от множественных пробелов и переводов строк
         text = re.sub(r'\s+', ' ', text)  # Множественные пробелы → один
@@ -197,3 +208,4 @@ def escape_markdown(text: str) -> str:
     for char in special_chars:
         text = text.replace(char, f'\\{char}')
     return text
+
