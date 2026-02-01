@@ -185,7 +185,7 @@ class NewsBot:
         """Команда /update_stats - обновить статистику вручную"""
         try:
             if not context.args or len(context.args) < 3:
-                await update.message.reply_text("❌ Неверный формат!\n\nИспользуйте: /update_stats <requests> <tokens> <cost>\nПример: /update_stats 1331 413515 0.04")
+                await update.message.reply_text("❌ Неверный формат!\n\nИспользуйте: /update_stats <requests> <tokens> <cost>\nПример: /update_stats 1489 462377 0.05")
                 return
             
             requests = int(context.args[0])
@@ -195,35 +195,23 @@ class NewsBot:
             # Get current stats
             current = self.db.get_ai_usage()
             
-            # Calculate difference
-            diff_requests = requests - current['total_requests']
-            diff_tokens = tokens - current['total_tokens']
-            diff_cost = cost - current['total_cost_usd']
+            # Use new sync method to set absolute values
+            success = self.db.sync_ai_usage_with_deepseek(requests, tokens, cost)
             
-            if diff_requests < 0 or diff_tokens < 0:
-                await update.message.reply_text("❌ Новые значения меньше текущих! Проверьте данные.")
-                return
-            
-            # Update database with difference
-            if diff_tokens > 0:
-                self.db.add_ai_usage(tokens=diff_tokens, cost_usd=diff_cost, operation_type='text_clean')
-                
+            if success:
                 await update.message.reply_text(
-                    f"✅ Статистика обновлена!\n\n"
-                    f"Добавлено:\n"
-                    f"📊 Запросов: +{diff_requests}\n"
-                    f"🔢 Токенов: +{diff_tokens}\n"
-                    f"💰 Стоимость: +${diff_cost:.4f}\n\n"
-                    f"Новые значения:\n"
-                    f"📊 Всего запросов: {requests}\n"
-                    f"🔢 Всего токенов: {tokens}\n"
-                    f"💰 Стоимость: ${cost:.4f}"
+                    f"✅ Статистика синхронизирована с DeepSeek!\n\n"
+                    f"Обновлено с:\n"
+                    f"📊 {current['total_requests']} → {requests} запросов\n"
+                    f"🔢 {current['total_tokens']:,} → {tokens:,} токенов\n"
+                    f"💰 ${current['total_cost_usd']:.4f} → ${cost:.4f}\n\n"
+                    f"Дальнейший учет будет вестись автоматически от этих значений."
                 )
             else:
-                await update.message.reply_text("✅ Статистика уже синхронизирована!")
+                await update.message.reply_text("❌ Ошибка при обновлении статистики")
                 
         except ValueError:
-            await update.message.reply_text("❌ Ошибка формата! Используйте числа.\n\nПример: /update_stats 1331 413515 0.04")
+            await update.message.reply_text("❌ Ошибка формата! Используйте числа.\n\nПример: /update_stats 1489 462377 0.05")
         except Exception as e:
             logger.error(f"Error updating stats: {e}")
             await update.message.reply_text(f"❌ Ошибка: {e}")

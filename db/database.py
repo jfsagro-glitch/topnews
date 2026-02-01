@@ -539,3 +539,31 @@ class NewsDatabase:
                 'category_requests': 0, 'category_tokens': 0,
                 'text_clean_requests': 0, 'text_clean_tokens': 0
             }
+
+    def sync_ai_usage_with_deepseek(self, total_requests: int, total_tokens: int, total_cost_usd: float) -> bool:
+        """
+        Sync AI usage statistics with DeepSeek API data.
+        Sets absolute values instead of incrementing.
+        
+        Args:
+            total_requests: Total API requests from DeepSeek
+            total_tokens: Total tokens from DeepSeek
+            total_cost_usd: Total cost from DeepSeek
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute('''
+                    UPDATE ai_usage
+                    SET total_requests = ?,
+                        total_tokens = ?,
+                        total_cost_usd = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                ''', (total_requests, total_tokens, total_cost_usd))
+                self._conn.commit()
+                logger.info(f"Synced AI usage: {total_requests} requests, {total_tokens} tokens, ${total_cost_usd}")
+                return True
+        except Exception as e:
+            logger.error(f"Error syncing AI usage: {e}")
+            return False
