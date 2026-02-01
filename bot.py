@@ -492,6 +492,7 @@ class NewsBot:
                 # Сохраняем в кэш для ИИ кнопки
                 self.news_cache[news_id] = {
                     'title': news.get('title', 'No title'),
+                    'text': news.get('text', ''),
                     'lead_text': news.get('text', ''),
                     'url': news.get('url', ''),
                     'source': news.get('source', 'Unknown'),
