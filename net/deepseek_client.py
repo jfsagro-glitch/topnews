@@ -53,6 +53,14 @@ class DeepSeekClient:
         # It may be empty during import; we'll read from environment at request time
         self.api_key = api_key if api_key and api_key.strip() else None
         self.endpoint = endpoint
+        
+        # Log initialization for debugging
+        env_key_at_init = os.getenv('DEEPSEEK_API_KEY')
+        logger.info(
+            f"DeepSeekClient initialized. "
+            f"Env DEEPSEEK_API_KEY exists: {env_key_at_init is not None}, "
+            f"Env var length: {len(env_key_at_init) if env_key_at_init else 0}"
+        )
 
     async def summarize(self, title: str, text: str) -> tuple[Optional[str], int]:
         # Always try to read API key from environment first (for Railway support)
