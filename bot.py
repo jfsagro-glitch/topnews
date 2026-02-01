@@ -4,7 +4,7 @@
 import logging
 import time
 from net.deepseek_client import DeepSeekClient
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, CopyTextButton
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, 
     ContextTypes, ConversationHandler
@@ -242,11 +242,8 @@ class NewsBot:
                 if cached_summary:
                     # Create inline keyboard with copy button (max 4096 chars)
                     copy_text = cached_summary[:4096] if len(cached_summary) > 4096 else cached_summary
-                    copy_button = InlineKeyboardButton(
-                        text="📋 Копировать",
-                        copy_text=copy_text
-                    )
-                    keyboard = InlineKeyboardMarkup([[copy_button]])
+                    copy_button = CopyTextButton(text=copy_text)
+                    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Копировать", copy_text_button=copy_button)]])
                     
                     await context.bot.send_message(
                         chat_id=user_id,
@@ -277,11 +274,8 @@ class NewsBot:
                     
                     # Create inline keyboard with copy button (max 4096 chars)
                     copy_text = summary[:4096] if len(summary) > 4096 else summary
-                    copy_button = InlineKeyboardButton(
-                        text="📋 Копировать",
-                        copy_text=copy_text
-                    )
-                    keyboard = InlineKeyboardMarkup([[copy_button]])
+                    copy_button = CopyTextButton(text=copy_text)
+                    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Копировать", copy_text_button=copy_button)]])
                     
                     await context.bot.send_message(
                         chat_id=user_id,
