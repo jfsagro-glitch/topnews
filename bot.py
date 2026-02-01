@@ -25,7 +25,13 @@ class NewsBot:
     def __init__(self):
         self.application = None
         self.db = NewsDatabase()
-        self.collector = SourceCollector(db=self.db)
+        
+        # DeepSeek client (initialize early for use in SourceCollector)
+        self.deepseek_client = DeepSeekClient()
+        
+        # SourceCollector with optional AI verification
+        self.collector = SourceCollector(db=self.db, ai_client=self.deepseek_client)
+        
         self.is_running = True
         self.is_paused = False
         self.collection_lock = asyncio.Lock()  # Prevent concurrent collection cycles
@@ -38,9 +44,6 @@ class NewsBot:
         
         # Rate limiting for AI summarize requests (per user per minute)
         self.user_ai_requests = {}  # {user_id: [timestamp1, timestamp2, ...]}
-
-        # DeepSeek client
-        self.deepseek_client = DeepSeekClient()
 
     def create_application(self) -> Application:
         """Создает и конфигурирует Telegram Application"""

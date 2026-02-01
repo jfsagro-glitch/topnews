@@ -47,6 +47,27 @@ def _build_messages(title: str, text: str) -> list[dict]:
     ]
 
 
+def _build_category_messages(title: str, text: str, current_category: str) -> list[dict]:
+    """Build messages for AI category verification"""
+    system_prompt = (
+        "Ты помощник для классификации новостей по категориям. "
+        "Определи наиболее подходящую категорию для новости.\n\n"
+        "Категории:\n"
+        "- moscow: новости о городе Москве (столица, Кремль, мэр Собянин, московские власти, события В Москве)\n"
+        "- moscow_region: новости о Московской области/Подмосковье (города МО, губернатор МО, события в области)\n"
+        "- world: международные новости (другие страны, зарубежные события, мировая политика)\n"
+        "- russia: новости о России в целом (федеральная политика, регионы РФ кроме Москвы/МО, российские события)\n\n"
+        "Текущая категория: {current_category}\n\n"
+        "ВАЖНО: Ответь ТОЛЬКО названием категории одним словом: moscow, moscow_region, world или russia. "
+        "Не добавляй пояснений или дополнительного текста."
+    )
+    user_content = f"Заголовок: {title}\n\nТекст: {text[:1000]}"
+    return [
+        {"role": "system", "content": system_prompt.format(current_category=current_category)},
+        {"role": "user", "content": user_content},
+    ]
+
+
 class DeepSeekClient:
     def __init__(self, api_key: str = None, endpoint: str = DEEPSEEK_API_ENDPOINT):
         # Don't use config-time DEEPSEEK_API_KEY for parameter default
@@ -132,3 +153,62 @@ class DeepSeekClient:
             backoff *= 2
 
         return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+    async def verify_category(self, title: str, text: str, current_category: str) -> Optional[str]:
+        """
+        Verify and potentially correct news category using AI.
+        
+        Args:
+            title: Article title
+            text: Article text (will be truncated)
+            current_category: Current category from keyword classifier
+            
+        Returns:
+            Verified category name or None if verification failed
+        """
+        env_key = os.getenv('DEEPSEEK_API_KEY')
+        api_key = (env_key or self.api_key or '').strip()
+        
+        if not api_key:
+            logger.debug("DeepSeek API key not configured, skipping AI category verification")
+            return None
+
+        text = _truncate_input(text, max_chars=1000)
+        if not text:
+            return None
+
+        payload = {
+            "model": "deepseek-chat",
+            "messages": _build_category_messages(title, text, current_category),
+            "temperature": 0.3,  # Lower temperature for more deterministic classification
+            "max_tokens": 20,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:  # Shorter timeout for classification
+                response = await client.post(
+                    self.endpoint,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json=payload,
+                )
+            
+            if response.status_code == 200:
+                data = response.json()
+                category = data["choices"][0]["message"]["content"].strip().lower()
+                
+                # Validate response
+                valid_categories = ['moscow', 'moscow_region', 'world', 'russia']
+                if category in valid_categories:
+                    if category != current_category:
+                        logger.info(f"AI corrected category: {current_category} -> {category}")
+                    return category
+                else:
+                    logger.warning(f"AI returned invalid category: {category}")
+                    return None
+            
+            logger.warning(f"DeepSeek category API error: status={response.status_code}")
+            
+        except Exception as e:
+            logger.debug(f"AI category verification failed: {e}")
+        
+        return None

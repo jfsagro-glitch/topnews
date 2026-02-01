@@ -4,7 +4,7 @@
 import logging
 import asyncio
 import time
-from typing import List, Dict
+from typing import List, Dict, Optional
 from config.config import SOURCES_CONFIG
 from parsers.rss_parser import RSSParser
 from parsers.html_parser import HTMLParser
@@ -17,11 +17,12 @@ logger = logging.getLogger(__name__)
 class SourceCollector:
     """Собирает новости из всех источников"""
     
-    def __init__(self, db=None):
+    def __init__(self, db=None, ai_client=None):
         self.db = db
         self.rss_parser = RSSParser(db=db)
         self.html_parser = HTMLParser()
         self.classifier = ContentClassifier()
+        self.ai_client = ai_client  # Optional DeepSeek client for AI verification
         
         # Семафор для ограничения параллелизма (6 одновременных запросов)
         self._sem = asyncio.Semaphore(6)
@@ -129,6 +130,13 @@ class SourceCollector:
                     
                     # Classify by content
                     detected_category = self.classifier.classify(title, text, item_url)
+                    
+                    # Optional AI verification (if client provided)
+                    if self.ai_client and detected_category:
+                        ai_category = await self._verify_with_ai(title, text, detected_category)
+                        if ai_category:
+                            detected_category = ai_category
+                    
                     item['category'] = detected_category or category
                 return news
             except Exception as e:
@@ -151,6 +159,13 @@ class SourceCollector:
                     
                     # Classify by content
                     detected_category = self.classifier.classify(title, text, item_url)
+                    
+                    # Optional AI verification (if client provided)
+                    if self.ai_client and detected_category:
+                        ai_category = await self._verify_with_ai(title, text, detected_category)
+                        if ai_category:
+                            detected_category = ai_category
+                    
                     item['category'] = detected_category or category
                 return news
             except Exception as e:
@@ -170,6 +185,38 @@ class SourceCollector:
                 
                 logger.error(f"Error collecting from HTML {source_name} ({url}): {e}", exc_info=False)
                 return []
+    
+    async def _verify_with_ai(self, title: str, text: str, current_category: str) -> Optional[str]:
+        """
+        Verify category using AI (DeepSeek).
+        Only calls AI occasionally to save API costs.
+        
+        Args:
+            title: News title
+            text: News text
+            current_category: Current category from keyword classifier
+            
+        Returns:
+            Verified category or None if verification skipped/failed
+        """
+        try:
+            # Check if AI verification is enabled
+            from config.config import AI_CATEGORY_VERIFICATION_ENABLED, AI_CATEGORY_VERIFICATION_RATE
+            
+            if not AI_CATEGORY_VERIFICATION_ENABLED:
+                return None
+            
+            # Probabilistic verification: only verify X% of items to save costs
+            import random
+            if random.random() > AI_CATEGORY_VERIFICATION_RATE:
+                return None
+            
+            verified_category = await self.ai_client.verify_category(title, text, current_category)
+            return verified_category
+            
+        except Exception as e:
+            logger.debug(f"AI category verification error: {e}")
+            return None
     
     def _get_category_for_url(self, url: str, default: str = 'russia') -> str:
         """Определяет категорию по URL"""

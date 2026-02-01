@@ -27,6 +27,10 @@ CLOSED_SOURCE_PASSWORD = os.getenv('CLOSED_SOURCE_PASSWORD', '')
 # Database
 DATABASE_PATH = 'db/news.db'
 
+# AI Category Verification
+AI_CATEGORY_VERIFICATION_ENABLED = os.getenv('AI_CATEGORY_VERIFICATION_ENABLED', 'True') == 'True'
+AI_CATEGORY_VERIFICATION_RATE = float(os.getenv('AI_CATEGORY_VERIFICATION_RATE', '0.3'))  # 30% of news
+
 # Логирование
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 LOG_FILE = 'logs/bot.log'
