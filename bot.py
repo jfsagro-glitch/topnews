@@ -23,7 +23,7 @@ class NewsBot:
     def __init__(self):
         self.application = None
         self.db = NewsDatabase()
-        self.collector = SourceCollector()
+        self.collector = SourceCollector(db=self.db)
         self.is_running = True
         self.is_paused = False
         self.collection_lock = asyncio.Lock()  # Prevent concurrent collection cycles

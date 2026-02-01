@@ -2,15 +2,11 @@
 HTML парсер для сайтов новостей
 """
 import logging
-import ssl
-import certifi
 import asyncio
-import random
 from typing import List, Dict
-import aiohttp
-import asyncio
-from bs4 import BeautifulSoup
 from datetime import datetime
+from bs4 import BeautifulSoup
+from net.http_client import get_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -29,53 +25,9 @@ class HTMLParser:
         news_items = []
         
         try:
-            user_agents = [
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15'
-            ]
-            headers = {
-                'User-Agent': random.choice(user_agents),
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Connection': 'keep-alive',
-            }
-            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-
-            # Conservative rate-limiting + retries with jitter
-            min_delay = 0.3
-            max_delay = 1.0
-            attempts = 3
-
-            async with aiohttp.ClientSession(headers=headers, trust_env=False) as session:
-                for attempt in range(1, attempts + 1):
-                    try:
-                        async with session.get(url, timeout=self.timeout, ssl=ssl_ctx, allow_redirects=True) as response:
-                            if response.status != 200:
-                                logger.warning(f"Failed to fetch {url}: {response.status}")
-                                return news_items
-
-                            content = await response.text(errors='ignore')
-                            break
-                    except ssl.SSLCertVerificationError as e:
-                        logger.warning(f"SSL verification failed for {url}: {e}; retrying insecurely")
-                        # Retry once without SSL verification (best-effort fallback)
-                        try:
-                            async with session.get(url, timeout=self.timeout, ssl=False, allow_redirects=True) as response:
-                                if response.status != 200:
-                                    logger.warning(f"Failed to fetch {url} (insecure): {response.status}")
-                                    return news_items
-                                content = await response.text(errors='ignore')
-                                break
-                        except Exception as ie:
-                            logger.debug(f"Insecure retry failed for {url}: {ie}")
-                            raise ie
-                    except Exception as e:
-                        logger.debug(f"Attempt {attempt} failed for {url}: {e}")
-                        if attempt == attempts:
-                            logger.error(f"Error fetching {url}: {e}")
-                            return news_items
-                        wait = min_delay + random.random() * (max_delay - min_delay)
-                        await asyncio.sleep(wait)
+            http_client = await get_http_client()
+            response = await http_client.get(url, retries=2)
+            content = response.text
             
             soup = BeautifulSoup(content, 'html.parser')
             

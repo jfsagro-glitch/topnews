@@ -44,6 +44,14 @@ class NewsDatabase:
                     published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            # Table for storing RSS ETag and Last-Modified headers
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS rss_state (
+                    url TEXT PRIMARY KEY,
+                    etag TEXT,
+                    last_modified TEXT
+                )
+            ''')
             self._conn.commit()
         except Exception as e:
             logger.error(f"Error initializing DB: {e}")
@@ -173,3 +181,38 @@ class NewsDatabase:
         except Exception as e:
             logger.error(f"Error getting stats: {e}")
             return {'total': 0, 'today': 0}
+    
+    def get_rss_state(self, url: str) -> tuple[str | None, str | None]:
+        """
+        Get stored ETag and Last-Modified for RSS URL.
+        Returns (etag, last_modified) or (None, None) if not found.
+        """
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                'SELECT etag, last_modified FROM rss_state WHERE url = ?',
+                (url,)
+            )
+            row = cursor.fetchone()
+            return (row[0], row[1]) if row else (None, None)
+        except Exception as e:
+            logger.debug(f"Error getting RSS state for {url}: {e}")
+            return (None, None)
+    
+    def set_rss_state(self, url: str, etag: str | None, last_modified: str | None) -> bool:
+        """
+        Store ETag and Last-Modified for RSS URL.
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    '''INSERT INTO rss_state(url, etag, last_modified) VALUES(?, ?, ?)
+                       ON CONFLICT(url) DO UPDATE SET etag=excluded.etag, last_modified=excluded.last_modified''',
+                    (url, etag, last_modified)
+                )
+                self._conn.commit()
+                return True
+        except Exception as e:
+            logger.debug(f"Error setting RSS state for {url}: {e}")
+            return False

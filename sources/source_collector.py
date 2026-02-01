@@ -3,6 +3,7 @@
 """
 import logging
 import asyncio
+import time
 from typing import List, Dict
 from config.config import SOURCES_CONFIG
 from parsers.rss_parser import RSSParser
@@ -14,9 +15,16 @@ logger = logging.getLogger(__name__)
 class SourceCollector:
     """Собирает новости из всех источников"""
     
-    def __init__(self):
-        self.rss_parser = RSSParser()
+    def __init__(self, db=None):
+        self.db = db
+        self.rss_parser = RSSParser(db=db)
         self.html_parser = HTMLParser()
+        
+        # Семафор для ограничения параллелизма (6 одновременных запросов)
+        self._sem = asyncio.Semaphore(6)
+        
+        # Cooldown для источников, которые возвращают 403/429
+        self._cooldown_until = {}  # url -> timestamp
         
         # Настройки парсеров для конкретных источников
         self.rss_sources = {
@@ -40,6 +48,15 @@ class SourceCollector:
             'https://www.interfax-russia.ru/center/novosti-podmoskovya': 'Интерфакс',
             'https://regions.ru/news': 'Regions.ru',
         }
+    
+    def _in_cooldown(self, url: str) -> bool:
+        """Check if URL is in cooldown period"""
+        return self._cooldown_until.get(url, 0) > time.time()
+    
+    def _set_cooldown(self, url: str, seconds: int = 600):
+        """Set cooldown for URL (default 10 minutes)"""
+        self._cooldown_until[url] = time.time() + seconds
+        logger.warning(f"Cooldown set for {url} for {seconds}s")
     
     async def collect_all(self) -> List[Dict]:
         """
@@ -81,25 +98,36 @@ class SourceCollector:
     
     async def _collect_from_rss(self, url: str, source_name: str, category: str) -> List[Dict]:
         """Собирает из RSS источника"""
-        try:
-            news = await self.rss_parser.parse(url, source_name)
-            for item in news:
-                item['category'] = category
-            return news
-        except Exception as e:
-            logger.error(f"Error collecting from RSS {url}: {e}")
-            return []
+        async with self._sem:
+            try:
+                news = await self.rss_parser.parse(url, source_name)
+                for item in news:
+                    item['category'] = category
+                return news
+            except Exception as e:
+                logger.error(f"Error collecting from RSS {url}: {e}")
+                return []
     
     async def _collect_from_html(self, url: str, source_name: str, category: str) -> List[Dict]:
         """Собирает из HTML источника"""
-        try:
-            news = await self.html_parser.parse(url, source_name)
-            for item in news:
-                item['category'] = category
-            return news
-        except Exception as e:
-            logger.error(f"Error collecting from HTML {url}: {e}")
-            return []
+        async with self._sem:
+            if self._in_cooldown(url):
+                logger.debug(f"Skipping {url} (in cooldown)")
+                return []
+            
+            try:
+                news = await self.html_parser.parse(url, source_name)
+                for item in news:
+                    item['category'] = category
+                return news
+            except Exception as e:
+                code = getattr(e.response, "status_code", None) if hasattr(e, "response") else None
+                if code in (403, 429):
+                    self._set_cooldown(url, 600)  # 10 minutes cooldown
+                    logger.warning(f"403/429 from {url}, setting cooldown")
+                    return []
+                logger.error(f"Error collecting from HTML {url}: {e}")
+                return []
     
     def _get_category_for_url(self, url: str) -> str:
         """Определяет категорию по URL"""

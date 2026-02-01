@@ -3,14 +3,10 @@
 """
 import feedparser
 import logging
-import ssl
-import certifi
 import asyncio
-import random
 from typing import List, Dict
 from datetime import datetime
-import aiohttp
-import asyncio
+from net.http_client import get_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -18,61 +14,44 @@ logger = logging.getLogger(__name__)
 class RSSParser:
     """Парсит RSS фиды"""
     
-    def __init__(self, timeout: int = 30):
+    def __init__(self, timeout: int = 30, db=None):
         self.timeout = timeout
+        self.db = db  # Optional database for conditional GET state
     
     async def parse(self, url: str, source_name: str) -> List[Dict]:
         """
         Парсит RSS фид и возвращает новости
+        Использует conditional GET (ETag/Last-Modified) если доступно
         """
         news_items = []
         
         try:
-            user_agents = [
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
-            ]
-            headers = {
-                'User-Agent': random.choice(user_agents),
-                'Accept': 'application/rss+xml, application/xml;q=0.9, */*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Connection': 'keep-alive',
-            }
-            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-
-            # Retries with jitter to reduce transient 403/429
-            min_delay = 0.3
-            max_delay = 1.0
-            attempts = 3
-
-            async with aiohttp.ClientSession(headers=headers, trust_env=False) as session:
-                for attempt in range(1, attempts + 1):
-                    try:
-                        async with session.get(url, timeout=self.timeout, ssl=ssl_ctx, allow_redirects=True) as response:
-                            if response.status != 200:
-                                logger.warning(f"Failed to fetch {url}: {response.status}")
-                                return news_items
-                            content = await response.text()
-                            break
-                    except ssl.SSLCertVerificationError as e:
-                        logger.warning(f"SSL verification failed for RSS {url}: {e}; retrying insecurely")
-                        try:
-                            async with session.get(url, timeout=self.timeout, ssl=False, allow_redirects=True) as response:
-                                if response.status != 200:
-                                    logger.warning(f"Failed to fetch {url} (insecure): {response.status}")
-                                    return news_items
-                                content = await response.text()
-                                break
-                        except Exception as ie:
-                            logger.debug(f"Insecure RSS retry failed for {url}: {ie}")
-                            raise ie
-                    except Exception as e:
-                        logger.debug(f"RSS attempt {attempt} failed for {url}: {e}")
-                        if attempt == attempts:
-                            logger.error(f"Error fetching RSS {url}: {e}")
-                            return news_items
-                        wait = min_delay + random.random() * (max_delay - min_delay)
-                        await asyncio.sleep(wait)
+            http_client = await get_http_client()
+            
+            # Get cached ETag and Last-Modified if available
+            headers = {}
+            if self.db:
+                etag, last_modified = self.db.get_rss_state(url)
+                if etag:
+                    headers['If-None-Match'] = etag
+                if last_modified:
+                    headers['If-Modified-Since'] = last_modified
+            
+            response = await http_client.get(url, headers=headers if headers else None, retries=2)
+            
+            # 304 Not Modified means content hasn't changed
+            if response.status_code == 304:
+                logger.debug(f"RSS {url} not modified (304), skipping")
+                return news_items
+            
+            # Store new ETag and Last-Modified for next request
+            if self.db:
+                etag = response.headers.get('ETag')
+                last_modified = response.headers.get('Last-Modified')
+                if etag or last_modified:
+                    self.db.set_rss_state(url, etag, last_modified)
+            
+            content = response.text
 
             # Парсим RSS
             feed = feedparser.parse(content)

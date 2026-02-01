@@ -96,10 +96,40 @@ def truncate_text(text: str, max_length: int = 500) -> str:
     return truncated + '...'
 
 
+def truncate_for_telegram(text: str, max_length: int = 1000) -> str:
+    """
+    Hard limit for telegram message (1000 chars)
+    """
+    if len(text) <= max_length:
+        return text
+    
+    truncated = text[:max_length]
+    last_space = truncated.rfind(' ')
+    if last_space > max_length // 2:
+        truncated = truncated[:last_space]
+    
+    return truncated.rstrip() + '...'
+
+
+def truncate_for_copy(text: str, max_length: int = 3000) -> str:
+    """
+    Hard limit for COPY button response (3000 chars)
+    """
+    if len(text) <= max_length:
+        return text
+    
+    truncated = text[:max_length]
+    last_space = truncated.rfind(' ')
+    if last_space > max_length // 2:
+        truncated = truncated[:last_space]
+    
+    return truncated.rstrip() + '...'
+
+
 def format_telegram_message(title: str, text: str, source_name: str, 
                            source_url: str, category: str) -> str:
     """
-    Форматирует новость в сообщение для Telegram
+    Форматирует новость в сообщение для Telegram (1000 char hard limit)
     """
     # Фильтруем явные команды и URLs
     if not title or len(title) < 10:
@@ -123,6 +153,9 @@ def format_telegram_message(title: str, text: str, source_name: str,
     message += f"{paragraph}\n\n"
     message += f"Источник: {source_name}\n{source_url}\n\n"
     message += category
+    
+    # Hard limit for telegram (4096 max, but use 1000 for safety)
+    message = truncate_for_telegram(message, max_length=1000)
     
     return message
 
