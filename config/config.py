@@ -89,7 +89,7 @@ SOURCES_CONFIG = {
             'https://rg.ru/region/cfo/podmoskovie',
             'https://360.ru/rubriki/mosobl/',
             'https://mosreg.ru/sobytiya/novosti/news-submoscow',
-            'https://riamo.ru/',
+            'https://riamo.ru/tag/podmoskove/',
             'https://mosregtoday.ru/',
             'https://www.interfax-russia.ru/center/novosti-podmoskovya',
             'https://regions.ru/news',
