@@ -181,6 +181,7 @@ class NewsBot:
                      f"DeepSeek {'теперь будет проверять' if self.ai_verification_enabled else 'больше не будет проверять'} "
                      "правильность определения категорий новостей."
             )
+            return
         
         elif query.data.startswith("filter_"):
             # Фильтрация по категориям
@@ -200,6 +201,7 @@ class NewsBot:
                 text=f"✅ Установлена фильтрация: {filter_names.get(filter_type, 'Неизвестно')}\n\n"
                      "Новости будут отправляться в канал только выбранной категории."
             )
+            return
         
         else:
             data = query.data or ""
