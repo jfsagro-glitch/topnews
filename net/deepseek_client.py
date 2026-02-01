@@ -173,7 +173,7 @@ class DeepSeekClient:
 
         return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
-    async def verify_category(self, title: str, text: str, current_category: str) -> Optional[str]:
+    async def verify_category(self, title: str, text: str, current_category: str) -> tuple[Optional[str], dict]:
         """
         Verify and potentially correct news category using AI.
         
@@ -183,18 +183,20 @@ class DeepSeekClient:
             current_category: Current category from keyword classifier
             
         Returns:
-            Verified category name or None if verification failed
+            Tuple of (verified category name or None, token usage dict)
         """
+        token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        
         env_key = os.getenv('DEEPSEEK_API_KEY')
         api_key = (env_key or self.api_key or '').strip()
         
         if not api_key:
             logger.debug("DeepSeek API key not configured, skipping AI category verification")
-            return None
+            return None, token_usage
 
         text = _truncate_input(text, max_chars=1000)
         if not text:
-            return None
+            return None, token_usage
 
         payload = {
             "model": "deepseek-chat",
@@ -215,24 +217,32 @@ class DeepSeekClient:
                 data = response.json()
                 category = data["choices"][0]["message"]["content"].strip().lower()
                 
+                # Extract token usage
+                usage = data.get("usage", {})
+                token_usage = {
+                    "input_tokens": usage.get("prompt_tokens", 0),
+                    "output_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0)
+                }
+                
                 # Validate response
                 valid_categories = ['moscow', 'moscow_region', 'world', 'russia']
                 if category in valid_categories:
                     if category != current_category:
                         logger.info(f"AI corrected category: {current_category} -> {category}")
-                    return category
+                    return category, token_usage
                 else:
                     logger.warning(f"AI returned invalid category: {category}")
-                    return None
+                    return None, token_usage
             
             logger.warning(f"DeepSeek category API error: status={response.status_code}")
             
         except Exception as e:
             logger.debug(f"AI category verification failed: {e}")
         
-        return None
+        return None, token_usage
     
-    async def extract_clean_text(self, title: str, raw_text: str) -> Optional[str]:
+    async def extract_clean_text(self, title: str, raw_text: str) -> tuple[Optional[str], dict]:
         """
         Use AI to extract clean article text, removing navigation/garbage.
         
@@ -241,17 +251,19 @@ class DeepSeekClient:
             raw_text: Raw extracted text with possible garbage
             
         Returns:
-            Clean article text or None if extraction failed
+            Tuple of (clean article text or None, token usage dict)
         """
+        token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        
         env_key = os.getenv('DEEPSEEK_API_KEY')
         api_key = (env_key or self.api_key or '').strip()
         
         if not api_key:
             logger.debug("DeepSeek API key not configured, skipping AI text extraction")
-            return None
+            return None, token_usage
 
         if not raw_text or len(raw_text) < 50:
-            return None
+            return None, token_usage
 
         payload = {
             "model": "deepseek-chat",
@@ -272,17 +284,25 @@ class DeepSeekClient:
                 data = response.json()
                 clean_text = data["choices"][0]["message"]["content"].strip()
                 
+                # Extract token usage
+                usage = data.get("usage", {})
+                token_usage = {
+                    "input_tokens": usage.get("prompt_tokens", 0),
+                    "output_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0)
+                }
+                
                 # Validate that we got meaningful text
                 if clean_text and len(clean_text) >= 50:
                     logger.debug(f"AI extracted clean text: {len(clean_text)} chars")
-                    return clean_text
+                    return clean_text, token_usage
                 else:
                     logger.debug("AI extraction returned text too short")
-                    return None
+                    return None, token_usage
             
             logger.warning(f"DeepSeek text extraction API error: status={response.status_code}")
             
         except Exception as e:
             logger.debug(f"AI text extraction failed: {e}")
         
-        return None
+        return None, token_usage

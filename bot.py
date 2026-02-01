@@ -120,10 +120,13 @@ class NewsBot:
             f"Всего опубликовано: {stats['total']}\n"
             f"За сегодня: {stats['today']}\n"
             f"Интервал проверки: {CHECK_INTERVAL_SECONDS} сек\n\n"
-            f"🧠 ИИ пересказ:\n"
-            f"Запросов: {ai_usage['total_requests']}\n"
-            f"Токенов: {ai_usage['total_tokens']}\n"
-            f"Стоимость: ${ai_usage['total_cost_usd']:.4f}"
+            f"🧠 ИИ использование:\n"
+            f"Всего запросов: {ai_usage['total_requests']}\n"
+            f"Всего токенов: {ai_usage['total_tokens']}\n"
+            f"Стоимость: ${ai_usage['total_cost_usd']:.4f}\n\n"
+            f"📝 Пересказы: {ai_usage['summarize_requests']} запросов, {ai_usage['summarize_tokens']} токенов\n"
+            f"🏷️ Категории: {ai_usage['category_requests']} запросов, {ai_usage['category_tokens']} токенов\n"
+            f"✨ Очистка текста: {ai_usage['text_clean_requests']} запросов, {ai_usage['text_clean_tokens']} токенов"
         )
         await update.message.reply_text(status_text)
     
@@ -319,7 +322,7 @@ class NewsBot:
                     output_cost = (token_usage['output_tokens'] / 1000.0) * DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD
                     cost_usd = input_cost + output_cost
                     
-                    self.db.add_ai_usage(tokens=token_usage['total_tokens'], cost_usd=cost_usd)
+                    self.db.add_ai_usage(tokens=token_usage['total_tokens'], cost_usd=cost_usd, operation_type='summarize')
                     self.db.save_summary(news_id, summary)
                     
                     # Send summary with copy button

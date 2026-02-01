@@ -231,7 +231,16 @@ class SourceCollector:
             if random.random() > AI_CATEGORY_VERIFICATION_RATE:
                 return None
             
-            verified_category = await self.ai_client.verify_category(title, text, current_category)
+            verified_category, token_usage = await self.ai_client.verify_category(title, text, current_category)
+            
+            # Log token usage to database
+            if token_usage and token_usage.get('total_tokens', 0) > 0:
+                input_cost = (token_usage['input_tokens'] / 1_000_000.0) * 0.14
+                output_cost = (token_usage['output_tokens'] / 1_000_000.0) * 0.28
+                cost_usd = input_cost + output_cost
+                if self.bot:
+                    self.bot.db.add_ai_usage(token_usage['total_tokens'], cost_usd, 'category')
+            
             return verified_category
             
         except Exception as e:
@@ -267,7 +276,16 @@ class SourceCollector:
             if random.random() > AI_CATEGORY_VERIFICATION_RATE:
                 return None
             
-            clean_text = await self.ai_client.extract_clean_text(title, text)
+            clean_text, token_usage = await self.ai_client.extract_clean_text(title, text)
+            
+            # Log token usage to database
+            if token_usage and token_usage.get('total_tokens', 0) > 0:
+                input_cost = (token_usage['input_tokens'] / 1_000_000.0) * 0.14
+                output_cost = (token_usage['output_tokens'] / 1_000_000.0) * 0.28
+                cost_usd = input_cost + output_cost
+                if self.bot:
+                    self.bot.db.add_ai_usage(token_usage['total_tokens'], cost_usd, 'text_clean')
+            
             return clean_text
             
         except Exception as e:

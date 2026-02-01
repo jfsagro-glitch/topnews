@@ -75,13 +75,19 @@ class NewsDatabase:
                 )
             ''')
 
-            # Table for AI usage totals
+            # Table for AI usage totals (persistent across deploys)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS ai_usage (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     total_requests INTEGER NOT NULL DEFAULT 0,
                     total_tokens INTEGER NOT NULL DEFAULT 0,
                     total_cost_usd REAL NOT NULL DEFAULT 0.0,
+                    summarize_requests INTEGER NOT NULL DEFAULT 0,
+                    summarize_tokens INTEGER NOT NULL DEFAULT 0,
+                    category_requests INTEGER NOT NULL DEFAULT 0,
+                    category_tokens INTEGER NOT NULL DEFAULT 0,
+                    text_clean_requests INTEGER NOT NULL DEFAULT 0,
+                    text_clean_tokens INTEGER NOT NULL DEFAULT 0,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -444,20 +450,51 @@ class NewsDatabase:
             logger.error(f"Error saving summary for news_id {news_id}: {e}")
             return False
 
-    def add_ai_usage(self, tokens: int, cost_usd: float) -> bool:
-        """Accumulate AI usage totals (global)."""
+    def add_ai_usage(self, tokens: int, cost_usd: float, operation_type: str = 'summarize') -> bool:
+        """
+        Accumulate AI usage totals (persistent across deploys).
+        
+        Args:
+            tokens: Number of tokens used
+            cost_usd: Cost in USD
+            operation_type: Type of operation ('summarize', 'category', 'text_clean')
+        """
         try:
             with self._write_lock:
                 cursor = self._conn.cursor()
-                cursor.execute(
-                    '''UPDATE ai_usage
-                       SET total_requests = total_requests + 1,
-                           total_tokens = total_tokens + ?,
-                           total_cost_usd = total_cost_usd + ?,
-                           updated_at = CURRENT_TIMESTAMP
-                       WHERE id = 1''',
-                    (tokens, cost_usd)
-                )
+                
+                # Update total counters
+                base_query = '''
+                    UPDATE ai_usage
+                    SET total_requests = total_requests + 1,
+                        total_tokens = total_tokens + ?,
+                        total_cost_usd = total_cost_usd + ?,
+                        updated_at = CURRENT_TIMESTAMP
+                '''
+                
+                # Update specific operation counters
+                if operation_type == 'summarize':
+                    base_query += ''',
+                        summarize_requests = summarize_requests + 1,
+                        summarize_tokens = summarize_tokens + ?
+                    '''
+                    cursor.execute(base_query + ' WHERE id = 1', (tokens, cost_usd, tokens))
+                elif operation_type == 'category':
+                    base_query += ''',
+                        category_requests = category_requests + 1,
+                        category_tokens = category_tokens + ?
+                    '''
+                    cursor.execute(base_query + ' WHERE id = 1', (tokens, cost_usd, tokens))
+                elif operation_type == 'text_clean':
+                    base_query += ''',
+                        text_clean_requests = text_clean_requests + 1,
+                        text_clean_tokens = text_clean_tokens + ?
+                    '''
+                    cursor.execute(base_query + ' WHERE id = 1', (tokens, cost_usd, tokens))
+                else:
+                    # Unknown type, just update totals
+                    cursor.execute(base_query + ' WHERE id = 1', (tokens, cost_usd))
+                
                 self._conn.commit()
                 return True
         except Exception as e:
@@ -465,14 +502,40 @@ class NewsDatabase:
             return False
 
     def get_ai_usage(self) -> dict:
-        """Get global AI usage totals."""
+        """Get comprehensive AI usage totals (persistent)."""
         try:
             cursor = self._conn.cursor()
-            cursor.execute('SELECT total_requests, total_tokens, total_cost_usd FROM ai_usage WHERE id = 1')
+            cursor.execute('''
+                SELECT total_requests, total_tokens, total_cost_usd,
+                       summarize_requests, summarize_tokens,
+                       category_requests, category_tokens,
+                       text_clean_requests, text_clean_tokens
+                FROM ai_usage WHERE id = 1
+            ''')
             row = cursor.fetchone()
             if not row:
-                return {'total_requests': 0, 'total_tokens': 0, 'total_cost_usd': 0.0}
-            return {'total_requests': row[0], 'total_tokens': row[1], 'total_cost_usd': row[2]}
+                return {
+                    'total_requests': 0, 'total_tokens': 0, 'total_cost_usd': 0.0,
+                    'summarize_requests': 0, 'summarize_tokens': 0,
+                    'category_requests': 0, 'category_tokens': 0,
+                    'text_clean_requests': 0, 'text_clean_tokens': 0
+                }
+            return {
+                'total_requests': row[0] or 0,
+                'total_tokens': row[1] or 0,
+                'total_cost_usd': row[2] or 0.0,
+                'summarize_requests': row[3] or 0,
+                'summarize_tokens': row[4] or 0,
+                'category_requests': row[5] or 0,
+                'category_tokens': row[6] or 0,
+                'text_clean_requests': row[7] or 0,
+                'text_clean_tokens': row[8] or 0
+            }
         except Exception as e:
             logger.error(f"Error getting AI usage: {e}")
-            return {'total_requests': 0, 'total_tokens': 0, 'total_cost_usd': 0.0}
+            return {
+                'total_requests': 0, 'total_tokens': 0, 'total_cost_usd': 0.0,
+                'summarize_requests': 0, 'summarize_tokens': 0,
+                'category_requests': 0, 'category_tokens': 0,
+                'text_clean_requests': 0, 'text_clean_tokens': 0
+            }
