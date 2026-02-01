@@ -115,11 +115,11 @@ class DeepSeekClient:
                 f"Env var empty: {env_key == ''}, "
                 f"Instance key: {bool(self.api_key)}"
             )
-            return None, 0
+            return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
         text = _truncate_input(text)
         if not text:
-            return None, 0
+            return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
         payload = {
             "model": "deepseek-chat",
