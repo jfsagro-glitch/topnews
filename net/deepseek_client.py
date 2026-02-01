@@ -74,12 +74,13 @@ def _build_text_extraction_messages(title: str, raw_text: str) -> list[dict]:
         "Ты помощник для извлечения чистого текста новости из HTML.\n\n"
         "Твоя задача: извлечь ТОЛЬКО основной текст самой новости, удалив:\n"
         "- Списки городов (Балашиха Богородский Воскресенск...)\n"
-        "- Навигационные меню (Истории Эфир, Новости Чтиво...)\n"
+        "- Навигационные меню (Культура Все Кино Сериалы, Истории Эфир...)\n"
         "- Заголовки других новостей (Шокирующие откровения...)\n"
+        "- Дублирование заголовка (если заголовок повторяется 2-3 раза)\n"
         "- Рекламу и ссылки\n\n"
         "Верни 1-2 абзаца с фактами о событии, указанном в заголовке. Не добавляй пояснений."
     )
-    user_content = f"Заголовок: {title}\n\nИзвлеченный текст:\n{raw_text[:2000]}"
+    user_content = f"Заголовок: {title}\n\nИзвлеченный текст:\n{raw_text[:3500]}"
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
@@ -256,7 +257,7 @@ class DeepSeekClient:
             "model": "deepseek-chat",
             "messages": _build_text_extraction_messages(title, raw_text),
             "temperature": 0.2,  # Low temperature for consistent extraction
-            "max_tokens": 300,  # Allow up to 2-3 paragraphs
+            "max_tokens": 500,  # Allow up to 3-4 paragraphs for better context
         }
 
         try:
