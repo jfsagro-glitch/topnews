@@ -1,4 +1,4 @@
-"""
+﻿"""
 Конфигурация приложения
 """
 import os
@@ -9,6 +9,8 @@ load_dotenv()
 # Telegram Bot API
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', 'YOUR_BOT_TOKEN')
 TELEGRAM_CHANNEL_ID = int(os.getenv('TELEGRAM_CHANNEL_ID', '-1001234567890'))
+
+ADMIN_IDS = [464108692]
 
 # Интервалы
 CHECK_INTERVAL_SECONDS = 120  # 2 минуты
