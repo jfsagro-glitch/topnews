@@ -7,6 +7,7 @@ import asyncio
 from typing import List, Dict
 from datetime import datetime
 from net.http_client import get_http_client
+from utils.text_cleaner import clean_html, extract_first_paragraph, truncate_text
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,14 @@ class RSSParser:
                 }
                 
                 if news_item['url']:  # Только если есть ссылка
+                    # Если в RSS нет текста или он слишком короткий — пробуем получить абзац со страницы
+                    text_candidate = clean_html(news_item.get('text', '') or '')
+                    if not text_candidate or len(text_candidate) < 40:
+                        preview = await self._fetch_article_preview(news_item['url'])
+                        if preview:
+                            news_item['text'] = preview
+                    else:
+                        news_item['text'] = truncate_text(text_candidate, max_length=400)
                     news_items.append(news_item)
             
             logger.info(f"Parsed {len(news_items)} items from {source_name} RSS")
@@ -93,3 +102,16 @@ class RSSParser:
             logger.debug(f"Error parsing date: {e}")
         
         return datetime.now().isoformat()
+
+    async def _fetch_article_preview(self, url: str) -> str:
+        """Пробует получить первые предложения со страницы статьи"""
+        try:
+            http_client = await get_http_client()
+            response = await http_client.get(url, retries=1)
+            text = clean_html(response.text)
+            paragraph = extract_first_paragraph(text)
+            if paragraph:
+                return truncate_text(paragraph, max_length=400)
+        except Exception as e:
+            logger.debug(f"Failed to fetch article preview from {url}: {e}")
+        return ""
