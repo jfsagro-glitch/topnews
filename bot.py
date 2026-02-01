@@ -9,7 +9,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 import asyncio
-from config.config import TELEGRAM_TOKEN, TELEGRAM_CHANNEL_ID, CHECK_INTERVAL_SECONDS
+from config.config import TELEGRAM_TOKEN, TELEGRAM_CHANNEL_ID, CHECK_INTERVAL_SECONDS, ADMIN_IDS
 from db.database import NewsDatabase
 from utils.text_cleaner import format_telegram_message
 from sources.source_collector import SourceCollector
@@ -171,23 +171,38 @@ class NewsBot:
             # Формируем полный текст без форматирования (для легкого копирования)
             full_text = f"{news['title']}\n\n{news['text']}\n\n{news['source']}\n{news['url']}"
             
-            # Создаем текст для alert (макс. 200 символов)
-            preview_text = full_text[:197] + "..." if len(full_text) > 200 else full_text
-            
             try:
-                # Показываем popup с текстом (максимальный размер ~200 символов в Telegram)
-                await query.answer(preview_text, show_alert=True)
-                
-                # Также отправляем полный текст в ДМ БЕЗ уведомления для удобного копирования
-                await context.bot.send_message(
+                # Отправляем полный текст отдельным сообщением БЕЗ Markdown
+                # Это позволит легко копировать, редактировать и пересылать
+                sent_message = await context.bot.send_message(
                     chat_id=query.from_user.id,
                     text=full_text,
                     disable_web_page_preview=True,
                     disable_notification=True  # Тихо, без звука
                 )
+                
+                # Уведомляем пользователя
+                await query.answer("✅ Отправлено отдельным сообщением для копирования", show_alert=False)
+                
             except Exception as e:
                 logger.error(f"Error sending COPY text: {e}")
                 await query.answer(f"❌ Ошибка: {type(e).__name__}", show_alert=True)
+    
+    async def _send_to_admins(self, message: str, keyboard: InlineKeyboardMarkup, news_id: int):
+        """Отправляет новость всем админам в личные сообщения"""
+        for admin_id in ADMIN_IDS:
+            try:
+                await self.application.bot.send_message(
+                    chat_id=admin_id,
+                    text=message,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=keyboard,
+                    disable_web_page_preview=True,
+                    disable_notification=True  # Без звука, чтобы не спамить
+                )
+                logger.debug(f"Sent news to admin {admin_id}")
+            except Exception as e:
+                logger.warning(f"Failed to send to admin {admin_id}: {e}")
     
     async def collect_and_publish(self) -> int:
         """
@@ -278,6 +293,9 @@ class NewsBot:
 
                     published_count += 1
                     logger.info(f"Published: {news['title'][:50]}")
+                    
+                    # Отправляем админам в личку с кнопкой "Копировать"
+                    await self._send_to_admins(message, keyboard, published_count - 1)
 
                     # Небольшая задержка между публикациями
                     await asyncio.sleep(1)
