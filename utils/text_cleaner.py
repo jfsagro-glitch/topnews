@@ -532,6 +532,10 @@ def format_telegram_message(title: str, text: str, source_name: str,
     # Очищаем текст
     text = clean_html(text) if text else ""
     
+    # Убираем нежелательные символы (вертикальная черта, слэши)
+    text = text.replace('|', '').replace('\\', '').replace('/', ' ')
+    title = title.replace('|', '').replace('\\', '').replace('/', ' ')
+    
     # Убираем дублирование заголовка в тексте
     normalized_title = ' '.join(title.lower().split())
     normalized_text = ' '.join(text.lower().split())
