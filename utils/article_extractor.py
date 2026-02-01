@@ -63,12 +63,25 @@ async def extract_article_text(html_content: str, max_length: int = 5000) -> Opt
                             if capital_ratio > 0.7:  # More than 70% capitalized = likely list
                                 continue
                         
-                        # Skip navigation keywords
-                        nav_keywords = ['истории эфир', 'новости чтиво', 'выберите город', 
+                        # Skip navigation keywords and sports scores
+                        nav_keywords = ['истории эфир', 'новости чтиво', 'выберите город',
                                        'жесткое заявление', 'соцсети в ярости', 'опасные пилюли',
-                                       'шокирующие откровения', 'дело эпштейна', 'новый удар']
+                                       'шокирующие откровения', 'дело эпштейна', 'новый удар',
+                                       'спорт все ставки', 'футбол бокс', 'зимние виды', 'летние виды',
+                                       'карлос алькарас', 'новак джокович', 'манчестер', 'реал мадрид',
+                                       'матч завершён', 'live', 'тайм', 'примера', 'премьер-лига']
                         if any(kw in line.lower() for kw in nav_keywords):
                             continue
+                        
+                        # Skip lines that repeat the same words (like "Футболист сборной Украины" 3 times)
+                        # Check for word repetition patterns
+                        lower_line = line.lower()
+                        words_lower = lower_line.split()
+                        if len(words_lower) >= 4:
+                            # Check if first 4 words appear again in the same line
+                            first_phrase = ' '.join(words_lower[:4])
+                            if lower_line.count(first_phrase) > 1:
+                                continue
                         
                         # Skip lines that are just other news headlines (contain clickbait patterns)
                         clickbait_patterns = [':', 'признался', 'разоблачение', 'откровения']
@@ -155,9 +168,19 @@ def _extract_simple(html_content: str) -> Optional[str]:
                            'политика эксклюзив', 'общество', 'шокирующие откровения',
                            'жесткое заявление', 'дело эпштейна', 'новый удар', 
                            'соцсети в ярости', 'опасные пилюли', 'правда о полисе',
-                           'накачали и бросили']
+                           'накачали и бросили', 'спорт все ставки', 'футбол бокс',
+                           'зимние виды', 'летние виды', 'хоккей автоспорт',
+                           'матч завершён', 'live', 'тайм', 'примера', 'премьер-лига']
             if any(kw in line.lower() for kw in nav_keywords):
                 continue
+            
+            # Skip lines that repeat the same phrase multiple times
+            lower_line = line.lower()
+            words_lower = lower_line.split()
+            if len(words_lower) >= 4:
+                first_phrase = ' '.join(words_lower[:4])
+                if lower_line.count(first_phrase) > 1:
+                    continue
             
             # Skip clickbait headlines (short + contains colon or multiple trigger words)
             clickbait_count = sum(1 for p in [':', 'признался', 'разоблачение', 'откровения', 'правда'] 
