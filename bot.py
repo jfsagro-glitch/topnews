@@ -12,6 +12,15 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 import asyncio
 from config.config import TELEGRAM_TOKEN, TELEGRAM_CHANNEL_ID, CHECK_INTERVAL_SECONDS, ADMIN_IDS
+
+# Import DATABASE_PATH from railway_config if available, else from config
+try:
+    from config.railway_config import DATABASE_PATH
+    logger.info(f"Using Railway DATABASE_PATH: {DATABASE_PATH}")
+except (ImportError, ValueError):
+    from config.config import DATABASE_PATH
+    logger.info(f"Using local DATABASE_PATH: {DATABASE_PATH}")
+
 from db.database import NewsDatabase
 from utils.text_cleaner import format_telegram_message
 from sources.source_collector import SourceCollector
@@ -24,7 +33,7 @@ class NewsBot:
     
     def __init__(self):
         self.application = None
-        self.db = NewsDatabase()
+        self.db = NewsDatabase(db_path=DATABASE_PATH)  # Use path from config
         
         # DeepSeek client (initialize early for use in SourceCollector)
         self.deepseek_client = DeepSeekClient()

@@ -17,6 +17,7 @@ class NewsDatabase:
     
     def __init__(self, db_path: str = 'db/news.db'):
         self.db_path = db_path
+        logger.info(f"Initializing NewsDatabase with path: {db_path}")
         os.makedirs(os.path.dirname(self.db_path) or '.', exist_ok=True)
 
         # Single shared connection + a lock to serialize write operations
