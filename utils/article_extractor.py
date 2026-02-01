@@ -1,54 +1,25 @@
 """
-Extract full article text from HTML content.
+Extract full article text from HTML content using trafilatura for intelligent content extraction.
+Falls back to simple parsing if trafilatura unavailable.
 """
 import logging
-from html.parser import HTMLParser
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-
-class TextExtractor(HTMLParser):
-    """Simple HTML parser to extract main text content."""
-    
-    def __init__(self):
-        super().__init__()
-        self.text_parts = []
-        self.skip_tags = {'script', 'style', 'noscript', 'meta', 'link', 'head'}
-        self.in_skip_tag = False
-        self.current_tag = None
-        
-    def handle_starttag(self, tag, attrs):
-        self.current_tag = tag.lower()
-        if self.current_tag in self.skip_tags:
-            self.in_skip_tag = True
-    
-    def handle_endtag(self, tag):
-        if tag.lower() in self.skip_tags:
-            self.in_skip_tag = False
-        # Add newline after block elements
-        if tag.lower() in {'p', 'div', 'article', 'section', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'td', 'tr'}:
-            if self.text_parts and self.text_parts[-1].strip():
-                self.text_parts.append('\n')
-    
-    def handle_data(self, data):
-        if not self.in_skip_tag:
-            text = data.strip()
-            if text:
-                self.text_parts.append(text)
-                self.text_parts.append(' ')
-    
-    def get_text(self) -> str:
-        """Get extracted text."""
-        text = ''.join(self.text_parts)
-        # Clean up multiple spaces and newlines
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
-        return '\n'.join(lines)
+# Try to import trafilatura for intelligent content extraction
+try:
+    import trafilatura
+    TRAFILATURA_AVAILABLE = True
+except ImportError:
+    TRAFILATURA_AVAILABLE = False
+    logger.debug("trafilatura not available, using fallback parser")
 
 
 async def extract_article_text(html_content: str, max_length: int = 5000) -> Optional[str]:
     """
-    Extract main article text from HTML.
+    Extract main article text from HTML using trafilatura if available,
+    falls back to simple parsing otherwise.
     
     Args:
         html_content: HTML content of the page
@@ -58,16 +29,75 @@ async def extract_article_text(html_content: str, max_length: int = 5000) -> Opt
         Extracted text or None if extraction failed
     """
     try:
-        parser = TextExtractor()
-        parser.feed(html_content)
-        text = parser.get_text()
+        text = None
+        
+        # Try trafilatura first (best for news articles)
+        if TRAFILATURA_AVAILABLE:
+            try:
+                text = trafilatura.extract(
+                    html_content,
+                    include_comments=False,
+                    with_metadata=False,
+                    favor_precision=True
+                )
+                if text:
+                    logger.debug(f"trafilatura extracted {len(text)} chars")
+            except Exception as e:
+                logger.debug(f"trafilatura extraction failed: {e}")
+        
+        # Fallback to simple parser if trafilatura failed or unavailable
+        if not text:
+            text = _extract_simple(html_content)
         
         if not text or len(text) < 50:
-            logger.debug("Extracted text too short, not useful")
+            logger.debug("Extracted text too short")
             return None
         
         # Return up to max_length characters
         return text[:max_length]
+        
     except Exception as e:
         logger.warning(f"Error extracting article text: {e}")
+        return None
+
+
+def _extract_simple(html_content: str) -> Optional[str]:
+    """
+    Simple fallback HTML parser to extract main text content.
+    Filters out common noise patterns.
+    """
+    try:
+        import re
+        from html import unescape
+        from html.parser import HTMLParser
+        
+        # Remove script, style, and common noise tags
+        html = re.sub(r'<script[^>]*>.*?</script>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
+        html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        html = re.sub(r'<noscript[^>]*>.*?</noscript>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        html = re.sub(r'<nav[^>]*>.*?</nav>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        html = re.sub(r'<header[^>]*>.*?</header>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        html = re.sub(r'<footer[^>]*>.*?</footer>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        html = re.sub(r'<aside[^>]*>.*?</aside>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        html = re.sub(r'<div[^>]*class="[^"]*(?:sidebar|nav|ad|comment|related|recommend)[^"]*"[^>]*>.*?</div>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        
+        # Extract text from article/main/content divs first (higher priority)
+        main_match = re.search(r'<(?:article|main|div[^>]*class="[^"]*(?:article|main|content|body)[^"]*")[^>]*>(.*?)</(?:article|main|div)>', html, re.DOTALL | re.IGNORECASE)
+        if main_match:
+            html = main_match.group(1)
+        
+        # Remove HTML tags but keep structure
+        text = re.sub(r'<[^>]+>', '\n', html)
+        text = unescape(text)
+        
+        # Clean up whitespace
+        lines = [line.strip() for line in text.split('\n') if line.strip() and len(line.strip()) > 2]
+        
+        # Remove very short lines that are likely noise
+        lines = [line for line in lines if len(line) > 10 or line.isupper()]
+        
+        return '\n'.join(lines) if lines else None
+        
+    except Exception as e:
+        logger.warning(f"Simple extraction failed: {e}")
         return None
