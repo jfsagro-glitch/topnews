@@ -4,6 +4,7 @@ DeepSeek API client for AI summarization.
 from __future__ import annotations
 
 import asyncio
+import os
 import logging
 from typing import Optional
 
@@ -52,7 +53,8 @@ class DeepSeekClient:
         self.endpoint = endpoint
 
     async def summarize(self, title: str, text: str) -> tuple[Optional[str], int]:
-        if not self.api_key:
+        api_key = self.api_key or os.getenv('DEEPSEEK_API_KEY', '')
+        if not api_key:
             logger.warning("DeepSeek API key not configured")
             return None, 0
 
@@ -73,7 +75,7 @@ class DeepSeekClient:
                 async with httpx.AsyncClient(timeout=AI_SUMMARY_TIMEOUT) as client:
                     response = await client.post(
                         self.endpoint,
-                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        headers={"Authorization": f"Bearer {api_key}"},
                         json=payload,
                     )
                 if response.status_code == 200:
