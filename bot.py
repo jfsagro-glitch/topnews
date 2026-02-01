@@ -242,10 +242,6 @@ class NewsBot:
                     category=category_emoji
                 )
                 
-                # Добавляем URL в конце сообщения
-                if message and news.get('url'):
-                    message += f"\n[читать далее]({news.get('url')})"
-                
                 # Сохраняем в кэш для COPY кнопки
                 self.news_cache[published_count] = {
                     'title': news.get('title', 'No title'),
