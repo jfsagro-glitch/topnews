@@ -7,6 +7,6 @@ aiohttp==3.9.1
 sqlalchemy==2.0.25
 python-dotenv==1.0.0
 dateparser==1.1.8
-trafilatura==1.6.7
+trafilatura==2.0.0
 httpx==0.25.2
 certifi==2024.2.2
