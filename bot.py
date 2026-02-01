@@ -27,6 +27,9 @@ class NewsBot:
         self.is_running = True
         self.is_paused = False
         self.collection_lock = asyncio.Lock()  # Prevent concurrent collection cycles
+        
+        # Cache for recently published news (for COPY button)
+        self.news_cache = {}  # news_id -> {'title', 'text', 'source', 'url'}
     
     def create_application(self) -> Application:
         """Создает и конфигурирует Telegram Application"""
@@ -113,9 +116,38 @@ class NewsBot:
         
         if query.data.startswith("copy_"):
             # Копирование новости
-            news_id = query.data.replace("copy_", "")
-            # Здесь будет логика отправки полного текста новости
-            await query.edit_message_text(text="📋 Новость скопирована в сообщение")
+            news_id = int(query.data.replace("copy_", ""))
+            
+            # Получаем новость из кэша
+            news = self.news_cache.get(news_id)
+            if not news:
+                await query.edit_message_text(text="❌ Новость не найдена (кэш истёк)")
+                return
+            
+            # Формируем полный текст для копирования
+            full_text = f"""📰 {news['title']}
+
+{news['text']}
+
+Источник: {news['source']}
+{news['url']}"""
+            
+            # Отправляем полный текст в виде отдельного сообщения
+            try:
+                await context.bot.send_message(
+                    chat_id=query.from_user.id,
+                    text=full_text,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True
+                )
+                await query.edit_message_text(
+                    text="✅ Полный текст отправлен в ДМ. Скопируйте его из сообщения выше."
+                )
+            except Exception as e:
+                logger.error(f"Error sending COPY text: {e}")
+                await query.edit_message_text(
+                    text=f"❌ Ошибка: {type(e).__name__}"
+                )
     
     async def collect_and_publish(self) -> int:
         """
@@ -172,6 +204,14 @@ class NewsBot:
                 # Добавляем URL в конце сообщения
                 if message and news.get('url'):
                     message += f"\n[читать далее]({news.get('url')})"
+                
+                # Сохраняем в кэш для COPY кнопки
+                self.news_cache[published_count] = {
+                    'title': news.get('title', 'No title'),
+                    'text': news.get('text', '')[:2000],  # Ограничиваем до 2000 символов
+                    'source': news.get('source', 'Unknown'),
+                    'url': news.get('url', '')
+                }
 
                 # Создаем кнопку COPY
                 keyboard = InlineKeyboardMarkup([
