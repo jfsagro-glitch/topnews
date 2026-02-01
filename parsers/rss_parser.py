@@ -3,6 +3,8 @@
 """
 import feedparser
 import logging
+import ssl
+import certifi
 from typing import List, Dict
 from datetime import datetime
 import aiohttp
@@ -24,14 +26,22 @@ class RSSParser:
         news_items = []
         
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=self.timeout) as response:
-                    if response.status != 200:
-                        logger.warning(f"Failed to fetch {url}: {response.status}")
-                        return news_items
-                    
-                    content = await response.text()
-            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+
+            async with aiohttp.ClientSession(headers=headers) as session:
+                try:
+                    async with session.get(url, timeout=self.timeout, ssl=ssl_ctx) as response:
+                        if response.status != 200:
+                            logger.warning(f"Failed to fetch {url}: {response.status}")
+                            return news_items
+                        content = await response.text()
+                except Exception as e:
+                    logger.error(f"Error fetching RSS {url}: {e}")
+                    return news_items
+
             # Парсим RSS
             feed = feedparser.parse(content)
             

@@ -144,6 +144,8 @@ class NewsBot:
                     ])
                     
                     try:
+                        # Debug: логируем chat_id перед отправкой (без токена)
+                        logger.debug(f"Sending message to chat_id={TELEGRAM_CHANNEL_ID}")
                         # Публикуем в канал
                         await self.application.bot.send_message(
                             chat_id=TELEGRAM_CHANNEL_ID,
@@ -168,7 +170,7 @@ class NewsBot:
                         await asyncio.sleep(1)
                     
                     except Exception as e:
-                        logger.error(f"Error publishing news: {e}")
+                        logger.error(f"Error publishing news to chat_id={TELEGRAM_CHANNEL_ID}: {e} | url={news.get('url')}")
             
             logger.info(f"Collection complete. Published {published_count} new items")
             return published_count

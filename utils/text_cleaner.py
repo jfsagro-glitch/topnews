@@ -18,7 +18,8 @@ def clean_html(html_text: str) -> str:
     
     try:
         # Удаляем скрипты и стили
-        soup = BeautifulSoup(html_text, 'html.parser')
+        # Приводим вход к строке, чтобы избежать предупреждений MarkupResemblesLocatorWarning
+        soup = BeautifulSoup(str(html_text), 'html.parser')
         
         for tag in soup(['script', 'style', 'noscript']):
             tag.decompose()
