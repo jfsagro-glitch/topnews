@@ -277,77 +277,95 @@ class NewsBot:
             category_tag = self._get_category_emoji(news.get('category', 'russia'))
 
             if action == "ai":
-                from config.config import AI_SUMMARY_MAX_REQUESTS_PER_MINUTE
+                try:
+                    from config.config import AI_SUMMARY_MAX_REQUESTS_PER_MINUTE
 
-                now = time.time()
-                timestamps = self.user_ai_requests.get(user_id, [])
-                timestamps = [t for t in timestamps if now - t < 60]
-                if len(timestamps) >= AI_SUMMARY_MAX_REQUESTS_PER_MINUTE:
-                    await query.answer("⏳ Слишком много запросов. Подождите минуту.", show_alert=False)
-                    return
-                timestamps.append(now)
-                self.user_ai_requests[user_id] = timestamps
+                    now = time.time()
+                    timestamps = self.user_ai_requests.get(user_id, [])
+                    timestamps = [t for t in timestamps if now - t < 60]
+                    if len(timestamps) >= AI_SUMMARY_MAX_REQUESTS_PER_MINUTE:
+                        await query.answer("⏳ Слишком много запросов. Подождите минуту.", show_alert=False)
+                        return
+                    timestamps.append(now)
+                    self.user_ai_requests[user_id] = timestamps
 
-                await query.answer("⏳ Генерирую пересказ...", show_alert=False)
+                    await query.answer("⏳ Генерирую пересказ...", show_alert=False)
+                    logger.info(f"AI summarize requested for news_id={news_id} by user={user_id}")
 
-                cached_summary = self.db.get_cached_summary(news_id)
-                if cached_summary:
-                    # Send summary with copy button
-                    copy_text = cached_summary[:4096] if len(cached_summary) > 4096 else cached_summary
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("📋 Копировать", copy_text=copy_text)]
-                    ])
+                    cached_summary = self.db.get_cached_summary(news_id)
+                    if cached_summary:
+                        # Send summary with copy button
+                        copy_text = cached_summary[:4096] if len(cached_summary) > 4096 else cached_summary
+                        keyboard = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📋 Копировать", copy_text=copy_text)]
+                        ])
+                        
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text=(
+                                f"Пересказ сгенерирован ИИ\n\n{cached_summary}\n\n"
+                                f"Источник: {news.get('source', '')}\n{news.get('url', '')}"
+                            ),
+                            reply_markup=keyboard,
+                            disable_web_page_preview=True,
+                            disable_notification=True
+                        )
+                        return
+
+                    lead_text = news.get('lead_text') or news.get('text', '') or news.get('title', '')
+                    from config.config import DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD, DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD
+
+                    news_url = news.get('url', '')
+                    logger.debug(f"Calling DeepSeek: lead_text_len={len(lead_text)}, title='{news.get('title', '')[:30]}', url={bool(news_url)}")
+                    summary, token_usage = await self._summarize_with_deepseek(lead_text, news.get('title', ''), url=news_url)
+                    logger.debug(f"DeepSeek response: summary={bool(summary)}, tokens={token_usage.get('total_tokens', 0)}")
+
+                    if summary:
+                        # Calculate cost based on input and output tokens
+                        input_cost = (token_usage['input_tokens'] / 1000.0) * DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD
+                        output_cost = (token_usage['output_tokens'] / 1000.0) * DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD
+                        cost_usd = input_cost + output_cost
+                        
+                        self.db.add_ai_usage(tokens=token_usage['total_tokens'], cost_usd=cost_usd, operation_type='summarize')
+                        self.db.save_summary(news_id, summary)
+                        
+                        # Send summary with copy button
+                        copy_text = summary[:4096] if len(summary) > 4096 else summary
+                        keyboard = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📋 Копировать", copy_text=copy_text)]
+                        ])
+                        
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text=(
+                                f"Пересказ сгенерирован ИИ\n\n{summary}\n\n"
+                                f"Источник: {news.get('source', '')}\n{news.get('url', '')}"
+                            ),
+                            reply_markup=keyboard,
+                            disable_web_page_preview=True,
+                            disable_notification=True
+                        )
+                    else:
+                        logger.warning(f"AI summarize failed for news_id={news_id}, no summary returned")
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text="ИИ временно недоступен. Попробуйте позже.",
+                            disable_web_page_preview=True,
+                            disable_notification=True
+                        )
                     
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text=(
-                            f"Пересказ сгенерирован ИИ\n\n{cached_summary}\n\n"
-                            f"Источник: {news.get('source', '')}\n{news.get('url', '')}"
-                        ),
-                        reply_markup=keyboard,
-                        disable_web_page_preview=True,
-                        disable_notification=True
-                    )
-                    return
-
-                lead_text = news.get('lead_text') or news.get('text', '') or news.get('title', '')
-                from config.config import DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD, DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD
-
-                news_url = news.get('url', '')
-                summary, token_usage = await self._summarize_with_deepseek(lead_text, news.get('title', ''), url=news_url)
-
-                if summary:
-                    # Calculate cost based on input and output tokens
-                    input_cost = (token_usage['input_tokens'] / 1000.0) * DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD
-                    output_cost = (token_usage['output_tokens'] / 1000.0) * DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD
-                    cost_usd = input_cost + output_cost
-                    
-                    self.db.add_ai_usage(tokens=token_usage['total_tokens'], cost_usd=cost_usd, operation_type='summarize')
-                    self.db.save_summary(news_id, summary)
-                    
-                    # Send summary with copy button
-                    copy_text = summary[:4096] if len(summary) > 4096 else summary
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("📋 Копировать", copy_text=copy_text)]
-                    ])
-                    
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text=(
-                            f"Пересказ сгенерирован ИИ\n\n{summary}\n\n"
-                            f"Источник: {news.get('source', '')}\n{news.get('url', '')}"
-                        ),
-                        reply_markup=keyboard,
-                        disable_web_page_preview=True,
-                        disable_notification=True
-                    )
-                else:
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text="ИИ временно недоступен. Попробуйте позже.",
-                        disable_web_page_preview=True,
-                        disable_notification=True
-                    )
+                except Exception as e:
+                    logger.error(f"Error in AI summarize for news_id={news_id}: {e}", exc_info=True)
+                    try:
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text=f"❌ Ошибка при генерации пересказа: {str(e)[:100]}",
+                            disable_web_page_preview=True,
+                            disable_notification=True
+                        )
+                    except:
+                        pass
+                
                 return
 
             await query.answer("❌ Неизвестная команда", show_alert=False)
