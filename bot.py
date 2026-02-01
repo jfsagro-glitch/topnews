@@ -212,10 +212,11 @@ class NewsBot:
 
                 cached_summary = self.db.get_cached_summary(news_id)
                 if cached_summary:
-                    # Create inline keyboard with copy button
+                    # Create inline keyboard with copy button (max 4096 chars)
+                    copy_text = cached_summary[:4096] if len(cached_summary) > 4096 else cached_summary
                     copy_button = InlineKeyboardButton(
                         text="📋 Копировать",
-                        copy_text={"text": cached_summary}
+                        copy_text=copy_text
                     )
                     keyboard = InlineKeyboardMarkup([[copy_button]])
                     
@@ -246,10 +247,11 @@ class NewsBot:
                     self.db.add_ai_usage(tokens=token_usage['total_tokens'], cost_usd=cost_usd)
                     self.db.save_summary(news_id, summary)
                     
-                    # Create inline keyboard with copy button
+                    # Create inline keyboard with copy button (max 4096 chars)
+                    copy_text = summary[:4096] if len(summary) > 4096 else summary
                     copy_button = InlineKeyboardButton(
                         text="📋 Копировать",
-                        copy_text={"text": summary}
+                        copy_text=copy_text
                     )
                     keyboard = InlineKeyboardMarkup([[copy_button]])
                     
