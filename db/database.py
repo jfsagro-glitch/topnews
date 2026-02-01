@@ -2,6 +2,7 @@
 Управление базой данных для хранения опубликованных новостей
 """
 import sqlite3
+import time
 from datetime import datetime
 from typing import List, Tuple, Optional
 import logging
@@ -20,8 +21,17 @@ class NewsDatabase:
     def _ensure_db_exists(self):
         """Создает таблицу, если её нет"""
         os.makedirs(os.path.dirname(self.db_path) or '.', exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
+        # Use a short timeout and enable WAL to reduce "database is locked" errors
+        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
         cursor = conn.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL;")
+        except Exception:
+            pass
+        try:
+            cursor.execute("PRAGMA busy_timeout=5000;")
+        except Exception:
+            pass
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS published_news (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,30 +51,41 @@ class NewsDatabase:
         Добавляет новость в БД.
         Возвращает True если добавлена, False если уже была.
         """
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO published_news (url, title, source, category)
-                VALUES (?, ?, ?, ?)
-            ''', (url, title, source, category))
-            conn.commit()
-            conn.close()
-            logger.debug(f"News added: {url}")
-            return True
-        except sqlite3.IntegrityError:
-            logger.debug(f"News already exists: {url}")
-            return False
-        except Exception as e:
-            logger.error(f"Error adding news to DB: {e}")
-            return False
+        # Retry loop to handle transient "database is locked" errors
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO published_news (url, title, source, category)
+                    VALUES (?, ?, ?, ?)
+                ''', (url, title, source, category))
+                conn.commit()
+                conn.close()
+                logger.debug(f"News added: {url}")
+                return True
+            except sqlite3.IntegrityError:
+                logger.debug(f"News already exists: {url}")
+                return False
+            except sqlite3.OperationalError as oe:
+                if 'locked' in str(oe).lower() and attempt < attempts:
+                    wait = 0.5 * attempt
+                    logger.debug(f"Database locked, retrying in {wait}s (attempt {attempt})")
+                    time.sleep(wait)
+                    continue
+                logger.error(f"OperationalError adding news to DB: {oe}")
+                return False
+            except Exception as e:
+                logger.error(f"Error adding news to DB: {e}")
+                return False
     
     def remove_news_by_url(self, url: str) -> bool:
         """
         Удаляет запись новости по URL. Возвращает True если удалена.
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
             cursor = conn.cursor()
             cursor.execute('DELETE FROM published_news WHERE url = ?', (url,))
             conn.commit()
@@ -73,6 +94,9 @@ class NewsDatabase:
             if deleted:
                 logger.debug(f"Removed news from DB: {url}")
             return deleted
+        except sqlite3.OperationalError as oe:
+            logger.error(f"OperationalError removing news from DB: {oe}")
+            return False
         except Exception as e:
             logger.error(f"Error removing news from DB: {e}")
             return False
