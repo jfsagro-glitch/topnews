@@ -4,6 +4,8 @@ HTML парсер для сайтов новостей
 import logging
 import ssl
 import certifi
+import asyncio
+import random
 from typing import List, Dict
 import aiohttp
 import asyncio
@@ -32,17 +34,28 @@ class HTMLParser:
             }
             ssl_ctx = ssl.create_default_context(cafile=certifi.where())
 
-            async with aiohttp.ClientSession(headers=headers) as session:
-                try:
-                    async with session.get(url, timeout=self.timeout, ssl=ssl_ctx) as response:
-                        if response.status != 200:
-                            logger.warning(f"Failed to fetch {url}: {response.status}")
-                            return news_items
+            # Conservative rate-limiting + retries with jitter
+            min_delay = 0.3
+            max_delay = 1.0
+            attempts = 3
 
-                        content = await response.text(errors='ignore')
-                except Exception as e:
-                    logger.error(f"Error fetching {url}: {e}")
-                    return news_items
+            async with aiohttp.ClientSession(headers=headers) as session:
+                for attempt in range(1, attempts + 1):
+                    try:
+                        async with session.get(url, timeout=self.timeout, ssl=ssl_ctx) as response:
+                            if response.status != 200:
+                                logger.warning(f"Failed to fetch {url}: {response.status}")
+                                return news_items
+
+                            content = await response.text(errors='ignore')
+                            break
+                    except Exception as e:
+                        logger.debug(f"Attempt {attempt} failed for {url}: {e}")
+                        if attempt == attempts:
+                            logger.error(f"Error fetching {url}: {e}")
+                            return news_items
+                        wait = min_delay + random.random() * (max_delay - min_delay)
+                        await asyncio.sleep(wait)
             
             soup = BeautifulSoup(content, 'html.parser')
             

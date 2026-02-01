@@ -2,6 +2,7 @@
 Очистка текста от HTML и лишних элементов
 """
 import re
+import os
 from html import unescape
 from bs4 import BeautifulSoup
 import logging
@@ -18,9 +19,18 @@ def clean_html(html_text: str) -> str:
     
     try:
         # Удаляем скрипты и стили
-        # Приводим вход к строке, чтобы избежать предупреждений MarkupResemblesLocatorWarning
-        soup = BeautifulSoup(str(html_text), 'html.parser')
-        
+        # Если передали путь к файлу — откроем файл, иначе используем строковое представление
+        if isinstance(html_text, str) and os.path.exists(html_text):
+            try:
+                with open(html_text, 'r', encoding='utf-8', errors='ignore') as fh:
+                    content = fh.read()
+            except Exception:
+                content = str(html_text)
+        else:
+            content = str(html_text)
+
+        soup = BeautifulSoup(content, 'html.parser')
+
         for tag in soup(['script', 'style', 'noscript']):
             tag.decompose()
         
