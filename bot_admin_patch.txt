@@ -28,7 +28,7 @@ class NewsBot:
         self.is_paused = False
         self.collection_lock = asyncio.Lock()  # Prevent concurrent collection cycles
         
-        # Cache for recently published news (for COPY button)
+        # Cache for recently published news (for AI button)
         self.news_cache = {}  # news_id -> {'title', 'text', 'source', 'url'}
         
         # Global category filter (None = show all)

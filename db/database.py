@@ -34,6 +34,7 @@ class NewsDatabase:
                 cursor.execute("PRAGMA busy_timeout=10000;")
             except Exception:
                 pass
+
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS published_news (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,13 +42,19 @@ class NewsDatabase:
                     title TEXT NOT NULL,
                     source TEXT NOT NULL,
                     category TEXT NOT NULL,
+                    lead_text TEXT,
+                    telegram_message_id INTEGER,
+                    ai_summary TEXT,
+                    ai_summary_created_at TIMESTAMP,
                     published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+
             # Create index on title for faster duplicate checks
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_title ON published_news(title)
             ''')
+
             # Table for storing RSS ETag and Last-Modified headers
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS rss_state (
@@ -56,6 +63,36 @@ class NewsDatabase:
                     last_modified TEXT
                 )
             ''')
+
+            # Table for caching AI summaries (legacy)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ai_summaries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    news_id INTEGER NOT NULL UNIQUE,
+                    summary_text TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (news_id) REFERENCES published_news(id) ON DELETE CASCADE
+                )
+            ''')
+
+            # Table for AI usage totals
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ai_usage (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    total_requests INTEGER NOT NULL DEFAULT 0,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_cost_usd REAL NOT NULL DEFAULT 0.0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                INSERT OR IGNORE INTO ai_usage (id, total_requests, total_tokens, total_cost_usd)
+                VALUES (1, 0, 0, 0.0)
+            ''')
+
+            # Ensure new columns exist for older DBs
+            self._ensure_columns(cursor)
+
             self._conn.commit()
         except Exception as e:
             logger.error(f"Error initializing DB: {e}")
@@ -83,17 +120,61 @@ class NewsDatabase:
                 title TEXT NOT NULL,
                 source TEXT NOT NULL,
                 category TEXT NOT NULL,
+                lead_text TEXT,
+                telegram_message_id INTEGER,
+                ai_summary TEXT,
+                ai_summary_created_at TIMESTAMP,
                 published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+        ''')
+        self._ensure_columns(cursor)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ai_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                news_id INTEGER NOT NULL UNIQUE,
+                summary_text TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (news_id) REFERENCES published_news(id) ON DELETE CASCADE
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ai_usage (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                total_requests INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cost_usd REAL NOT NULL DEFAULT 0.0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            INSERT OR IGNORE INTO ai_usage (id, total_requests, total_tokens, total_cost_usd)
+            VALUES (1, 0, 0, 0.0)
         ''')
         conn.commit()
         conn.close()
         logger.info(f"Database initialized at {self.db_path}")
+
+    def _ensure_columns(self, cursor):
+        """Ensure new columns exist for existing databases."""
+        try:
+            cursor.execute("PRAGMA table_info(published_news)")
+            existing = {row[1] for row in cursor.fetchall()}
+            required = {
+                'lead_text': 'TEXT',
+                'telegram_message_id': 'INTEGER',
+                'ai_summary': 'TEXT',
+                'ai_summary_created_at': 'TIMESTAMP'
+            }
+            for column, col_type in required.items():
+                if column not in existing:
+                    cursor.execute(f"ALTER TABLE published_news ADD COLUMN {column} {col_type}")
+        except Exception as e:
+            logger.debug(f"Error ensuring columns: {e}")
     
-    def add_news(self, url: str, title: str, source: str, category: str) -> bool:
+    def add_news(self, url: str, title: str, source: str, category: str, lead_text: str = "") -> int | None:
         """
         Добавляет новость в БД.
-        Возвращает True если добавлена, False если уже была.
+        Возвращает news_id если добавлена, иначе None.
         """
         # Retry loop to handle transient "database is locked" errors
         attempts = 3
@@ -102,15 +183,15 @@ class NewsDatabase:
                 with self._write_lock:
                     cursor = self._conn.cursor()
                     cursor.execute('''
-                        INSERT INTO published_news (url, title, source, category)
-                        VALUES (?, ?, ?, ?)
-                    ''', (url, title, source, category))
+                        INSERT INTO published_news (url, title, source, category, lead_text)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''', (url, title, source, category, lead_text))
                     self._conn.commit()
                     logger.debug(f"News added: {url}")
-                    return True
+                    return cursor.lastrowid
             except sqlite3.IntegrityError:
                 logger.debug(f"News already exists: {url}")
-                return False
+                return None
             except sqlite3.OperationalError as oe:
                 if 'locked' in str(oe).lower() and attempt < attempts:
                     wait = 0.5 * attempt
@@ -118,10 +199,10 @@ class NewsDatabase:
                     time.sleep(wait)
                     continue
                 logger.error(f"OperationalError adding news to DB: {oe}")
-                return False
+                return None
             except Exception as e:
                 logger.error(f"Error adding news to DB: {e}")
-                return False
+                return None
     
     def remove_news_by_url(self, url: str) -> bool:
         """
@@ -218,6 +299,61 @@ class NewsDatabase:
         except Exception as e:
             logger.error(f"Error getting stats: {e}")
             return {'total': 0, 'today': 0}
+
+    def get_news_id_by_url(self, url: str) -> int | None:
+        """
+        Get news ID by URL.
+        """
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute('SELECT id FROM published_news WHERE url = ?', (url,))
+            result = cursor.fetchone()
+            return result[0] if result else None
+        except Exception as e:
+            logger.error(f"Error getting news id by url: {e}")
+            return None
+
+    def get_news_by_id(self, news_id: int) -> dict | None:
+        """
+        Get news record by id.
+        """
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute('''
+                SELECT id, url, title, source, category, lead_text, ai_summary, ai_summary_created_at
+                FROM published_news WHERE id = ?
+            ''', (news_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                'id': row[0],
+                'url': row[1],
+                'title': row[2],
+                'source': row[3],
+                'category': row[4],
+                'lead_text': row[5] or "",
+                'ai_summary': row[6],
+                'ai_summary_created_at': row[7]
+            }
+        except Exception as e:
+            logger.error(f"Error getting news by id: {e}")
+            return None
+
+    def set_telegram_message_id(self, news_id: int, message_id: int) -> bool:
+        """Store Telegram message id for a news item."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    'UPDATE published_news SET telegram_message_id = ? WHERE id = ?',
+                    (message_id, news_id)
+                )
+                self._conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error setting telegram_message_id: {e}")
+            return False
     
     def get_rss_state(self, url: str) -> tuple[str | None, str | None]:
         """
@@ -253,3 +389,90 @@ class NewsDatabase:
         except Exception as e:
             logger.debug(f"Error setting RSS state for {url}: {e}")
             return False
+
+    def get_cached_summary(self, news_id: int) -> str | None:
+        """
+        Get cached AI summary if exists and not expired (1 hour).
+    
+        Args:
+            news_id: ID of the news article
+        
+        Returns:
+            Summary text or None if not found/expired
+        """
+        try:
+            from config.config import CACHE_EXPIRY_HOURS
+    
+            cursor = self._conn.cursor()
+            query = f"""
+                SELECT ai_summary FROM published_news
+                WHERE id = ?
+                AND ai_summary IS NOT NULL
+                AND datetime(ai_summary_created_at) > datetime('now', '-{CACHE_EXPIRY_HOURS} hour')
+            """
+            cursor.execute(query, (news_id,))
+            result = cursor.fetchone()
+            return result[0] if result else None
+        except Exception as e:
+            logger.debug(f"Error getting cached summary for news_id {news_id}: {e}")
+            return None
+
+    def save_summary(self, news_id: int, summary_text: str) -> bool:
+        """
+        Save AI summary to cache.
+    
+        Args:
+            news_id: ID of the news article
+            summary_text: Summary text to cache
+        
+        Returns:
+            True if saved successfully, False otherwise
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    '''UPDATE published_news
+                       SET ai_summary = ?, ai_summary_created_at = CURRENT_TIMESTAMP
+                       WHERE id = ?''',
+                    (summary_text, news_id)
+                )
+                self._conn.commit()
+                logger.debug(f"Saved summary for news_id {news_id}")
+                return True
+        except Exception as e:
+            logger.error(f"Error saving summary for news_id {news_id}: {e}")
+            return False
+
+    def add_ai_usage(self, tokens: int, cost_usd: float) -> bool:
+        """Accumulate AI usage totals (global)."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    '''UPDATE ai_usage
+                       SET total_requests = total_requests + 1,
+                           total_tokens = total_tokens + ?,
+                           total_cost_usd = total_cost_usd + ?,
+                           updated_at = CURRENT_TIMESTAMP
+                       WHERE id = 1''',
+                    (tokens, cost_usd)
+                )
+                self._conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error updating AI usage: {e}")
+            return False
+
+    def get_ai_usage(self) -> dict:
+        """Get global AI usage totals."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute('SELECT total_requests, total_tokens, total_cost_usd FROM ai_usage WHERE id = 1')
+            row = cursor.fetchone()
+            if not row:
+                return {'total_requests': 0, 'total_tokens': 0, 'total_cost_usd': 0.0}
+            return {'total_requests': row[0], 'total_tokens': row[1], 'total_cost_usd': row[2]}
+        except Exception as e:
+            logger.error(f"Error getting AI usage: {e}")
+            return {'total_requests': 0, 'total_tokens': 0, 'total_cost_usd': 0.0}

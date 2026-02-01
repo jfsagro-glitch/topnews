@@ -7,7 +7,7 @@ from typing import List, Dict
 from datetime import datetime
 from bs4 import BeautifulSoup
 from net.http_client import get_http_client
-from utils.text_cleaner import clean_html, extract_first_paragraph, truncate_text
+from utils.lead_extractor import extract_lead_from_html
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +45,10 @@ class HTMLParser:
                 news_item = self._extract_news_from_element(elem, url, source_name)
                 if news_item and news_item.get('url'):
                     # Если текста мало — пробуем подтянуть из страницы статьи
-                    text_candidate = clean_html(news_item.get('text', '') or '')
-                    if not text_candidate or len(text_candidate) < 40:
+                    if not news_item.get('text') or len(news_item['text']) < 40:
                         preview = await self._fetch_article_preview(news_item['url'])
                         if preview:
                             news_item['text'] = preview
-                    else:
-                        news_item['text'] = truncate_text(text_candidate, max_length=400)
                     news_items.append(news_item)
             
             logger.info(f"Parsed {len(news_items)} items from {source_name} HTML")
@@ -155,7 +152,7 @@ class HTMLParser:
             return {
                 'title': title[:200],
                 'url': url,
-                'text': text[:500],
+                'text': text[:800],
                 'source': source_name,
                 'published_at': datetime.now().isoformat(),
             }
@@ -169,10 +166,9 @@ class HTMLParser:
         try:
             http_client = await get_http_client()
             response = await http_client.get(url, retries=1)
-            text = clean_html(response.text)
-            paragraph = extract_first_paragraph(text)
-            if paragraph:
-                return truncate_text(paragraph, max_length=400)
+            lead = extract_lead_from_html(response.text, max_len=800)
+            if lead:
+                return lead
         except Exception as e:
             logger.debug(f"Failed to fetch article preview from {url}: {e}")
         return ""

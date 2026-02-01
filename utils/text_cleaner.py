@@ -390,9 +390,15 @@ def _filter_navigation_lines(text: str) -> str:
     return '\n'.join(filtered)
 
 
-def extract_first_paragraph(text: str, min_length: int = 30) -> str:
+def extract_first_paragraph(text: str, min_length: int = 30, max_length: int = 250) -> str:
     """
-    Извлекает первый осмысленный абзац (компактный)
+    Извлекает первый осмысленный абзац без мусора.
+    Пропускает обрывки, фрагменты с двоеточиями, короткие предложения.
+    
+    Args:
+        text: исходный текст
+        min_length: минимальная длина предложения (обычно = 20 для фильтрации мусора)
+        max_length: максимальная длина результата в символах
     """
     if not text:
         return ""
@@ -400,32 +406,64 @@ def extract_first_paragraph(text: str, min_length: int = 30) -> str:
     # Убираем лишние пробелы
     text = text.strip()
     
-    # Убираем неполные предложения в конце (обрывки)
-    # Если текст заканчивается на : или обрывается на предлог
-    text = re.sub(r'[а-яА-Я]+:\s*[а-яА-Я\s]+$', '', text)
+    # Убираем неполные предложения в конце (обрывки вроде "домам: удар в Сартане")
+    text = re.sub(r'\s*[а-яА-Я]+:\s*[а-яА-Я\s\-а-яА-Я]*$', '', text)
     
-    # Разбиваем на предложения по точке
-    sentences = [s.strip() for s in text.split('.') if s.strip()]
+    # Убираем служебные фрагменты типа "Фото:", "Источник:", "Смотрите также:"
+    text = re.sub(r'(Фото|Источник|Смотрите также|Читайте также|Ранее сообщалось|Подробнее):\s*.*$', '', text, flags=re.IGNORECASE)
     
-    # Собираем предложения пока не достигнем нормальной длины (150-200 символов)
+    # Разбиваем на предложения по точке, вопросу, восклицанию
+    sentences = re.split(r'[.!?]+', text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    
+    # Собираем предложения, пропуская мусор
     result = []
     current_length = 0
     
     for sentence in sentences:
         if not sentence:
             continue
-        # Пропускаем слишком короткие фрагменты (обычно это мусор)
+        
+        # Фильтры мусора:
+        # 1. Слишком короткие фрагменты (обычно ошибки парсинга)
         if len(sentence) < 20:
             continue
-        if current_length > 150:  # Остановимся на разумной длине
+        
+        # 2. Только служебные слова или числа
+        word_tokens = re.findall(r'[а-яА-Яa-zA-Z]+', sentence)
+        if len(word_tokens) < 5:  # Минимум 5 слов в предложении
+            continue
+        
+        # 3. Предложения с высоким процентом цифр (обычно это мусор типа "22326")
+        digit_ratio = len(re.findall(r'\d+', sentence)) / max(1, len(word_tokens))
+        if digit_ratio > 0.3:
+            continue
+        
+        # 4. Предложения, заканчивающиеся на двоеточие (фрагменты)
+        if sentence.rstrip().endswith(':'):
+            continue
+        
+        # 5. Очень длинные предложения (обычно ошибки HTML парсинга)
+        if len(sentence) > 500:
+            continue
+        
+        # Проверяем, не превышен ли лимит
+        if current_length + len(sentence) > max_length:
             break
+        
         result.append(sentence)
         current_length += len(sentence) + 1
     
+    # Формируем результат
     if result:
-        return '. '.join(result) + '.' if result else text[:200]
+        paragraph = '. '.join(result) + '.'
+        # Обрезаем если всё ещё превышает max_length
+        if len(paragraph) > max_length:
+            return truncate_text(paragraph, max_length)
+        return paragraph
     
-    return text[:200] if len(text) > 200 else text
+    # Fallback: берём первые max_length символов
+    return truncate_text(text, max_length)
 
 
 def truncate_text(text: str, max_length: int = 500) -> str:
@@ -447,21 +485,6 @@ def truncate_text(text: str, max_length: int = 500) -> str:
 def truncate_for_telegram(text: str, max_length: int = 1000) -> str:
     """
     Hard limit for telegram message (1000 chars)
-    """
-    if len(text) <= max_length:
-        return text
-    
-    truncated = text[:max_length]
-    last_space = truncated.rfind(' ')
-    if last_space > max_length // 2:
-        truncated = truncated[:last_space]
-    
-    return truncated.rstrip() + '...'
-
-
-def truncate_for_copy(text: str, max_length: int = 3000) -> str:
-    """
-    Hard limit for COPY button response (3000 chars)
     """
     if len(text) <= max_length:
         return text
@@ -517,24 +540,25 @@ def format_telegram_message(title: str, text: str, source_name: str,
         text = text[len(title):].strip()
         text = text.lstrip('|:.-').strip()
     
-    paragraph = extract_first_paragraph(text)
-    paragraph = truncate_text(paragraph, max_length=400)  # Компактнее
+    # Выбираем лид через lead_extractor
+    from utils.lead_extractor import clean_text as clean_lead_text, choose_lead
+    lead_candidates = [clean_lead_text(text)] if text else []
+    paragraph = choose_lead(lead_candidates, max_len=800)
+    if not paragraph and text:
+        paragraph = truncate_text(text, max_length=800)
     
     # Экранируем спецсимволы для Markdown
     title = escape_markdown(title)
     paragraph = escape_markdown(paragraph)
     source_name = escape_markdown(source_name)
+    source_url = escape_markdown(source_url)
     
-    # Компактное форматирование
-    message = f"*{title}*\n"
-    
+    # Компактное форматирование (требуемый формат)
+    message = f"{title}\n"
     if paragraph:
-        # Убираем лишние пробелы
         paragraph = paragraph.strip()
         message += f"\n{paragraph}\n"
-    
-    # Inline информация о источнике и категории (одна строка)
-    message += f"\n_{source_name}_ • {category}"
+    message += f"\nИсточник: {source_name}\n{source_url}\n{category}"
     
     # Hard limit for telegram (1000 chars)
     message = truncate_for_telegram(message, max_length=1000)

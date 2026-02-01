@@ -2,6 +2,8 @@
 Основной Telegram бот для публикации новостей
 """
 import logging
+import time
+from net.deepseek_client import DeepSeekClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, 
@@ -28,12 +30,18 @@ class NewsBot:
         self.is_paused = False
         self.collection_lock = asyncio.Lock()  # Prevent concurrent collection cycles
         
-        # Cache for recently published news (for COPY button)
+        # Cache for recently published news (for AI button)
         self.news_cache = {}  # news_id -> {'title', 'text', 'source', 'url'}
         
         # Global category filter (None = show all)
         self.category_filter = None  # 'world', 'russia', 'moscow_region', or None
-    
+        
+        # Rate limiting for AI summarize requests (per user per minute)
+        self.user_ai_requests = {}  # {user_id: [timestamp1, timestamp2, ...]}
+
+        # DeepSeek client
+        self.deepseek_client = DeepSeekClient()
+
     def create_application(self) -> Application:
         """Создает и конфигурирует Telegram Application"""
         
@@ -94,12 +102,17 @@ class NewsBot:
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /status"""
         stats = self.db.get_stats()
+        ai_usage = self.db.get_ai_usage()
         status_text = (
             f"📊 Статус бота:\n\n"
             f"Статус: {'⏸️ PAUSED' if self.is_paused else '✅ RUNNING'}\n"
             f"Всего опубликовано: {stats['total']}\n"
             f"За сегодня: {stats['today']}\n"
-            f"Интервал проверки: {CHECK_INTERVAL_SECONDS} сек"
+            f"Интервал проверки: {CHECK_INTERVAL_SECONDS} сек\n\n"
+            f"🧠 ИИ пересказ:\n"
+            f"Запросов: {ai_usage['total_requests']}\n"
+            f"Токенов: {ai_usage['total_tokens']}\n"
+            f"Стоимость: ${ai_usage['total_cost_usd']:.4f}"
         )
         await update.message.reply_text(status_text)
     
@@ -158,79 +171,103 @@ class NewsBot:
                      "Новости будут отправляться в канал только выбранной категории."
             )
         
-        elif query.data.startswith("copy_"):
-            # Копирование новости
-            news_id = int(query.data.replace("copy_", ""))
-            
-            # Получаем новость из кэша
-            news = self.news_cache.get(news_id)
-            if not news:
-                await query.answer("❌ Кэш истёк", show_alert=False)
+        else:
+            data = query.data or ""
+            if ":" not in data:
+                await query.answer("❌ Неизвестная команда", show_alert=False)
                 return
-            
-            try:
-                # Подтягиваем полный текст статьи с URL
-                from net.http_client import get_http_client
-                from utils.text_cleaner import clean_html
-                
-                await query.answer("⏳ Загружаю полную статью...", show_alert=False)
-                
-                http_client = await get_http_client()
-                response = await http_client.get(news['url'], retries=1)
-                full_article_text = clean_html(response.text)
-                
-                # Формируем полный текст без форматирования (для легкого копирования)
-                full_text = f"{news['title']}\n\n{full_article_text}\n\n{news['source']}\n{news['url']}"
-                
-                # Telegram имеет лимит 4096 символов на сообщение
-                # Если текст слишком длинный - разбиваем на части
-                max_length = 4000
-                if len(full_text) <= max_length:
-                    # Отправляем одним сообщением
+
+            action, id_str = data.split(":", 1)
+            if not id_str.isdigit():
+                await query.answer("❌ Некорректный ID", show_alert=False)
+                return
+
+            news_id = int(id_str)
+            user_id = query.from_user.id
+
+            news = self.db.get_news_by_id(news_id) or self.news_cache.get(news_id)
+            if not news:
+                await query.answer("❌ Новость не найдена", show_alert=False)
+                return
+
+            category_tag = self._get_category_emoji(news.get('category', 'russia'))
+
+            if action == "ai":
+                from config.config import AI_SUMMARY_MAX_REQUESTS_PER_MINUTE
+
+                now = time.time()
+                timestamps = self.user_ai_requests.get(user_id, [])
+                timestamps = [t for t in timestamps if now - t < 60]
+                if len(timestamps) >= AI_SUMMARY_MAX_REQUESTS_PER_MINUTE:
+                    await query.answer("⏳ Слишком много запросов. Подождите минуту.", show_alert=False)
+                    return
+                timestamps.append(now)
+                self.user_ai_requests[user_id] = timestamps
+
+                await query.answer("⏳ Генерирую пересказ...", show_alert=False)
+
+                cached_summary = self.db.get_cached_summary(news_id)
+                if cached_summary:
                     await context.bot.send_message(
-                        chat_id=query.from_user.id,
-                        text=full_text,
+                        chat_id=user_id,
+                        text=(
+                            f"Пересказ сгенерирован ИИ\n\n{cached_summary}\n\n"
+                            f"Источник: {news.get('source', '')}\n{news.get('url', '')}"
+                        ),
+                        disable_web_page_preview=True,
+                        disable_notification=True
+                    )
+                    return
+
+                lead_text = news.get('lead_text') or news.get('text', '') or news.get('title', '')
+                from config.config import DEEPSEEK_COST_PER_1K_TOKENS_USD
+
+                summary, tokens = await self._summarize_with_deepseek(lead_text, news.get('title', ''))
+
+                if summary:
+                    cost_usd = (tokens / 1000.0) * DEEPSEEK_COST_PER_1K_TOKENS_USD
+                    self.db.add_ai_usage(tokens=tokens, cost_usd=cost_usd)
+                    self.db.save_summary(news_id, summary)
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=(
+                            f"Пересказ сгенерирован ИИ\n\n{summary}\n\n"
+                            f"Источник: {news.get('source', '')}\n{news.get('url', '')}"
+                        ),
                         disable_web_page_preview=True,
                         disable_notification=True
                     )
                 else:
-                    # Разбиваем на части
-                    parts = []
-                    # Первая часть - заголовок + начало текста
-                    header = f"{news['title']}\n\n"
-                    remaining = full_article_text
-                    
-                    while remaining:
-                        chunk_size = max_length - len(header) if not parts else max_length
-                        chunk = remaining[:chunk_size]
-                        parts.append(header + chunk if not parts else chunk)
-                        remaining = remaining[chunk_size:]
-                        header = ""  # Заголовок только в первой части
-                    
-                    # Добавляем источник в последнюю часть
-                    parts[-1] += f"\n\n{news['source']}\n{news['url']}"
-                    
-                    # Отправляем все части
-                    for i, part in enumerate(parts):
-                        await context.bot.send_message(
-                            chat_id=query.from_user.id,
-                            text=f"[Часть {i+1}/{len(parts)}]\n\n{part}" if len(parts) > 1 else part,
-                            disable_web_page_preview=True,
-                            disable_notification=True
-                        )
-                        await asyncio.sleep(0.5)  # Небольшая задержка между частями
-                
-            except Exception as e:
-                logger.error(f"Error fetching full article: {e}")
-                # Fallback - отправляем хотя бы заголовок и ссылку
-                await context.bot.send_message(
-                    chat_id=query.from_user.id,
-                    text=f"{news['title']}\n\n{news['source']}\n{news['url']}\n\n⚠️ Не удалось загрузить полный текст. Перейдите по ссылке.",
-                    disable_web_page_preview=False,
-                    disable_notification=True
-                )
-                await query.answer("⚠️ Отправлена ссылка на статью", show_alert=False)
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="ИИ временно недоступен. Попробуйте позже.",
+                        disable_web_page_preview=True,
+                        disable_notification=True
+                    )
+                return
+
+            await query.answer("❌ Неизвестная команда", show_alert=False)
     
+    async def _summarize_with_deepseek(self, text: str, title: str) -> tuple[str | None, int]:
+        """
+        Call DeepSeek API to summarize news.
+        
+        Args:
+            text: Article text to summarize
+            title: Article title
+            
+        Returns:
+            Summary string or None if error
+        """
+        try:
+            summary, tokens = await self.deepseek_client.summarize(title=title, text=text)
+            if summary:
+                logger.debug(f"DeepSeek summary created: {summary[:50]}...")
+            return summary, tokens
+        except Exception as e:
+            logger.error(f"DeepSeek error: {e}")
+            return None, 0
+
     async def _send_to_admins(self, message: str, keyboard: InlineKeyboardMarkup, news_id: int):
         """Отправляет новость всем админам в личные сообщения"""
         for admin_id in ADMIN_IDS:
@@ -288,14 +325,15 @@ class NewsBot:
                     continue
                 
                 # Попытка атомарно зарегистрировать новость в БД
-                inserted = self.db.add_news(
+                news_id = self.db.add_news(
                     url=news['url'],
                     title=news.get('title', ''),
                     source=news.get('source', ''),
-                    category=news.get('category', '')
+                    category=news.get('category', ''),
+                    lead_text=news.get('text', '') or ''
                 )
 
-                if not inserted:
+                if not news_id:
                     logger.debug(f"Skipping duplicate URL: {news.get('url')}")
                     continue
 
@@ -309,23 +347,25 @@ class NewsBot:
                     category=category_emoji
                 )
                 
-                # Сохраняем в кэш для COPY кнопки (URL для получения полного текста)
-                self.news_cache[published_count] = {
+                # Сохраняем в кэш для ИИ кнопки
+                self.news_cache[news_id] = {
                     'title': news.get('title', 'No title'),
+                    'lead_text': news.get('text', ''),
                     'url': news.get('url', ''),
                     'source': news.get('source', 'Unknown'),
+                    'category': news.get('category', 'russia')
                 }
 
-                # Создаем кнопку COPY
+                # Создаем кнопку AI пересказа
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📋 COPY", callback_data="copy_" + str(published_count))]
+                    [InlineKeyboardButton("ИИ", callback_data=f"ai:{news_id}")]
                 ])
 
                 try:
                     # Debug: логируем без реального токена/URL
                     logger.debug(f"Sending message (chat_id hidden)")
                     # Публикуем в канал
-                    await self.application.bot.send_message(
+                    sent = await self.application.bot.send_message(
                         chat_id=TELEGRAM_CHANNEL_ID,
                         text=message,
                         parse_mode=ParseMode.MARKDOWN,
@@ -333,11 +373,15 @@ class NewsBot:
                         disable_web_page_preview=True
                     )
 
+                    # Сохраняем message_id для связи с news_id
+                    if sent and hasattr(sent, 'message_id'):
+                        self.db.set_telegram_message_id(news_id, sent.message_id)
+
                     published_count += 1
                     logger.info(f"Published: {news['title'][:50]}")
                     
-                    # Отправляем админам в личку с кнопкой "Копировать"
-                    await self._send_to_admins(message, keyboard, published_count - 1)
+                    # Отправляем админам в личку с кнопкой "ИИ"
+                    await self._send_to_admins(message, keyboard, news_id)
 
                     # Небольшая задержка между публикациями
                     await asyncio.sleep(1)
@@ -360,9 +404,9 @@ class NewsBot:
     def _get_category_emoji(self, category: str) -> str:
         """Возвращает категорию с эмодзи и хештегом"""
         categories = {
-            'world': '🌍 #Мир',
-            'russia': '🇷🇺 #Россия',
-            'moscow_region': '🏛️ #Подмосковье',
+            'world': '#Мир',
+            'russia': '#Россия',
+            'moscow_region': '#Подмосковье',
         }
         return categories.get(category, 'Новости')
     

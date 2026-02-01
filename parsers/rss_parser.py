@@ -7,7 +7,7 @@ import asyncio
 from typing import List, Dict
 from datetime import datetime
 from net.http_client import get_http_client
-from utils.text_cleaner import clean_html, extract_first_paragraph, truncate_text
+from utils.lead_extractor import extract_lead_from_rss, extract_lead_from_html
 
 logger = logging.getLogger(__name__)
 
@@ -63,23 +63,21 @@ class RSSParser:
             
             # Обрабатываем каждую запись
             for entry in feed.entries[:10]:  # Берём до 10 последних
+                lead = extract_lead_from_rss(entry, max_len=800)
                 news_item = {
                     'title': entry.get('title', 'No title'),
                     'url': entry.get('link', ''),
-                    'text': entry.get('summary', '') or entry.get('description', ''),
+                    'text': lead,
                     'source': source_name,
                     'published_at': self._parse_date(entry),
                 }
                 
                 if news_item['url']:  # Только если есть ссылка
                     # Если в RSS нет текста или он слишком короткий — пробуем получить абзац со страницы
-                    text_candidate = clean_html(news_item.get('text', '') or '')
-                    if not text_candidate or len(text_candidate) < 40:
+                    if not news_item.get('text') or len(news_item['text']) < 40:
                         preview = await self._fetch_article_preview(news_item['url'])
                         if preview:
                             news_item['text'] = preview
-                    else:
-                        news_item['text'] = truncate_text(text_candidate, max_length=400)
                     news_items.append(news_item)
             
             logger.info(f"Parsed {len(news_items)} items from {source_name} RSS")
@@ -108,10 +106,9 @@ class RSSParser:
         try:
             http_client = await get_http_client()
             response = await http_client.get(url, retries=1)
-            text = clean_html(response.text)
-            paragraph = extract_first_paragraph(text)
-            if paragraph:
-                return truncate_text(paragraph, max_length=400)
+            lead = extract_lead_from_html(response.text, max_len=800)
+            if lead:
+                return lead
         except Exception as e:
             logger.debug(f"Failed to fetch article preview from {url}: {e}")
         return ""

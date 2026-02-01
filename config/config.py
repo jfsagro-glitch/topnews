@@ -104,3 +104,11 @@ CLOSED_SOURCES = {
         'url': 'https://terminal.mosreg.ru/info-units',
     }
 }
+
+# DeepSeek API Configuration
+DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')
+DEEPSEEK_API_ENDPOINT = 'https://api.deepseek.com/v1/chat/completions'
+AI_SUMMARY_TIMEOUT = 10  # seconds
+AI_SUMMARY_MAX_REQUESTS_PER_MINUTE = 3  # Per user per minute
+CACHE_EXPIRY_HOURS = 1  # Summary cache TTL
+DEEPSEEK_COST_PER_1K_TOKENS_USD = float(os.getenv('DEEPSEEK_COST_PER_1K_TOKENS_USD', '0.0001'))
