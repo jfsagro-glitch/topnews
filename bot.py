@@ -26,6 +26,7 @@ class NewsBot:
         self.collector = SourceCollector()
         self.is_running = True
         self.is_paused = False
+        self.collection_lock = asyncio.Lock()  # Prevent concurrent collection cycles
     
     def create_application(self) -> Application:
         """Создает и конфигурирует Telegram Application"""
@@ -125,6 +126,18 @@ class NewsBot:
             logger.info("Bot is paused, skipping collection")
             return 0
         
+        # Prevent concurrent collection cycles
+        if self.collection_lock.locked():
+            logger.info("Collection already in progress, skipping")
+            return 0
+        
+        async with self.collection_lock:
+            return await self._do_collect_and_publish()
+    
+    async def _do_collect_and_publish(self) -> int:
+        """
+        Internal method: performs the actual collection and publishing
+        """
         try:
             # Собираем новости
             logger.info("Starting news collection...")
@@ -161,8 +174,8 @@ class NewsBot:
                 ])
 
                 try:
-                    # Debug: логируем chat_id перед отправкой (без токена)
-                    logger.debug(f"Sending message to chat_id={TELEGRAM_CHANNEL_ID}")
+                    # Debug: логируем без реального токена/URL
+                    logger.debug(f"Sending message (chat_id hidden)")
                     # Публикуем в канал
                     await self.application.bot.send_message(
                         chat_id=TELEGRAM_CHANNEL_ID,
@@ -179,7 +192,7 @@ class NewsBot:
                     await asyncio.sleep(1)
 
                 except Exception as e:
-                    logger.error(f"Error publishing news to chat_id={TELEGRAM_CHANNEL_ID}: {e} | url={news.get('url')}")
+                    logger.error(f"Error publishing news: {type(e).__name__} (URL hidden)")
                     # Откатываем запись в БД, чтобы можно было попытаться снова
                     try:
                         self.db.remove_news_by_url(news['url'])

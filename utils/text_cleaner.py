@@ -101,6 +101,13 @@ def format_telegram_message(title: str, text: str, source_name: str,
     """
     Форматирует новость в сообщение для Telegram
     """
+    # Фильтруем явные команды и URLs
+    if not title or len(title) < 10:
+        return ""  # Слишком короткий заголовок (вероятно команда)
+    
+    if title.startswith("/"):
+        return ""  # Похоже на команду
+    
     # Очищаем текст
     text = clean_html(text) if text else ""
     paragraph = extract_first_paragraph(text)

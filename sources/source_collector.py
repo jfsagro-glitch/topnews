@@ -20,15 +20,15 @@ class SourceCollector:
         
         # Настройки парсеров для конкретных источников
         self.rss_sources = {
-            'https://ria.ru/': 'РИА Новости',
-            'https://lenta.ru/': 'Лента.ру',
-            'https://www.gazeta.ru/': 'Газета.ру',
-            'https://tass.ru/': 'ТАСС',
-            'https://rg.ru/': 'Российская газета',
-            'https://iz.ru/': 'Известия',
-            'https://russian.rt.com/': 'RT',
-            'https://www.rbc.ru/': 'РБК',
-            'https://www.kommersant.ru/': 'Коммерсантъ',
+            'https://ria.ru/export/rss2/archive/index.xml': 'РИА Новости',
+            'https://lenta.ru/rss/': 'Лента.ру',
+            'https://www.gazeta.ru/rss/': 'Газета.ру',
+            'https://tass.ru/rss/index.xml': 'ТАСС',
+            'https://rg.ru/xml/': 'Российская газета',
+            'https://iz.ru/rss.xml': 'Известия',
+            'https://russian.rt.com/rss/': 'RT',
+            'https://www.rbc.ru/v10/static/rss/rbc_news.rss': 'РБК',
+            'https://rss.kommersant.ru/K40/': 'Коммерсантъ',
         }
         
         self.html_sources = {

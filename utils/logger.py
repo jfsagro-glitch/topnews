@@ -7,10 +7,14 @@ from config.config import LOG_LEVEL, LOG_FILE
 
 
 def setup_logger():
-    """Настраивает логирование"""
+    """Настраивает логирование (один раз)"""
     os.makedirs(os.path.dirname(LOG_FILE) or '.', exist_ok=True)
     
     logger = logging.getLogger()
+    # Prevent duplicate handlers
+    if logger.handlers:
+        return logger
+    
     logger.setLevel(LOG_LEVEL)
     
     # Формат логов
