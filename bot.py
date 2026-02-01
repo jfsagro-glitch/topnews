@@ -138,9 +138,7 @@ class NewsBot:
             f"Расчетная стоимость: ${estimated_cost:.4f}\n\n"
             f"📝 Пересказы: {ai_usage['summarize_requests']} запр., {ai_usage['summarize_tokens']:,} токенов\n"
             f"🏷️ Категории: {ai_usage['category_requests']} запр., {ai_usage['category_tokens']:,} токенов\n"
-            f"✨ Очистка текста: {ai_usage['text_clean_requests']} запр., {ai_usage['text_clean_tokens']:,} токенов\n\n"
-            f"💡 Данные обновляются автоматически при каждом API запросе\n"
-            f"⚠️ Если есть расхождение с DeepSeek - используйте /update_stats"
+            f"✨ Очистка текста: {ai_usage['text_clean_requests']} запр., {ai_usage['text_clean_tokens']:,} токенов"
         )
         await update.message.reply_text(status_text)
     
