@@ -1,0 +1,299 @@
+# API Сбора Новостей - Архитектура
+
+## 🏗️ Общая архитектура
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Telegram Bot                             │
+│  (telegram bot API, команды, кнопки, управление)           │
+└──────────────────┬──────────────────────────────────────────┘
+                   │
+         ┌─────────┴──────────┬──────────────────┐
+         │                    │                  │
+    ┌────▼────┐        ┌─────▼──────┐    ┌─────▼───────┐
+    │ Command │        │  Periodic  │    │  Collector  │
+    │ Handler │        │ Task (2m)  │    │   Engine    │
+    └────┬────┘        └─────┬──────┘    └─────┬───────┘
+         │                   │                  │
+         └───────────────────┼──────────────────┘
+                             │
+                    ┌────────▼────────┐
+                    │  Source          │
+                    │ Collector        │
+                    │ (Async Parallel) │
+                    └────────┬────────┘
+         ┌──────────┬────────┼────────┬──────────┐
+         │          │        │        │          │
+    ┌────▼──┐ ┌────▼──┐ ┌───▼────┐ ┌──▼──┐ ┌───▼────┐
+    │  RSS  │ │ HTML  │ │Telegram│ │Auth│ │Others │
+    │Parser │ │Parser │ │ Source │ │Src │ │        │
+    └────┬──┘ └────┬──┘ └───┬────┘ └──┬──┘ └───┬────┘
+         │        │        │       │      │
+         └────────┼────────┼───────┼──────┘
+                  │        │       │
+              [HTTP Requests / API Calls]
+                  │        │       │
+         ┌────────▼────────▼───────▼────────┐
+         │   News Sources                    │
+         │ (Websites, RSS, Telegram, APIs)  │
+         └────────┬────────────────────────┘
+                  │
+         ┌────────▼──────────┐
+         │  Text Processing  │
+         │  & Cleaning       │
+         │  (Async)          │
+         └────────┬──────────┘
+                  │
+         ┌────────▼──────────┐
+         │  Deduplication    │
+         │  (Database Check) │
+         └────────┬──────────┘
+                  │
+         ┌────────▼──────────┐
+         │  Telegram Channel │
+         │  Publisher        │
+         └────────┬──────────┘
+                  │
+         ┌────────▼──────────┐
+         │  Database         │
+         │  (SQLite)         │
+         └───────────────────┘
+```
+
+## 🔄 Жизненный цикл новости
+
+```
+1. COLLECTION PHASE
+   ├─ Запуск периодического сборщика (каждые 2 минуты)
+   ├─ Асинхронный запрос ко всем источникам параллельно
+   └─ Получение массива новостей
+
+2. AGGREGATION PHASE
+   ├─ Объединение результатов из разных источников
+   ├─ Удаление дубликатов на уровне результатов
+   └─ Сортировка по времени публикации
+
+3. PROCESSING PHASE
+   ├─ Очистка HTML и форматирование текста
+   ├─ Извлечение первого абзаца
+   ├─ Определение категории
+   └─ Создание Telegram сообщения
+
+4. DEDUPLICATION PHASE
+   ├─ Проверка URL в БД
+   ├─ Пропуск если уже публиковалась
+   └─ Разрешение повторов для обновлений (новый текст/ссылка)
+
+5. PUBLISHING PHASE
+   ├─ Отправка в Telegram канал
+   ├─ Добавление inline кнопок (COPY, EDIT)
+   ├─ Форматирование сообщения
+   └─ Логирование ошибок
+
+6. STORAGE PHASE
+   ├─ Сохранение в БД (URL, заголовок, источник, дата)
+   └─ Обновление статистики
+```
+
+## 📊 Поток данных
+
+### RSS Parser
+```
+RSS URL → feedparser → News Item
+         {
+             title: str,
+             url: str,
+             text: str,
+             source: str,
+             published_at: datetime,
+             category: str
+         }
+```
+
+### HTML Parser
+```
+HTML URL → BeautifulSoup → News Item
+        → Search articles
+        → Extract title
+        → Extract link
+        → Extract text
+```
+
+### Text Cleaner
+```
+Raw HTML/Text → Clean HTML → Extract paragraph → Truncate
+     ↓
+Format for Telegram:
+**Title**
+
+Paragraph text...
+
+Source: Name
+URL
+
+#Category
+```
+
+## 🗄️ Структура базы данных
+
+```sql
+CREATE TABLE published_news (
+    id INTEGER PRIMARY KEY,
+    url TEXT UNIQUE NOT NULL,  -- Ключ дедупликации
+    title TEXT NOT NULL,
+    source TEXT NOT NULL,      -- Источник (РИА, Лента и т.д.)
+    category TEXT NOT NULL,    -- Мир, Россия, Подмосковье
+    published_at TIMESTAMP     -- Время опубликации
+);
+
+Индексы:
+- url (UNIQUE) - для быстрой проверки дубликатов
+- published_at - для сортировки
+- source - для фильтрации по источнику
+```
+
+## ⚙️ Асинхронная архитектура
+
+```python
+# Все сборщики работают параллельно
+tasks = [
+    collect_from_rss('url1'),
+    collect_from_rss('url2'),
+    collect_from_html('url3'),
+    collect_from_html('url4'),
+    collect_from_telegram('channel1'),
+    ...
+]
+
+results = await asyncio.gather(*tasks, return_exceptions=True)
+```
+
+**Преимущества:**
+- Скорость: не ждем ответа от каждого источника
+- Надежность: ошибка одного источника не блокирует других
+- Масштабируемость: легко добавлять новые источники
+
+## 🎯 Категории и маршрутизация
+
+```
+URL → Определение категории → Выбор хештега → Публикация
+
+Правила:
+├─ Если домен в SOURCES_CONFIG → используем категорию оттуда
+├─ Если URL содержит "moscow" → #Подмосковье
+└─ По умолчанию → #Россия
+```
+
+## 🔐 Обработка ошибок
+
+```python
+try:
+    # Сбор новостей
+    news = await collect()
+except asyncio.TimeoutError:
+    # Источник слишком долго отвечает
+    logger.warning(f"Timeout: {source}")
+    continue  # Идем дальше
+except Exception as e:
+    # Любая другая ошибка
+    logger.error(f"Error: {e}")
+    return []  # Возвращаем пусто для этого источника
+
+# Бот продолжит работу с другими источниками
+```
+
+## 📈 Масштабируемость
+
+### Добавление нового RSS источника
+```python
+# В config.py
+'SOURCES_CONFIG': {
+    'russia': {
+        'sources': [
+            'https://new-source.ru/rss',  # Просто добавляем
+        ]
+    }
+}
+# Done! Автоматически подключится
+```
+
+### Добавление HTML парсера для сайта
+```python
+# В sources/source_collector.py
+self.html_sources = {
+    'https://new-website.ru/news': 'New Source',  # Добавляем
+}
+# HTML Parser попробует найти новости автоматически
+```
+
+### Пользовательский парсер
+```python
+# 1. Создаем новый модуль в parsers/
+# 2. Добавляем в source_collector.py
+# 3. Вызываем из collect_all()
+```
+
+## 🧪 Тестирование
+
+### Единичный источник
+```python
+from parsers.rss_parser import RSSParser
+parser = RSSParser()
+news = await parser.parse('https://ria.ru/rss', 'РИА')
+```
+
+### Все источники
+```python
+from sources.source_collector import SourceCollector
+collector = SourceCollector()
+all_news = await collector.collect_all()
+```
+
+### Публикация
+```python
+from bot import NewsBot
+bot = NewsBot()
+await bot.collect_and_publish()
+```
+
+## 🎓 Расширение функционала
+
+### 1. Добавить фильтрацию по ключевым словам
+```python
+def filter_by_keywords(news, keywords):
+    return [n for n in news if any(k in n['title'] for k in keywords)]
+```
+
+### 2. Добавить машинный перевод
+```python
+from google.translate import Translator
+def translate_news(news, target_language='en'):
+    # ...
+```
+
+### 3. Добавить AI-переписывание (EDIT кнопка)
+```python
+from openai import OpenAI
+def rewrite_for_radio(text):
+    # Переписать в стиль радио-новостей
+```
+
+### 4. Добавить веб-панель
+```
+Flask/FastAPI app:
+/api/news - получить новости
+/api/sources - управление источниками
+/api/status - статус бота
+```
+
+## 📋 Чеклист развертывания
+
+- [ ] Установлены все зависимости
+- [ ] Получен и настроен TELEGRAM_TOKEN
+- [ ] Создан канал и получен CHANNEL_ID
+- [ ] Заполнен файл .env
+- [ ] Запущен тест `/sync`
+- [ ] Проверены логи в logs/bot.log
+- [ ] Настроен автоматический запуск (если нужен)
+- [ ] Настроены интервалы проверки
+- [ ] Добавлены нужные источники новостей

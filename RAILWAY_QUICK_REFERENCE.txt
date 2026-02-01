@@ -1,0 +1,81 @@
+🚀 RAILWAY DEPLOYMENT - QUICK START
+════════════════════════════════════════════════════════════════
+
+Репозиторий: https://github.com/jfsagro-glitch/topnews
+Хостинг: Railway.app
+
+════════════════════════════════════════════════════════════════
+
+⚡ САМЫЙ БЫСТРЫЙ СПОСОБ (3 МИНУТЫ)
+
+Windows:
+  deploy_to_railway.bat
+
+Linux/Mac:
+  bash deploy_to_railway.sh
+
+Что будет:
+  1. Запросит TELEGRAM_TOKEN
+  2. Запросит TELEGRAM_CHANNEL_ID
+  3. Проверит готовность
+  4. Запушит в GitHub
+  5. Выведет инструкции для Railway.app
+  6. Готово! ✅
+
+════════════════════════════════════════════════════════════════
+
+📋 ЧТО НУЖНО ПОЛУЧИТЬ
+
+TELEGRAM_TOKEN:
+  Telegram → @BotFather → /newbot → скопировать токен
+  Пример: 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+
+TELEGRAM_CHANNEL_ID:
+  1. Создать приватный канал
+  2. Добавить бота администратором
+  3. Добавить @userinfobot
+  4. @userinfobot /info
+  5. Скопировать Chat ID
+  Пример: -1001234567890
+
+════════════════════════════════════════════════════════════════
+
+📚 ДОКУМЕНТАЦИЯ
+
+Основной гайд:     00_START_HERE_RAILWAY.md
+Быстрый старт:     RAILWAY_QUICKSTART.md
+Полный гайд:       RAILWAY_README.md
+Индекс документов: RAILWAY_DOCS_INDEX.md
+
+════════════════════════════════════════════════════════════════
+
+🎯 ПОСЛЕ РАЗВЕРТЫВАНИЯ
+
+В Railway Dashboard:
+  ✅ Status: Running
+  ✅ Logs: "Bot started successfully"
+
+В Telegram боту:
+  /help     - список команд
+  /status   - статистика
+
+В вашем канале:
+  📰 Новости каждые 2 минуты
+
+════════════════════════════════════════════════════════════════
+
+🆘 ЕСЛИ ЧТО-ТО НЕ РАБОТАЕТ
+
+1. Проверьте переменные окружения в Railway Dashboard
+2. Посмотрите логи: Railway Dashboard → Logs
+3. Убедитесь что бот администратор в канале
+4. Смотрите RAILWAY_QUICKSTART.md раздел "Troubleshooting"
+
+════════════════════════════════════════════════════════════════
+
+✅ ГОТОВЫ?
+
+Запустите:  deploy_to_railway.bat (Windows)
+          или bash deploy_to_railway.sh (Mac/Linux)
+
+Готово! 🚀
