@@ -91,6 +91,17 @@ def clean_html(html_text: str) -> str:
             r'\d{2}\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4},\s+\d{2}:\d{2}\s+Актуально',
             r'сегодня в \d{2}:\d{2}\s+(Здравоохранение|Общество|Экономика)',
             r'Все темы\s+сегодня в \d{2}:\d{2}',
+            # Временные метки и счётчики
+            r'Сегодня \d{2}:\d{2}',
+            r'\d{2}\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4},\s+\d{2}:\d{2}\s+(Общество|Экономика|Здравоохранение|Актуально)',
+            r'\s+0\s+0\s+0\s+',  # Счётчики лайков/просмотров
+            r'\s+\d+\s+\d+\s+\d+\s+Фото:',
+            # Фото и пресс-службы
+            r'Фото:\s*Пресс-служба',
+            r'Фото:\s*[А-Яа-я\s-]+администрации',
+            r'Пресс-служба администрации',
+            # Обрывки предложений в конце
+            r'[а-я]+:\s*[а-я\s]+$',  # "домам: удар в Сартане"
         ]
         for pattern in junk_patterns:
             text = re.sub(pattern, '', text, flags=re.IGNORECASE)
@@ -115,6 +126,10 @@ def extract_first_paragraph(text: str, min_length: int = 30) -> str:
     # Убираем лишние пробелы
     text = text.strip()
     
+    # Убираем неполные предложения в конце (обрывки)
+    # Если текст заканчивается на : или обрывается на предлог
+    text = re.sub(r'[а-яА-Я]+:\s*[а-яА-Я\s]+$', '', text)
+    
     # Разбиваем на предложения по точке
     sentences = [s.strip() for s in text.split('.') if s.strip()]
     
@@ -124,6 +139,9 @@ def extract_first_paragraph(text: str, min_length: int = 30) -> str:
     
     for sentence in sentences:
         if not sentence:
+            continue
+        # Пропускаем слишком короткие фрагменты (обычно это мусор)
+        if len(sentence) < 20:
             continue
         if current_length > 150:  # Остановимся на разумной длине
             break
@@ -210,6 +228,15 @@ def format_telegram_message(title: str, text: str, source_name: str,
     
     # Очищаем текст
     text = clean_html(text) if text else ""
+    
+    # Убираем дублирование заголовка в тексте
+    normalized_title = ' '.join(title.lower().split())
+    normalized_text = ' '.join(text.lower().split())
+    if normalized_text.startswith(normalized_title):
+        # Удаляем заголовок из начала текста
+        text = text[len(title):].strip()
+        text = text.lstrip('|:.-').strip()
+    
     paragraph = extract_first_paragraph(text)
     paragraph = truncate_text(paragraph, max_length=400)  # Компактнее
     
