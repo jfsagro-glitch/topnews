@@ -37,10 +37,20 @@ async def extract_article_text(html_content: str, max_length: int = 5000) -> Opt
                 text = trafilatura.extract(
                     html_content,
                     include_comments=False,
+                    include_tables=False,
+                    include_images=False,
+                    include_links=False,
                     with_metadata=False,
-                    favor_precision=True
+                    favor_precision=True,
+                    favor_recall=False,
+                    no_fallback=False
                 )
                 if text:
+                    # Filter out navigation lists and short fragments
+                    lines = [l.strip() for l in text.split('\n') if l.strip()]
+                    # Remove lines that look like navigation (short lines with many links)
+                    lines = [l for l in lines if len(l) > 30 or not any(keyword in l.lower() for keyword in ['новости', 'политика', 'эксклюзив', 'выберите город', 'поиск'])]
+                    text = '\n'.join(lines)
                     logger.debug(f"trafilatura extracted {len(text)} chars")
             except Exception as e:
                 logger.debug(f"trafilatura extraction failed: {e}")
@@ -96,7 +106,23 @@ def _extract_simple(html_content: str) -> Optional[str]:
         # Remove very short lines that are likely noise
         lines = [line for line in lines if len(line) > 10 or line.isupper()]
         
-        return '\n'.join(lines) if lines else None
+        # Filter out navigation/menu keywords
+        nav_keywords = ['новости', 'политика', 'эксклюзив', 'выберите город', 'поиск', 'чтиво', 
+                       'жесткое заявление', 'дело эпштейна', 'новый удар', 'соцсети в ярости',
+                       'опасные пилюли', 'правда о полисе', 'накачали и бросили', 'хотели мощность',
+                       'были две бутылки']
+        filtered_lines = []
+        for line in lines:
+            # Skip if line is too short or looks like navigation
+            if len(line) < 30:
+                continue
+            # Skip if contains multiple navigation keywords
+            keyword_count = sum(1 for kw in nav_keywords if kw in line.lower())
+            if keyword_count >= 2:
+                continue
+            filtered_lines.append(line)
+        
+        return '\n'.join(filtered_lines) if filtered_lines else None
         
     except Exception as e:
         logger.warning(f"Simple extraction failed: {e}")
