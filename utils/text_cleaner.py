@@ -142,11 +142,24 @@ def format_telegram_message(title: str, text: str, source_name: str,
     Оптимизировано для отображения в канале без scroll
     """
     # Фильтруем явные команды и URLs
-    if not title or len(title) < 10:
-        return ""  # Слишком короткий заголовок (вероятно команда)
+    if not title or len(title) < 15:  # Минимум 15 символов
+        return ""
     
     if title.startswith("/"):
         return ""  # Похоже на команду
+    
+    # Список UI фраз которые должны быть отфильтрованы
+    noise_phrases = [
+        'все темы', 'выберите', 'категория', 'подписка',
+        'меню', 'навигация', 'войти', 'зарегистр', 'реклама',
+        'больше', 'ещё', 'далее', 'читать', 'свернуть', 'развернуть',
+        'поделиться', 'ошибка', 'загруж',
+    ]
+    
+    title_lower = title.lower()
+    for phrase in noise_phrases:
+        if phrase in title_lower:
+            return ""  # Похоже на UI элемент
     
     # Очищаем текст
     text = clean_html(text) if text else ""

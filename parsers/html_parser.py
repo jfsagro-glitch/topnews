@@ -81,7 +81,32 @@ class HTMLParser:
             text_elem = elem.find(['p', 'span'])
             text = text_elem.get_text(strip=True) if text_elem else ""
             
+            # Фильтруем UI элементы и бесполезный контент
             if not title or not url:
+                return None
+            
+            # Список "шумовых" фраз которые указывают на UI элементы, а не на новости
+            noise_phrases = [
+                'все темы', 'выберите', 'категория', 'подписка',
+                'меню', 'навигация', 'войти', 'зарегистр', 'реклама',
+                'больше', 'ещё', 'далее', 'читать', 'свернуть', 'развернуть',
+                'поделиться', 'ошибка', 'загруж', 'filter', 'sort', 'view',
+            ]
+            
+            title_lower = title.lower()
+            for phrase in noise_phrases:
+                if phrase in title_lower:
+                    logger.debug(f"Filtered noise phrase: {title}")
+                    return None
+            
+            # Минимальная длина заголовка (не менее 15 символов)
+            if len(title) < 15:
+                logger.debug(f"Title too short: {title}")
+                return None
+            
+            # Проверяем что это не просто одно слово
+            if len(title.split()) < 3:
+                logger.debug(f"Title too short (word count): {title}")
                 return None
             
             return {
