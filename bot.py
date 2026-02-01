@@ -160,13 +160,18 @@ class NewsBot:
                     continue
 
                 # Формируем сообщение
+                category_emoji = self._get_category_emoji(news.get('category', 'russia'))
                 message = format_telegram_message(
                     title=news.get('title', 'No title'),
                     text=news.get('text', ''),
                     source_name=news.get('source', 'Unknown'),
                     source_url=news.get('url', ''),
-                    category=f"#{self._get_category_emoji(news.get('category', 'russia'))}"
+                    category=category_emoji
                 )
+                
+                # Добавляем URL в конце сообщения
+                if message and news.get('url'):
+                    message += f"\n[читать далее]({news.get('url')})"
 
                 # Создаем кнопку COPY
                 keyboard = InlineKeyboardMarkup([

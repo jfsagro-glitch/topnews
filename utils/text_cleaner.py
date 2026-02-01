@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 def clean_html(html_text: str) -> str:
     """
     Очищает HTML от тегов и лишних элементов
+    Убирает множественные пробелы и переносы
     """
     if not html_text:
         return ""
@@ -48,7 +49,7 @@ def clean_html(html_text: str) -> str:
         text = unescape(text)
         
         # Очищаем от множественных пробелов и переводов строк
-        text = re.sub(r'\s+', ' ', text)
+        text = re.sub(r'\s+', ' ', text)  # Множественные пробелы → один
         text = text.strip()
         
         return text
@@ -57,25 +58,33 @@ def clean_html(html_text: str) -> str:
         return html_text
 
 
-def extract_first_paragraph(text: str, min_length: int = 50) -> str:
+def extract_first_paragraph(text: str, min_length: int = 30) -> str:
     """
-    Извлекает первый осмысленный абзац
+    Извлекает первый осмысленный абзац (компактный)
     """
     if not text:
         return ""
     
-    # Разбиваем на параграфы
-    paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
+    # Убираем лишние пробелы
+    text = text.strip()
     
-    for paragraph in paragraphs:
-        if len(paragraph) >= min_length:
-            return paragraph
+    # Разбиваем на предложения по точке
+    sentences = [s.strip() for s in text.split('.') if s.strip()]
     
-    # Если нет полноценных параграфов, берём первый с нужной длиной
-    for paragraph in text.split('.'):
-        cleaned = paragraph.strip()
-        if len(cleaned) >= min_length:
-            return cleaned + '.'
+    # Собираем предложения пока не достигнем нормальной длины (150-200 символов)
+    result = []
+    current_length = 0
+    
+    for sentence in sentences:
+        if not sentence:
+            continue
+        if current_length > 150:  # Остановимся на разумной длине
+            break
+        result.append(sentence)
+        current_length += len(sentence) + 1
+    
+    if result:
+        return '. '.join(result) + '.' if result else text[:200]
     
     return text[:200] if len(text) > 200 else text
 
@@ -129,7 +138,8 @@ def truncate_for_copy(text: str, max_length: int = 3000) -> str:
 def format_telegram_message(title: str, text: str, source_name: str, 
                            source_url: str, category: str) -> str:
     """
-    Форматирует новость в сообщение для Telegram (1000 char hard limit)
+    Форматирует новость в сообщение для Telegram (компактное, красивое)
+    Оптимизировано для отображения в канале без scroll
     """
     # Фильтруем явные команды и URLs
     if not title or len(title) < 10:
@@ -141,20 +151,25 @@ def format_telegram_message(title: str, text: str, source_name: str,
     # Очищаем текст
     text = clean_html(text) if text else ""
     paragraph = extract_first_paragraph(text)
-    paragraph = truncate_text(paragraph)
+    paragraph = truncate_text(paragraph, max_length=400)  # Компактнее
     
     # Экранируем спецсимволы для Markdown
     title = escape_markdown(title)
     paragraph = escape_markdown(paragraph)
     source_name = escape_markdown(source_name)
     
-    # Формируем сообщение
-    message = f"*{title}*\n\n"
-    message += f"{paragraph}\n\n"
-    message += f"Источник: {source_name}\n{source_url}\n\n"
-    message += category
+    # Компактное форматирование
+    message = f"*{title}*\n"
     
-    # Hard limit for telegram (4096 max, but use 1000 for safety)
+    if paragraph:
+        # Убираем лишние пробелы
+        paragraph = paragraph.strip()
+        message += f"\n{paragraph}\n"
+    
+    # Inline информация о источнике и категории (одна строка)
+    message += f"\n_{source_name}_ • {category}"
+    
+    # Hard limit for telegram (1000 chars)
     message = truncate_for_telegram(message, max_length=1000)
     
     return message
