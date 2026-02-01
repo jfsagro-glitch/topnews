@@ -62,7 +62,7 @@ class DeepSeekClient:
             f"Env var length: {len(env_key_at_init) if env_key_at_init else 0}"
         )
 
-    async def summarize(self, title: str, text: str) -> tuple[Optional[str], int]:
+    async def summarize(self, title: str, text: str) -> tuple[Optional[str], dict]:
         # Always try to read API key from environment first (for Railway support)
         # Fall back to instance variable if set
         env_key = os.getenv('DEEPSEEK_API_KEY')
