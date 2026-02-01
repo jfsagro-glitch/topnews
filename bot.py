@@ -220,6 +220,11 @@ class NewsBot:
                     logger.debug(f"Skipping news (category filter): {news.get('title')[:50]}")
                     continue
                 
+                # Проверяем дубликат по заголовку (защита от одной новости на разных источниках)
+                if self.db.is_similar_title_published(news.get('title', '')):
+                    logger.debug(f"Skipping similar title: {news.get('title')[:50]}")
+                    continue
+                
                 # Попытка атомарно зарегистрировать новость в БД
                 inserted = self.db.add_news(
                     url=news['url'],
@@ -229,7 +234,7 @@ class NewsBot:
                 )
 
                 if not inserted:
-                    logger.debug(f"Skipping duplicate: {news.get('url')}")
+                    logger.debug(f"Skipping duplicate URL: {news.get('url')}")
                     continue
 
                 # Формируем сообщение

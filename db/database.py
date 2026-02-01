@@ -44,6 +44,10 @@ class NewsDatabase:
                     published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            # Create index on title for faster duplicate checks
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_title ON published_news(title)
+            ''')
             # Table for storing RSS ETag and Last-Modified headers
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS rss_state (
@@ -148,6 +152,39 @@ class NewsDatabase:
             return result is not None
         except Exception as e:
             logger.error(f"Error checking published news: {e}")
+            return False
+    
+    def is_similar_title_published(self, title: str, threshold: float = 0.85) -> bool:
+        """Проверяет, есть ли в БД новость с похожим заголовком за последние 24 часа"""
+        try:
+            # Нормализуем заголовок: убираем лишние пробелы, переводим в нижний регистр
+            normalized_title = ' '.join(title.lower().split())
+            
+            cursor = self._conn.cursor()
+            # Получаем заголовки за последние 24 часа
+            cursor.execute('''
+                SELECT title FROM published_news 
+                WHERE published_at > datetime('now', '-1 day')
+            ''')
+            
+            for row in cursor.fetchall():
+                existing_title = ' '.join(row[0].lower().split())
+                
+                # Простая проверка на совпадение большей части заголовка
+                # Проверяем точное совпадение
+                if normalized_title == existing_title:
+                    logger.debug(f"Exact title match found: {title[:50]}")
+                    return True
+                
+                # Проверяем включение одного в другой (для случаев с префиксами/суффиксами)
+                if len(normalized_title) > 30:  # Для коротких заголовков не применяем
+                    if normalized_title in existing_title or existing_title in normalized_title:
+                        logger.debug(f"Similar title found: {title[:50]}")
+                        return True
+                        
+            return False
+        except Exception as e:
+            logger.error(f"Error checking similar titles: {e}")
             return False
     
     def get_recent_news(self, limit: int = 100) -> List[Tuple]:
