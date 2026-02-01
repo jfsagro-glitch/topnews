@@ -10,7 +10,7 @@ from typing import Optional
 
 import httpx
 
-from config.config import DEEPSEEK_API_KEY, DEEPSEEK_API_ENDPOINT, AI_SUMMARY_TIMEOUT
+from config.config import DEEPSEEK_API_ENDPOINT, AI_SUMMARY_TIMEOUT
 from utils.text_cleaner import truncate_text
 
 logger = logging.getLogger(__name__)
@@ -48,20 +48,20 @@ def _build_messages(title: str, text: str) -> list[dict]:
 
 
 class DeepSeekClient:
-    def __init__(self, api_key: str = DEEPSEEK_API_KEY, endpoint: str = DEEPSEEK_API_ENDPOINT):
-        # Store endpoint, but don't rely on api_key parameter
-        # Will read api_key from environment at request time
+    def __init__(self, api_key: str = None, endpoint: str = DEEPSEEK_API_ENDPOINT):
+        # Don't use config-time DEEPSEEK_API_KEY for parameter default
+        # It may be empty during import; we'll read from environment at request time
         self.api_key = api_key if api_key and api_key.strip() else None
         self.endpoint = endpoint
 
     async def summarize(self, title: str, text: str) -> tuple[Optional[str], int]:
         # Always try to read API key from environment first (for Railway support)
         # Fall back to instance variable if set
-        api_key = os.getenv('DEEPSEEK_API_KEY', '') or self.api_key or ''
-        api_key = api_key.strip()
+        api_key = (os.getenv('DEEPSEEK_API_KEY') or self.api_key or '').strip()
         
         if not api_key:
-            logger.warning("DeepSeek API key not configured")
+            env_val = os.getenv('DEEPSEEK_API_KEY')
+            logger.warning(f"DeepSeek API key not configured. Env set: {bool(env_val)}, Instance: {bool(self.api_key)}")
             return None, 0
 
         text = _truncate_input(text)
