@@ -123,21 +123,14 @@ class NewsBot:
                 await query.answer("❌ Кэш истёк", show_alert=False)
                 return
             
-            # Формируем полный текст без форматирования (для легкого копирования)
+            # Формируем полный текст без форматирования
             full_text = f"{news['title']}\n\n{news['text']}\n\n{news['source']}\n{news['url']}"
             
             try:
-                # Отправляем полный текст в ДМ БЕЗ уведомления (скрытно)
-                await context.bot.send_message(
-                    chat_id=query.from_user.id,
-                    text=full_text,
-                    disable_web_page_preview=True,
-                    disable_notification=True  # Отправляем тихо
-                )
-                # Только уведомление, исходное сообщение не редактируем (остается в канале)
-                await query.answer("✅ Скопировано в буфер обмена", show_alert=False)
+                # Показываем popup с полным текстом (пользователь может скопировать)
+                await query.answer(full_text, show_alert=True)
             except Exception as e:
-                logger.error(f"Error sending COPY text: {e}")
+                logger.error(f"Error showing COPY popup: {e}")
                 await query.answer(f"❌ Ошибка: {type(e).__name__}", show_alert=False)
     
     async def collect_and_publish(self) -> int:
