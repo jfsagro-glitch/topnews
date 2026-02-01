@@ -48,7 +48,7 @@ class NewsBot:
 
     # Persistent reply keyboard for chats (anchored at bottom)
     REPLY_KEYBOARD = ReplyKeyboardMarkup(
-        [['📋 COPY', '/sync', '/status', '/pause', '/resume']], resize_keyboard=True
+        [['/sync', '/status', '/pause', '/resume']], resize_keyboard=True
     )
     
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
