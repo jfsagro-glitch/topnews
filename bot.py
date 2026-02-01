@@ -62,6 +62,8 @@ class NewsBot:
         self.application.add_handler(CommandHandler("pause", self.cmd_pause))
         self.application.add_handler(CommandHandler("resume", self.cmd_resume))
         self.application.add_handler(CommandHandler("filter", self.cmd_filter))
+        self.application.add_handler(CommandHandler("sync_deepseek", self.cmd_sync_deepseek))
+        self.application.add_handler(CommandHandler("update_stats", self.cmd_update_stats))
         
         # Обработчик текстовых сообщений (эмодзи-кнопки)
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_emoji_buttons))
@@ -114,19 +116,26 @@ class NewsBot:
         """Команда /status"""
         stats = self.db.get_stats()
         ai_usage = self.db.get_ai_usage()
+        
+        # Calculate costs with correct pricing
+        input_cost = (ai_usage['total_tokens'] * 0.5) * 0.14 / 1_000_000.0  # Approximate 50% input tokens
+        output_cost = (ai_usage['total_tokens'] * 0.5) * 2.19 / 1_000_000.0  # Approximate 50% output tokens
+        estimated_cost = input_cost + output_cost
+        
         status_text = (
             f"📊 Статус бота:\n\n"
             f"Статус: {'⏸️ PAUSED' if self.is_paused else '✅ RUNNING'}\n"
             f"Всего опубликовано: {stats['total']}\n"
             f"За сегодня: {stats['today']}\n"
             f"Интервал проверки: {CHECK_INTERVAL_SECONDS} сек\n\n"
-            f"🧠 ИИ использование:\n"
+            f"🧠 ИИ использование (локальный учет):\n"
             f"Всего запросов: {ai_usage['total_requests']}\n"
             f"Всего токенов: {ai_usage['total_tokens']}\n"
-            f"Стоимость: ${ai_usage['total_cost_usd']:.4f}\n\n"
+            f"Стоимость: ${estimated_cost:.4f}\n\n"
             f"📝 Пересказы: {ai_usage['summarize_requests']} запросов, {ai_usage['summarize_tokens']} токенов\n"
             f"🏷️ Категории: {ai_usage['category_requests']} запросов, {ai_usage['category_tokens']} токенов\n"
-            f"✨ Очистка текста: {ai_usage['text_clean_requests']} запросов, {ai_usage['text_clean_tokens']} токенов"
+            f"✨ Очистка текста: {ai_usage['text_clean_requests']} запросов, {ai_usage['text_clean_tokens']} токенов\n\n"
+            f"💡 Используйте /sync_deepseek для синхронизации с реальными данными DeepSeek"
         )
         await update.message.reply_text(status_text)
     
@@ -139,6 +148,57 @@ class NewsBot:
         """Команда /resume"""
         self.is_paused = False
         await update.message.reply_text("▶️ Сбор новостей возобновлен")
+    
+    async def cmd_sync_deepseek(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /sync_deepseek - обновить статистику из реальных данных DeepSeek"""
+        await update.message.reply_text("📊 Обновляю статистику из DeepSeek API...\n\n⚠️ ВНИМАНИЕ: Введите реальные данные из DeepSeek вручную:\n\nФормат: /update_stats <requests> <tokens> <cost>\nПример: /update_stats 1331 413515 0.04")
+    
+    async def cmd_update_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /update_stats - обновить статистику вручную"""
+        try:
+            if not context.args or len(context.args) < 3:
+                await update.message.reply_text("❌ Неверный формат!\n\nИспользуйте: /update_stats <requests> <tokens> <cost>\nПример: /update_stats 1331 413515 0.04")
+                return
+            
+            requests = int(context.args[0])
+            tokens = int(context.args[1])
+            cost = float(context.args[2])
+            
+            # Get current stats
+            current = self.db.get_ai_usage()
+            
+            # Calculate difference
+            diff_requests = requests - current['total_requests']
+            diff_tokens = tokens - current['total_tokens']
+            diff_cost = cost - current['total_cost_usd']
+            
+            if diff_requests < 0 or diff_tokens < 0:
+                await update.message.reply_text("❌ Новые значения меньше текущих! Проверьте данные.")
+                return
+            
+            # Update database with difference
+            if diff_tokens > 0:
+                self.db.add_ai_usage(tokens=diff_tokens, cost_usd=diff_cost, operation_type='text_clean')
+                
+                await update.message.reply_text(
+                    f"✅ Статистика обновлена!\n\n"
+                    f"Добавлено:\n"
+                    f"📊 Запросов: +{diff_requests}\n"
+                    f"🔢 Токенов: +{diff_tokens}\n"
+                    f"💰 Стоимость: +${diff_cost:.4f}\n\n"
+                    f"Новые значения:\n"
+                    f"📊 Всего запросов: {requests}\n"
+                    f"🔢 Всего токенов: {tokens}\n"
+                    f"💰 Стоимость: ${cost:.4f}"
+                )
+            else:
+                await update.message.reply_text("✅ Статистика уже синхронизирована!")
+                
+        except ValueError:
+            await update.message.reply_text("❌ Ошибка формата! Используйте числа.\n\nПример: /update_stats 1331 413515 0.04")
+        except Exception as e:
+            logger.error(f"Error updating stats: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {e}")
     
     async def cmd_filter(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /filter"""
