@@ -212,12 +212,20 @@ class NewsBot:
 
                 cached_summary = self.db.get_cached_summary(news_id)
                 if cached_summary:
+                    # Create inline keyboard with copy button
+                    copy_button = InlineKeyboardButton(
+                        text="📋 Копировать",
+                        copy_text={"text": cached_summary}
+                    )
+                    keyboard = InlineKeyboardMarkup([[copy_button]])
+                    
                     await context.bot.send_message(
                         chat_id=user_id,
                         text=(
                             f"Пересказ сгенерирован ИИ\n\n{cached_summary}\n\n"
                             f"Источник: {news.get('source', '')}\n{news.get('url', '')}"
                         ),
+                        reply_markup=keyboard,
                         disable_web_page_preview=True,
                         disable_notification=True
                     )
@@ -237,12 +245,21 @@ class NewsBot:
                     
                     self.db.add_ai_usage(tokens=token_usage['total_tokens'], cost_usd=cost_usd)
                     self.db.save_summary(news_id, summary)
+                    
+                    # Create inline keyboard with copy button
+                    copy_button = InlineKeyboardButton(
+                        text="📋 Копировать",
+                        copy_text={"text": summary}
+                    )
+                    keyboard = InlineKeyboardMarkup([[copy_button]])
+                    
                     await context.bot.send_message(
                         chat_id=user_id,
                         text=(
                             f"Пересказ сгенерирован ИИ\n\n{summary}\n\n"
                             f"Источник: {news.get('source', '')}\n{news.get('url', '')}"
                         ),
+                        reply_markup=keyboard,
                         disable_web_page_preview=True,
                         disable_notification=True
                     )
