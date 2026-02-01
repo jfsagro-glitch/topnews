@@ -4,7 +4,7 @@
 import logging
 import time
 from net.deepseek_client import DeepSeekClient
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, CopyTextButton
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, 
     ContextTypes, ConversationHandler
@@ -240,10 +240,11 @@ class NewsBot:
 
                 cached_summary = self.db.get_cached_summary(news_id)
                 if cached_summary:
-                    # Create inline keyboard with copy button (max 4096 chars)
+                    # Send summary with copy button
                     copy_text = cached_summary[:4096] if len(cached_summary) > 4096 else cached_summary
-                    copy_button = CopyTextButton(text=copy_text)
-                    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Копировать", copy_text_button=copy_button)]])
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📋 Копировать", copy_text=copy_text)]
+                    ])
                     
                     await context.bot.send_message(
                         chat_id=user_id,
@@ -272,10 +273,11 @@ class NewsBot:
                     self.db.add_ai_usage(tokens=token_usage['total_tokens'], cost_usd=cost_usd)
                     self.db.save_summary(news_id, summary)
                     
-                    # Create inline keyboard with copy button (max 4096 chars)
+                    # Send summary with copy button
                     copy_text = summary[:4096] if len(summary) > 4096 else summary
-                    copy_button = CopyTextButton(text=copy_text)
-                    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Копировать", copy_text_button=copy_button)]])
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📋 Копировать", copy_text=copy_text)]
+                    ])
                     
                     await context.bot.send_message(
                         chat_id=user_id,
