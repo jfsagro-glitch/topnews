@@ -6,7 +6,7 @@ import time
 from net.deepseek_client import DeepSeekClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, 
+    Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters,
     ContextTypes, ConversationHandler
 )
 from telegram.constants import ParseMode
@@ -63,6 +63,9 @@ class NewsBot:
         self.application.add_handler(CommandHandler("resume", self.cmd_resume))
         self.application.add_handler(CommandHandler("filter", self.cmd_filter))
         
+        # Обработчик текстовых сообщений (эмодзи-кнопки)
+        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_emoji_buttons))
+        
         # Обработчик inline кнопок
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
         
@@ -71,7 +74,7 @@ class NewsBot:
 
     # Persistent reply keyboard for chats (anchored at bottom)
     REPLY_KEYBOARD = ReplyKeyboardMarkup(
-        [['/sync 🔄', '/status 📊', '/filter 🔍'], ['⏸️ /pause', '▶️ /resume']], resize_keyboard=True
+        [['🔄', '📊', '🔍', '⏸️', '▶️']], resize_keyboard=True
     )
     
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -135,6 +138,52 @@ class NewsBot:
         await update.message.reply_text("▶️ Сбор новостей возобновлен")
     
     async def cmd_filter(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /filter"""
+        # Создаем inline кнопки для выбора категорий
+        ai_status = "✅" if self.ai_verification_enabled else "❌"
+        keyboard = [
+            [
+                InlineKeyboardButton("#Мир", callback_data="filter_world"),
+                InlineKeyboardButton("#Россия", callback_data="filter_russia"),
+            ],
+            [
+                InlineKeyboardButton("#Москва", callback_data="filter_moscow"),
+                InlineKeyboardButton("#Подмосковье", callback_data="filter_moscow_region"),
+                InlineKeyboardButton("Все новости", callback_data="filter_all"),
+            ],
+            [
+                InlineKeyboardButton(f"AI {ai_status}", callback_data="toggle_ai"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        ai_status_text = "включена" if self.ai_verification_enabled else "отключена"
+        await update.message.reply_text(
+            "Выберите категорию для фильтрации новостей в канале:\n\n"
+            "#Мир - Новости со всего мира\n"
+            "#Россия - Новости России\n"
+            "#Москва - Новости Москвы\n"
+            "#Подмосковье - Новости Московской области\n"
+            "Все новости - Показывать все\n\n"
+            f"🤖 AI верификация: {ai_status_text}",
+            reply_markup=reply_markup
+        )
+    
+    async def handle_emoji_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик эмодзи-кнопок"""
+        text = update.message.text
+        
+        if text == '🔄':
+            await self.cmd_sync(update, context)
+        elif text == '📊':
+            await self.cmd_status(update, context)
+        elif text == '🔍':
+            await self.cmd_filter(update, context)
+        elif text == '⏸️':
+            await self.cmd_pause(update, context)
+        elif text == '▶️':
+            await self.cmd_resume(update, context)
+    
+
         """Команда /filter - выбор категорий для фильтрации"""
         # Создаем inline кнопки для выбора категорий
         ai_status = "✅" if self.ai_verification_enabled else "❌"
