@@ -183,7 +183,7 @@ class NewsBot:
         elif text == '▶️':
             await self.cmd_resume(update, context)
     
-
+    async def cmd_filter(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /filter - выбор категорий для фильтрации"""
         # Создаем inline кнопки для выбора категорий
         ai_status = "✅" if self.ai_verification_enabled else "❌"
