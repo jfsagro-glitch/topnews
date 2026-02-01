@@ -54,8 +54,8 @@ class RSSParser:
             
             content = response.text
 
-            # Парсим RSS
-            feed = feedparser.parse(content)
+            # Парсим RSS (может быть затратным - выполняем в отдельном потоке)
+            feed = await asyncio.to_thread(lambda: feedparser.parse(content))
             
             if not feed.entries:
                 logger.warning(f"No entries in RSS feed from {url}")

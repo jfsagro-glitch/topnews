@@ -22,6 +22,9 @@ class HTMLParser:
         """
         Парсит HTML страницу и пытается найти новости
         Это базовая реализация - может быть расширена для каждого сайта
+        
+        Raises:
+            httpx.HTTPStatusError: if status code is 403, 429, or other retryable codes
         """
         news_items = []
         
@@ -30,7 +33,10 @@ class HTMLParser:
             response = await http_client.get(url, retries=2)
             content = response.text
             
-            soup = BeautifulSoup(content, 'html.parser')
+            # Парсинг HTML может быть затратным - выполняем в отдельном потоке
+            soup = await asyncio.to_thread(
+                lambda: BeautifulSoup(content, 'html.parser')
+            )
             
             # Ищем элементы новостей (div с классом содержащим 'news' или 'article')
             article_elements = self._find_article_elements(soup, source_name)
@@ -52,8 +58,13 @@ class HTMLParser:
             
         except asyncio.TimeoutError:
             logger.error(f"Timeout parsing HTML from {url}")
+            raise
         except Exception as e:
+            # Re-raise HTTP errors so SourceCollector can handle them
+            if hasattr(e, 'response'):
+                raise
             logger.error(f"Error parsing HTML from {url}: {e}")
+            raise
         
         return news_items
     

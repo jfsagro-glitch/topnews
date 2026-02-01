@@ -1,0 +1,6 @@
+# Telegram Bot API
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', 'YOUR_BOT_TOKEN')
+TELEGRAM_CHANNEL_ID = int(os.getenv('TELEGRAM_CHANNEL_ID', '-1001234567890'))
+
+# Админы бота (могут использовать команды управления)
+ADMIN_IDS = [464108692]  # Список Telegram user IDs админов

@@ -43,6 +43,7 @@ class HttpClient:
         headers: dict | None = None,
         retries: int = 3,
         allow_insecure: bool = True,
+        skip_on_304: bool = False,
     ) -> httpx.Response:
         """
         GET request with retry logic and SSL fallback.
@@ -52,9 +53,10 @@ class HttpClient:
             headers: Additional/override headers
             retries: Number of retries on certain status codes
             allow_insecure: If True, retry with ssl=False on certificate errors
+            skip_on_304: If True, return None for 304 Not Modified instead of raising
         
         Returns:
-            httpx.Response
+            httpx.Response (or None if skip_on_304=True and status is 304)
         
         Raises:
             httpx.HTTPError if all retries exhausted
@@ -69,6 +71,12 @@ class HttpClient:
         for attempt in range(retries + 1):
             try:
                 resp = await self._client.get(url, headers=merged_headers)
+
+                # Handle 304 Not Modified (for conditional GET)
+                if resp.status_code == 304:
+                    if skip_on_304:
+                        return None
+                    return resp
 
                 if resp.status_code in RETRY_STATUSES:
                     raise httpx.HTTPStatusError(

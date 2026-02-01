@@ -140,12 +140,21 @@ class SourceCollector:
                     item['category'] = category
                 return news
             except Exception as e:
-                code = getattr(e.response, "status_code", None) if hasattr(e, "response") else None
-                if code in (403, 429):
+                # Try to extract HTTP status code
+                status_code = None
+                if hasattr(e, 'response'):
+                    status_code = getattr(e.response, "status_code", None)
+                
+                # Handle 403 Forbidden and 429 Too Many Requests
+                if status_code in (403, 429):
                     self._set_cooldown(url, 600)  # 10 minutes cooldown
-                    logger.warning(f"403/429 from {url}, setting cooldown")
+                    logger.warning(
+                        f"HTTP {status_code} from {source_name} ({url}), "
+                        f"setting cooldown for 10 minutes. NOT retrying."
+                    )
                     return []
-                logger.error(f"Error collecting from HTML {url}: {e}")
+                
+                logger.error(f"Error collecting from HTML {source_name} ({url}): {e}", exc_info=False)
                 return []
     
     def _get_category_for_url(self, url: str) -> str:

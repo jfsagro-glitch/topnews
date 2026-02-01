@@ -24,7 +24,7 @@ echo 5. Скопируйте токен (выглядит как 123456:ABC-DEF1
 echo.
 echo Пример: 123456789:ABCdefGhijKlmnoPqrsTuvWxyz-1234567890
 echo.
-set /p TELEGRAM_TOKEN="Вставьте TELEGRAM_TOKEN: "
+set /p TELEGRAM_TOKEN=8559718970:AAEHOd2UOKlVqwuMfd7oGJp756tfR3Ng9OY
 
 echo.
 echo ✅ Токен сохранен
@@ -40,7 +40,7 @@ echo 3. Добавьте @userinfobot в канал
 echo 4. Напишите @userinfobot /info
 echo 5. Скопируйте Chat ID (отрицательное число, например -1001234567890)
 echo.
-set /p TELEGRAM_CHANNEL_ID="Вставьте TELEGRAM_CHANNEL_ID: "
+set /p TELEGRAM_CHANNEL_ID=-1003717409166
 
 echo.
 echo ✅ Channel ID сохранен
@@ -69,7 +69,7 @@ echo ━━━━━━━━━━━━━━━━━━━━━━━━━
 echo.
 
 git add .
-set /p commit_msg="💬 Сообщение коммита (или Enter для default): "
+set /p commit_msg=Enter
 if "%commit_msg%"=="" set commit_msg=Prepare for Railway deployment
 
 git commit -m "%commit_msg%"
