@@ -165,9 +165,9 @@ class SourceCollector:
                     text = item.get('text', '') or item.get('lead_text', '')
                     item_url = item.get('url', '')
                     
-                    # Optional AI text cleaning (if enabled)
+                    # AI text cleaning (MANDATORY for HTML sources to remove navigation garbage)
                     if self.ai_client and text:
-                        clean_text = await self._clean_text_with_ai(title, text)
+                        clean_text = await self._clean_text_with_ai(title, text, source_type='html')
                         if clean_text:
                             item['text'] = clean_text
                             text = clean_text
@@ -271,12 +271,17 @@ class SourceCollector:
                 if not AI_CATEGORY_VERIFICATION_ENABLED:
                     return None
             
-            # Probabilistic cleaning: HTML sources need more cleaning (80% vs 30%)
+            # Probabilistic cleaning for RSS (30%), MANDATORY for HTML (100%)
             from config.config import AI_CATEGORY_VERIFICATION_RATE
             import random
-            cleaning_rate = 0.8 if source_type == 'html' else AI_CATEGORY_VERIFICATION_RATE
-            if random.random() > cleaning_rate:
-                return None
+            
+            if source_type == 'html':
+                # HTML sources ALWAYS need cleaning due to navigation garbage
+                pass  # Continue to cleaning
+            else:
+                # RSS sources: use probabilistic cleaning (30%)
+                if random.random() > AI_CATEGORY_VERIFICATION_RATE:
+                    return None
             
             clean_text, token_usage = await self.ai_client.extract_clean_text(title, text)
             
