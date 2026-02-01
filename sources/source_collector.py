@@ -121,7 +121,8 @@ class SourceCollector:
             try:
                 news = await self.rss_parser.parse(url, source_name)
                 for item in news:
-                    item['category'] = category
+                    item_url = item.get('url', '')
+                    item['category'] = self._get_category_for_url(item_url, default=category)
                 return news
             except Exception as e:
                 logger.error(f"Error collecting from RSS {url}: {e}")
@@ -137,7 +138,8 @@ class SourceCollector:
             try:
                 news = await self.html_parser.parse(url, source_name)
                 for item in news:
-                    item['category'] = category
+                    item_url = item.get('url', '')
+                    item['category'] = self._get_category_for_url(item_url, default=category)
                 return news
             except Exception as e:
                 # Try to extract HTTP status code
@@ -157,15 +159,36 @@ class SourceCollector:
                 logger.error(f"Error collecting from HTML {source_name} ({url}): {e}", exc_info=False)
                 return []
     
-    def _get_category_for_url(self, url: str) -> str:
+    def _get_category_for_url(self, url: str, default: str = 'russia') -> str:
         """Определяет категорию по URL"""
-        # Проверяем конфиг
-        for category_key, config in SOURCES_CONFIG.items():
-            if url in config.get('sources', []):
-                return config.get('category', 'russia')
-        
-        # По умолчанию - Россия
-        if 'moskovskaya' in url.lower() or 'podmoskovie' in url.lower() or 'mosobl' in url.lower():
+        url_lower = (url or '').lower()
+
+        # Московская область (Подмосковье)
+        moscow_region_markers = (
+            'moskovskaya-oblast',
+            'moskovskaja-oblast',
+            'moskovskaya_oblast',
+            'moskovskaja_oblast',
+            'podmoskovie',
+            'mosobl',
+            'mosreg',
+            'mosregtoday',
+            'riamo',
+            'regions.ru',
+        )
+        if any(marker in url_lower for marker in moscow_region_markers):
             return 'moscow_region'
-        
-        return 'russia'
+
+        # Москва
+        moscow_markers = (
+            '/moscow',
+            '/moskva',
+            'moscow',
+            'moskva',
+            'moskvy',
+            'moskve',
+        )
+        if any(marker in url_lower for marker in moscow_markers):
+            return 'moscow'
+
+        return default

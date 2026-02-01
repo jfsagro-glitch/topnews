@@ -41,6 +41,7 @@ LOG_FILE = os.getenv('LOG_FILE', 'logs/bot.log')
 CATEGORIES = {
     'world': '#Мир',
     'russia': '#Россия',
+    'moscow': '#Москва',
     'moscow_region': '#Подмосковье',
 }
 

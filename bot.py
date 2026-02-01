@@ -136,6 +136,7 @@ class NewsBot:
                 InlineKeyboardButton("#Россия", callback_data="filter_russia"),
             ],
             [
+                InlineKeyboardButton("#Москва", callback_data="filter_moscow"),
                 InlineKeyboardButton("#Подмосковье", callback_data="filter_moscow_region"),
                 InlineKeyboardButton("Все новости", callback_data="filter_all"),
             ]
@@ -145,6 +146,7 @@ class NewsBot:
             "Выберите категорию для фильтрации новостей в канале:\n\n"
             "#Мир - Новости со всего мира\n"
             "#Россия - Новости России\n"
+            "#Москва - Новости Москвы\n"
             "#Подмосковье - Новости Московской области\n"
             "Все новости - Показывать все",
             reply_markup=reply_markup
@@ -162,6 +164,7 @@ class NewsBot:
             filter_names = {
                 'world': '#Мир',
                 'russia': '#Россия',
+                'moscow': '#Москва',
                 'moscow_region': '#Подмосковье',
                 'all': 'Все новости'
             }
@@ -410,12 +413,8 @@ class NewsBot:
     
     def _get_category_emoji(self, category: str) -> str:
         """Возвращает категорию с эмодзи и хештегом"""
-        categories = {
-            'world': '#Мир',
-            'russia': '#Россия',
-            'moscow_region': '#Подмосковье',
-        }
-        return categories.get(category, 'Новости')
+        from config.config import CATEGORIES
+        return CATEGORIES.get(category, 'Новости')
     
     async def run_periodic_collection(self):
         """Запускает периодический сбор новостей"""
