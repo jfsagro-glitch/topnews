@@ -182,10 +182,23 @@ class NewsBot:
         await update.message.reply_text(text)
     
     async def cmd_update_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /update_stats - обновить статистику вручную"""
+        """Команда /update_stats - синхронизировать с реальными данными DeepSeek"""
         try:
+            # Если нет аргументов - показать текущие данные и инструкцию
             if not context.args or len(context.args) < 3:
-                await update.message.reply_text("❌ Неверный формат!\n\nИспользуйте: /update_stats <requests> <tokens> <cost>\nПример: /update_stats 1489 462377 0.05")
+                current = self.db.get_ai_usage()
+                await update.message.reply_text(
+                    f"📊 Текущие данные в боте:\n\n"
+                    f"Запросов: {current['total_requests']}\n"
+                    f"Токенов: {current['total_tokens']:,}\n"
+                    f"Стоимость: ${current['total_cost_usd']:.4f}\n\n"
+                    f"🔄 Для синхронизации используйте:\n"
+                    f"/update_stats <requests> <tokens> <cost>\n\n"
+                    f"Пример:\n"
+                    f"/update_stats 1661 515627 0.06\n\n"
+                    f"⚠️ Данные берите из DeepSeek:\n"
+                    f"https://platform.deepseek.com/usage"
+                )
                 return
             
             requests = int(context.args[0])
@@ -200,18 +213,22 @@ class NewsBot:
             
             if success:
                 await update.message.reply_text(
-                    f"✅ Статистика синхронизирована с DeepSeek!\n\n"
-                    f"Обновлено с:\n"
+                    f"✅ Синхронизировано с DeepSeek!\n\n"
+                    f"Было:\n"
                     f"📊 {current['total_requests']} → {requests} запросов\n"
                     f"🔢 {current['total_tokens']:,} → {tokens:,} токенов\n"
                     f"💰 ${current['total_cost_usd']:.4f} → ${cost:.4f}\n\n"
-                    f"Дальнейший учет будет вестись автоматически от этих значений."
+                    f"✨ Дальше учет идет автоматически!\n"
+                    f"📈 Эти данные сохраняются и НЕ сбрасываются"
                 )
             else:
-                await update.message.reply_text("❌ Ошибка при обновлении статистики")
+                await update.message.reply_text("❌ Ошибка при синхронизации")
                 
         except ValueError:
-            await update.message.reply_text("❌ Ошибка формата! Используйте числа.\n\nПример: /update_stats 1489 462377 0.05")
+            await update.message.reply_text(
+                "❌ Ошибка формата! Используйте числа.\n\n"
+                "Пример: /update_stats 1661 515627 0.06"
+            )
         except Exception as e:
             logger.error(f"Error updating stats: {e}")
             await update.message.reply_text(f"❌ Ошибка: {e}")
