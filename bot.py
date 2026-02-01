@@ -117,9 +117,13 @@ class NewsBot:
         stats = self.db.get_stats()
         ai_usage = self.db.get_ai_usage()
         
-        # Calculate costs with correct pricing
-        input_cost = (ai_usage['total_tokens'] * 0.5) * 0.14 / 1_000_000.0  # Approximate 50% input tokens
-        output_cost = (ai_usage['total_tokens'] * 0.5) * 2.19 / 1_000_000.0  # Approximate 50% output tokens
+        # Calculate realistic costs based on token counts
+        # DeepSeek pricing: input $0.14/M, output $0.28/M tokens
+        # Approximate 60% input, 40% output for text operations
+        input_tokens = int(ai_usage['total_tokens'] * 0.6)
+        output_tokens = int(ai_usage['total_tokens'] * 0.4)
+        input_cost = (input_tokens / 1_000_000.0) * 0.14
+        output_cost = (output_tokens / 1_000_000.0) * 0.28
         estimated_cost = input_cost + output_cost
         
         status_text = (
@@ -128,14 +132,15 @@ class NewsBot:
             f"Всего опубликовано: {stats['total']}\n"
             f"За сегодня: {stats['today']}\n"
             f"Интервал проверки: {CHECK_INTERVAL_SECONDS} сек\n\n"
-            f"🧠 ИИ использование (локальный учет):\n"
+            f"🧠 ИИ использование (автоматический учет):\n"
             f"Всего запросов: {ai_usage['total_requests']}\n"
-            f"Всего токенов: {ai_usage['total_tokens']}\n"
-            f"Стоимость: ${estimated_cost:.4f}\n\n"
-            f"📝 Пересказы: {ai_usage['summarize_requests']} запросов, {ai_usage['summarize_tokens']} токенов\n"
-            f"🏷️ Категории: {ai_usage['category_requests']} запросов, {ai_usage['category_tokens']} токенов\n"
-            f"✨ Очистка текста: {ai_usage['text_clean_requests']} запросов, {ai_usage['text_clean_tokens']} токенов\n\n"
-            f"💡 Используйте /sync_deepseek для синхронизации с реальными данными DeepSeek"
+            f"Всего токенов: {ai_usage['total_tokens']:,}\n"
+            f"Расчетная стоимость: ${estimated_cost:.4f}\n\n"
+            f"📝 Пересказы: {ai_usage['summarize_requests']} запр., {ai_usage['summarize_tokens']:,} токенов\n"
+            f"🏷️ Категории: {ai_usage['category_requests']} запр., {ai_usage['category_tokens']:,} токенов\n"
+            f"✨ Очистка текста: {ai_usage['text_clean_requests']} запр., {ai_usage['text_clean_tokens']:,} токенов\n\n"
+            f"💡 Данные обновляются автоматически при каждом API запросе\n"
+            f"⚠️ Если есть расхождение с DeepSeek - используйте /update_stats"
         )
         await update.message.reply_text(status_text)
     
@@ -150,8 +155,33 @@ class NewsBot:
         await update.message.reply_text("▶️ Сбор новостей возобновлен")
     
     async def cmd_sync_deepseek(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /sync_deepseek - обновить статистику из реальных данных DeepSeek"""
-        await update.message.reply_text("📊 Обновляю статистику из DeepSeek API...\n\n⚠️ ВНИМАНИЕ: Введите реальные данные из DeepSeek вручную:\n\nФормат: /update_stats <requests> <tokens> <cost>\nПример: /update_stats 1331 413515 0.04")
+        """Команда /sync_deepseek - показать текущую статистику и инструкцию"""
+        ai_usage = self.db.get_ai_usage()
+        
+        # Calculate costs
+        input_tokens = int(ai_usage['total_tokens'] * 0.6)
+        output_tokens = int(ai_usage['total_tokens'] * 0.4)
+        input_cost = (input_tokens / 1_000_000.0) * 0.14
+        output_cost = (output_tokens / 1_000_000.0) * 0.28
+        estimated_cost = input_cost + output_cost
+        
+        text = (
+            f"📊 Текущая статистика в боте:\n\n"
+            f"Запросов: {ai_usage['total_requests']}\n"
+            f"Токенов: {ai_usage['total_tokens']:,}\n"
+            f"Стоимость: ${estimated_cost:.4f}\n\n"
+            f"🔄 Для синхронизации с реальными данными DeepSeek:\n\n"
+            f"1️⃣ Откройте https://platform.deepseek.com/usage\n"
+            f"2️⃣ Посмотрите данные:\n"
+            f"   • API requests\n"
+            f"   • Tokens\n" 
+            f"   • Monthly expenses\n\n"
+            f"3️⃣ Отправьте команду:\n"
+            f"/update_stats <requests> <tokens> <cost>\n\n"
+            f"Пример:\n"
+            f"/update_stats 1331 413515 0.04"
+        )
+        await update.message.reply_text(text)
     
     async def cmd_update_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /update_stats - обновить статистику вручную"""
