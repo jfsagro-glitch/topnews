@@ -129,9 +129,9 @@ class SourceCollector:
                     text = item.get('text', '') or item.get('lead_text', '')
                     item_url = item.get('url', '')
                     
-                    # Optional AI text cleaning (if enabled)
+                    # Optional AI text cleaning (if enabled) - RSS sources use default rate
                     if self.ai_client and text:
-                        clean_text = await self._clean_text_with_ai(title, text)
+                        clean_text = await self._clean_text_with_ai(title, text, source_type='rss')
                         if clean_text:
                             item['text'] = clean_text
                             text = clean_text
@@ -247,7 +247,7 @@ class SourceCollector:
             logger.debug(f"AI category verification error: {e}")
             return None
     
-    async def _clean_text_with_ai(self, title: str, text: str) -> Optional[str]:
+    async def _clean_text_with_ai(self, title: str, text: str, source_type: str = 'rss') -> Optional[str]:
         """
         Clean article text using AI (DeepSeek) to remove navigation/garbage.
         Only calls AI occasionally to save API costs.
@@ -255,6 +255,7 @@ class SourceCollector:
         Args:
             title: News title
             text: Raw extracted text
+            source_type: 'rss' or 'html' - HTML sources get higher cleaning rate
             
         Returns:
             Clean text or None if cleaning skipped/failed
@@ -270,10 +271,11 @@ class SourceCollector:
                 if not AI_CATEGORY_VERIFICATION_ENABLED:
                     return None
             
-            # Probabilistic cleaning: only clean X% of items to save costs
+            # Probabilistic cleaning: HTML sources need more cleaning (80% vs 30%)
             from config.config import AI_CATEGORY_VERIFICATION_RATE
             import random
-            if random.random() > AI_CATEGORY_VERIFICATION_RATE:
+            cleaning_rate = 0.8 if source_type == 'html' else AI_CATEGORY_VERIFICATION_RATE
+            if random.random() > cleaning_rate:
                 return None
             
             clean_text, token_usage = await self.ai_client.extract_clean_text(title, text)
