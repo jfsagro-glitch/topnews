@@ -2,7 +2,7 @@
 Основной Telegram бот для публикации новостей
 """
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, 
     ContextTypes, ConversationHandler
@@ -45,12 +45,18 @@ class NewsBot:
         
         logger.info("Application created successfully")
         return self.application
+
+    # Persistent reply keyboard for chats (anchored at bottom)
+    REPLY_KEYBOARD = ReplyKeyboardMarkup(
+        [['📋 COPY', '/sync', '/status', '/pause', '/resume']], resize_keyboard=True
+    )
     
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
         await update.message.reply_text(
             "👋 Добро пожаловать в News Aggregator Bot!\n\n"
-            "Используйте /help для списка команд"
+            "Используйте /help для списка команд",
+            reply_markup=self.REPLY_KEYBOARD
         )
     
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -64,7 +70,7 @@ class NewsBot:
             "/help - Показать эту справку\n\n"
             "Бот автоматически проверяет новости каждые 2 минуты"
         )
-        await update.message.reply_text(help_text)
+        await update.message.reply_text(help_text, reply_markup=self.REPLY_KEYBOARD)
     
     async def cmd_sync(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /sync - принудительный сбор новостей"""
