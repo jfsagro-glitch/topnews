@@ -363,12 +363,9 @@ class NewsBot:
                     'category': news_category
                 }
 
-                # Создаем кнопки: ИИ и фильтр по категориям
+                # Создаем кнопку только ИИ пересказа (без кнопки категории)
                 keyboard = InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton("ИИ", callback_data=f"ai:{news_id}"),
-                        InlineKeyboardButton(category_emoji, callback_data=f"filter_{news_category}")
-                    ]
+                    [InlineKeyboardButton("ИИ", callback_data=f"ai:{news_id}")]
                 ])
 
                 try:

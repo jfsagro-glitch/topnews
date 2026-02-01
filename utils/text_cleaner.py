@@ -558,7 +558,7 @@ def format_telegram_message(title: str, text: str, source_name: str,
     if paragraph:
         paragraph = paragraph.strip()
         message += f"\n{paragraph}\n"
-    message += f"\nИсточник: {source_name}\n{source_url}\n{category}"
+    message += f"\nИсточник: {source_name}\n{source_url}\n\n{category}"
     
     # Hard limit for telegram (1000 chars)
     message = truncate_for_telegram(message, max_length=1000)
