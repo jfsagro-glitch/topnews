@@ -59,6 +59,24 @@ class NewsDatabase:
             logger.error(f"Error adding news to DB: {e}")
             return False
     
+    def remove_news_by_url(self, url: str) -> bool:
+        """
+        Удаляет запись новости по URL. Возвращает True если удалена.
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM published_news WHERE url = ?', (url,))
+            conn.commit()
+            deleted = cursor.rowcount > 0
+            conn.close()
+            if deleted:
+                logger.debug(f"Removed news from DB: {url}")
+            return deleted
+        except Exception as e:
+            logger.error(f"Error removing news from DB: {e}")
+            return False
+    
     def is_published(self, url: str) -> bool:
         """Проверяет, была ли новость уже опубликована"""
         try:

@@ -134,49 +134,57 @@ class NewsBot:
             
             # Публикуем каждую новость
             for news in news_items:
-                if not self.db.is_published(news['url']):
-                    # Формируем сообщение
-                    message = format_telegram_message(
-                        title=news.get('title', 'No title'),
-                        text=news.get('text', ''),
-                        source_name=news.get('source', 'Unknown'),
-                        source_url=news.get('url', ''),
-                        category=f"#{self._get_category_emoji(news.get('category', 'russia'))}"
+                # Попытка атомарно зарегистрировать новость в БД
+                inserted = self.db.add_news(
+                    url=news['url'],
+                    title=news.get('title', ''),
+                    source=news.get('source', ''),
+                    category=news.get('category', '')
+                )
+
+                if not inserted:
+                    logger.debug(f"Skipping duplicate: {news.get('url')}")
+                    continue
+
+                # Формируем сообщение
+                message = format_telegram_message(
+                    title=news.get('title', 'No title'),
+                    text=news.get('text', ''),
+                    source_name=news.get('source', 'Unknown'),
+                    source_url=news.get('url', ''),
+                    category=f"#{self._get_category_emoji(news.get('category', 'russia'))}"
+                )
+
+                # Создаем кнопку COPY
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 COPY", callback_data="copy_" + str(published_count))]
+                ])
+
+                try:
+                    # Debug: логируем chat_id перед отправкой (без токена)
+                    logger.debug(f"Sending message to chat_id={TELEGRAM_CHANNEL_ID}")
+                    # Публикуем в канал
+                    await self.application.bot.send_message(
+                        chat_id=TELEGRAM_CHANNEL_ID,
+                        text=message,
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=keyboard,
+                        disable_web_page_preview=True
                     )
-                    
-                    # Создаем кнопку COPY
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("📋 COPY", callback_data="copy_" + str(published_count))]
-                    ])
-                    
+
+                    published_count += 1
+                    logger.info(f"Published: {news['title'][:50]}")
+
+                    # Небольшая задержка между публикациями
+                    await asyncio.sleep(1)
+
+                except Exception as e:
+                    logger.error(f"Error publishing news to chat_id={TELEGRAM_CHANNEL_ID}: {e} | url={news.get('url')}")
+                    # Откатываем запись в БД, чтобы можно было попытаться снова
                     try:
-                        # Debug: логируем chat_id перед отправкой (без токена)
-                        logger.debug(f"Sending message to chat_id={TELEGRAM_CHANNEL_ID}")
-                        # Публикуем в канал
-                        await self.application.bot.send_message(
-                            chat_id=TELEGRAM_CHANNEL_ID,
-                            text=message,
-                            parse_mode=ParseMode.MARKDOWN,
-                            reply_markup=keyboard,
-                            disable_web_page_preview=True
-                        )
-                        
-                        # Добавляем в БД
-                        self.db.add_news(
-                            url=news['url'],
-                            title=news.get('title', ''),
-                            source=news.get('source', ''),
-                            category=news.get('category', '')
-                        )
-                        
-                        published_count += 1
-                        logger.info(f"Published: {news['title'][:50]}")
-                        
-                        # Небольшая задержка между публикациями
-                        await asyncio.sleep(1)
-                    
-                    except Exception as e:
-                        logger.error(f"Error publishing news to chat_id={TELEGRAM_CHANNEL_ID}: {e} | url={news.get('url')}")
+                        self.db.remove_news_by_url(news['url'])
+                    except Exception:
+                        pass
             
             logger.info(f"Collection complete. Published {published_count} new items")
             return published_count
