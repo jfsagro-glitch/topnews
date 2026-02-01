@@ -171,19 +171,23 @@ class NewsBot:
             # Формируем полный текст без форматирования (для легкого копирования)
             full_text = f"{news['title']}\n\n{news['text']}\n\n{news['source']}\n{news['url']}"
             
+            # Создаем текст для alert (макс. 200 символов)
+            preview_text = full_text[:197] + "..." if len(full_text) > 200 else full_text
+            
             try:
-                # Отправляем полный текст в ДМ БЕЗ уведомления
+                # Показываем popup с текстом (максимальный размер ~200 символов в Telegram)
+                await query.answer(preview_text, show_alert=True)
+                
+                # Также отправляем полный текст в ДМ БЕЗ уведомления для удобного копирования
                 await context.bot.send_message(
                     chat_id=query.from_user.id,
                     text=full_text,
                     disable_web_page_preview=True,
                     disable_notification=True  # Тихо, без звука
                 )
-                # Уведомляем пользователя
-                await query.answer("✅ Скопировано в личные сообщения", show_alert=False)
             except Exception as e:
                 logger.error(f"Error sending COPY text: {e}")
-                await query.answer(f"❌ Ошибка: {type(e).__name__}", show_alert=False)
+                await query.answer(f"❌ Ошибка: {type(e).__name__}", show_alert=True)
     
     async def collect_and_publish(self) -> int:
         """
