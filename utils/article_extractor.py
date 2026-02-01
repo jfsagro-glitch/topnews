@@ -48,10 +48,43 @@ async def extract_article_text(html_content: str, max_length: int = 5000) -> Opt
                 if text:
                     # Filter out navigation lists and short fragments
                     lines = [l.strip() for l in text.split('\n') if l.strip()]
-                    # Remove lines that look like navigation (short lines with many links)
-                    lines = [l for l in lines if len(l) > 30 or not any(keyword in l.lower() for keyword in ['новости', 'политика', 'эксклюзив', 'выберите город', 'поиск'])]
-                    text = '\n'.join(lines)
-                    logger.debug(f"trafilatura extracted {len(text)} chars")
+                    
+                    # Remove lines that are likely city lists (many short words)
+                    filtered_lines = []
+                    for line in lines:
+                        # Skip very short lines
+                        if len(line) < 40:
+                            continue
+                        
+                        # Skip lines with too many capital words in a row (city/region lists)
+                        words = line.split()
+                        if len(words) > 5:
+                            capital_ratio = sum(1 for w in words if w and w[0].isupper()) / len(words)
+                            if capital_ratio > 0.7:  # More than 70% capitalized = likely list
+                                continue
+                        
+                        # Skip navigation keywords
+                        nav_keywords = ['истории эфир', 'новости чтиво', 'выберите город', 
+                                       'жесткое заявление', 'соцсети в ярости', 'опасные пилюли',
+                                       'шокирующие откровения', 'дело эпштейна', 'новый удар']
+                        if any(kw in line.lower() for kw in nav_keywords):
+                            continue
+                        
+                        # Skip lines that are just other news headlines (contain clickbait patterns)
+                        clickbait_patterns = [':', 'признался', 'разоблачение', 'откровения']
+                        if len(line) < 150 and sum(1 for p in clickbait_patterns if p in line.lower()) >= 2:
+                            continue
+                        
+                        filtered_lines.append(line)
+                    
+                    if filtered_lines:
+                        # Take only first 2-3 paragraphs (actual news content)
+                        text = '\n'.join(filtered_lines[:3])
+                    else:
+                        text = None
+                    
+                    if text:
+                        logger.debug(f"trafilatura extracted {len(text)} chars")
             except Exception as e:
                 logger.debug(f"trafilatura extraction failed: {e}")
         
@@ -103,26 +136,41 @@ def _extract_simple(html_content: str) -> Optional[str]:
         # Clean up whitespace
         lines = [line.strip() for line in text.split('\n') if line.strip() and len(line.strip()) > 2]
         
-        # Remove very short lines that are likely noise
-        lines = [line for line in lines if len(line) > 10 or line.isupper()]
-        
-        # Filter out navigation/menu keywords
-        nav_keywords = ['новости', 'политика', 'эксклюзив', 'выберите город', 'поиск', 'чтиво', 
-                       'жесткое заявление', 'дело эпштейна', 'новый удар', 'соцсети в ярости',
-                       'опасные пилюли', 'правда о полисе', 'накачали и бросили', 'хотели мощность',
-                       'были две бутылки']
+        # Remove very short lines and apply multiple filters
         filtered_lines = []
         for line in lines:
-            # Skip if line is too short or looks like navigation
-            if len(line) < 30:
+            # Skip very short lines
+            if len(line) < 40:
                 continue
-            # Skip if contains multiple navigation keywords
-            keyword_count = sum(1 for kw in nav_keywords if kw in line.lower())
-            if keyword_count >= 2:
+            
+            # Skip lines with too many capital words (city/region lists like "Балашиха Богородский Воскресенск")
+            words = line.split()
+            if len(words) > 5:
+                capital_ratio = sum(1 for w in words if w and w[0].isupper()) / len(words)
+                if capital_ratio > 0.7:
+                    continue
+            
+            # Skip navigation/menu lines and other news headlines
+            nav_keywords = ['истории эфир', 'новости чтиво', 'выберите город', 'поиск',
+                           'политика эксклюзив', 'общество', 'шокирующие откровения',
+                           'жесткое заявление', 'дело эпштейна', 'новый удар', 
+                           'соцсети в ярости', 'опасные пилюли', 'правда о полисе',
+                           'накачали и бросили']
+            if any(kw in line.lower() for kw in nav_keywords):
                 continue
+            
+            # Skip clickbait headlines (short + contains colon or multiple trigger words)
+            clickbait_count = sum(1 for p in [':', 'признался', 'разоблачение', 'откровения', 'правда'] 
+                                 if p in line.lower())
+            if len(line) < 150 and clickbait_count >= 2:
+                continue
+            
             filtered_lines.append(line)
         
-        return '\n'.join(filtered_lines) if filtered_lines else None
+        # Take only first 2-3 paragraphs of actual content
+        if filtered_lines:
+            return '\n'.join(filtered_lines[:3])
+        return None
         
     except Exception as e:
         logger.warning(f"Simple extraction failed: {e}")
