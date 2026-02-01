@@ -68,6 +68,24 @@ def _build_category_messages(title: str, text: str, current_category: str) -> li
     ]
 
 
+def _build_text_extraction_messages(title: str, raw_text: str) -> list[dict]:
+    """Build messages for AI text extraction (removing navigation/garbage)"""
+    system_prompt = (
+        "Ты помощник для извлечения чистого текста новости из HTML.\n\n"
+        "Твоя задача: извлечь ТОЛЬКО основной текст самой новости, удалив:\n"
+        "- Списки городов (Балашиха Богородский Воскресенск...)\n"
+        "- Навигационные меню (Истории Эфир, Новости Чтиво...)\n"
+        "- Заголовки других новостей (Шокирующие откровения...)\n"
+        "- Рекламу и ссылки\n\n"
+        "Верни 1-2 абзаца с фактами о событии, указанном в заголовке. Не добавляй пояснений."
+    )
+    user_content = f"Заголовок: {title}\n\nИзвлеченный текст:\n{raw_text[:2000]}"
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+
 class DeepSeekClient:
     def __init__(self, api_key: str = None, endpoint: str = DEEPSEEK_API_ENDPOINT):
         # Don't use config-time DEEPSEEK_API_KEY for parameter default
@@ -210,5 +228,60 @@ class DeepSeekClient:
             
         except Exception as e:
             logger.debug(f"AI category verification failed: {e}")
+        
+        return None
+    
+    async def extract_clean_text(self, title: str, raw_text: str) -> Optional[str]:
+        """
+        Use AI to extract clean article text, removing navigation/garbage.
+        
+        Args:
+            title: Article title
+            raw_text: Raw extracted text with possible garbage
+            
+        Returns:
+            Clean article text or None if extraction failed
+        """
+        env_key = os.getenv('DEEPSEEK_API_KEY')
+        api_key = (env_key or self.api_key or '').strip()
+        
+        if not api_key:
+            logger.debug("DeepSeek API key not configured, skipping AI text extraction")
+            return None
+
+        if not raw_text or len(raw_text) < 50:
+            return None
+
+        payload = {
+            "model": "deepseek-chat",
+            "messages": _build_text_extraction_messages(title, raw_text),
+            "temperature": 0.2,  # Low temperature for consistent extraction
+            "max_tokens": 300,  # Allow up to 2-3 paragraphs
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                response = await client.post(
+                    self.endpoint,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json=payload,
+                )
+            
+            if response.status_code == 200:
+                data = response.json()
+                clean_text = data["choices"][0]["message"]["content"].strip()
+                
+                # Validate that we got meaningful text
+                if clean_text and len(clean_text) >= 50:
+                    logger.debug(f"AI extracted clean text: {len(clean_text)} chars")
+                    return clean_text
+                else:
+                    logger.debug("AI extraction returned text too short")
+                    return None
+            
+            logger.warning(f"DeepSeek text extraction API error: status={response.status_code}")
+            
+        except Exception as e:
+            logger.debug(f"AI text extraction failed: {e}")
         
         return None

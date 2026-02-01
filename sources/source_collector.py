@@ -129,10 +129,17 @@ class SourceCollector:
                     text = item.get('text', '') or item.get('lead_text', '')
                     item_url = item.get('url', '')
                     
+                    # Optional AI text cleaning (if enabled)
+                    if self.ai_client and text:
+                        clean_text = await self._clean_text_with_ai(title, text)
+                        if clean_text:
+                            item['text'] = clean_text
+                            text = clean_text
+                    
                     # Classify by content
                     detected_category = self.classifier.classify(title, text, item_url)
                     
-                    # Optional AI verification (if client provided)
+                    # Optional AI category verification (if client provided)
                     if self.ai_client and detected_category:
                         ai_category = await self._verify_with_ai(title, text, detected_category)
                         if ai_category:
@@ -158,10 +165,17 @@ class SourceCollector:
                     text = item.get('text', '') or item.get('lead_text', '')
                     item_url = item.get('url', '')
                     
+                    # Optional AI text cleaning (if enabled)
+                    if self.ai_client and text:
+                        clean_text = await self._clean_text_with_ai(title, text)
+                        if clean_text:
+                            item['text'] = clean_text
+                            text = clean_text
+                    
                     # Classify by content
                     detected_category = self.classifier.classify(title, text, item_url)
                     
-                    # Optional AI verification (if client provided)
+                    # Optional AI category verification (if client provided)
                     if self.ai_client and detected_category:
                         ai_category = await self._verify_with_ai(title, text, detected_category)
                         if ai_category:
@@ -222,6 +236,42 @@ class SourceCollector:
             
         except Exception as e:
             logger.debug(f"AI category verification error: {e}")
+            return None
+    
+    async def _clean_text_with_ai(self, title: str, text: str) -> Optional[str]:
+        """
+        Clean article text using AI (DeepSeek) to remove navigation/garbage.
+        Only calls AI occasionally to save API costs.
+        
+        Args:
+            title: News title
+            text: Raw extracted text
+            
+        Returns:
+            Clean text or None if cleaning skipped/failed
+        """
+        try:
+            # Check if AI verification is enabled via bot toggle
+            if self.bot and not self.bot.ai_verification_enabled:
+                return None
+            
+            # Fallback to config if bot reference not available
+            if not self.bot:
+                from config.config import AI_CATEGORY_VERIFICATION_ENABLED
+                if not AI_CATEGORY_VERIFICATION_ENABLED:
+                    return None
+            
+            # Probabilistic cleaning: only clean X% of items to save costs
+            from config.config import AI_CATEGORY_VERIFICATION_RATE
+            import random
+            if random.random() > AI_CATEGORY_VERIFICATION_RATE:
+                return None
+            
+            clean_text = await self.ai_client.extract_clean_text(title, text)
+            return clean_text
+            
+        except Exception as e:
+            logger.debug(f"AI text cleaning error: {e}")
             return None
     
     def _get_category_for_url(self, url: str, default: str = 'russia') -> str:
