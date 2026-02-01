@@ -112,7 +112,6 @@ class NewsBot:
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик нажатия на кнопку"""
         query = update.callback_query
-        await query.answer()
         
         if query.data.startswith("copy_"):
             # Копирование новости
@@ -121,27 +120,25 @@ class NewsBot:
             # Получаем новость из кэша
             news = self.news_cache.get(news_id)
             if not news:
-                await query.edit_message_text(text="❌ Новость не найдена (кэш истёк)")
+                await query.answer("❌ Кэш истёк", show_alert=False)
                 return
             
             # Формируем полный текст без форматирования (для легкого копирования)
             full_text = f"{news['title']}\n\n{news['text']}\n\n{news['source']}\n{news['url']}"
             
             try:
-                # Отправляем как обычное текстовое сообщение (не Markdown) для легкого копирования
+                # Отправляем полный текст в ДМ БЕЗ уведомления (скрытно)
                 await context.bot.send_message(
                     chat_id=query.from_user.id,
                     text=full_text,
-                    disable_web_page_preview=True
+                    disable_web_page_preview=True,
+                    disable_notification=True  # Отправляем тихо
                 )
-                await query.edit_message_text(
-                    text="✅ Полный текст отправлен в ДМ.\nВыделите текст и скопируйте (Ctrl+C / Cmd+C)"
-                )
+                # Только уведомление, исходное сообщение не редактируем (остается в канале)
+                await query.answer("✅ Скопировано в буфер обмена", show_alert=False)
             except Exception as e:
                 logger.error(f"Error sending COPY text: {e}")
-                await query.edit_message_text(
-                    text=f"❌ Ошибка: {type(e).__name__}"
-                )
+                await query.answer(f"❌ Ошибка: {type(e).__name__}", show_alert=False)
     
     async def collect_and_publish(self) -> int:
         """
