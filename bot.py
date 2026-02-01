@@ -81,6 +81,7 @@ class NewsBot:
             "📚 Доступные команды:\n\n"
             "/sync - Принудительно запустить сбор новостей\n"
             "/status - Показать статус бота и статистику\n"
+            "/filter - Фильтровать новости по категориям\n"
             "/pause - Приостановить автоматический сбор\n"
             "/resume - Возобновить автоматический сбор\n"
             "/help - Показать эту справку\n\n"
@@ -336,9 +337,15 @@ class NewsBot:
                 if not news_id:
                     logger.debug(f"Skipping duplicate URL: {news.get('url')}")
                     continue
+                
+                # Проверяем фильтр по категориям
+                news_category = news.get('category', 'russia')
+                if self.category_filter and news_category != self.category_filter:
+                    logger.debug(f"Skipping news due to category filter: {news_category}")
+                    continue
 
                 # Формируем сообщение
-                category_emoji = self._get_category_emoji(news.get('category', 'russia'))
+                category_emoji = self._get_category_emoji(news_category)
                 message = format_telegram_message(
                     title=news.get('title', 'No title'),
                     text=news.get('text', ''),
@@ -353,12 +360,15 @@ class NewsBot:
                     'lead_text': news.get('text', ''),
                     'url': news.get('url', ''),
                     'source': news.get('source', 'Unknown'),
-                    'category': news.get('category', 'russia')
+                    'category': news_category
                 }
 
-                # Создаем кнопку AI пересказа
+                # Создаем кнопки: ИИ и фильтр по категориям
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("ИИ", callback_data=f"ai:{news_id}")]
+                    [
+                        InlineKeyboardButton("ИИ", callback_data=f"ai:{news_id}"),
+                        InlineKeyboardButton(category_emoji, callback_data=f"filter_{news_category}")
+                    ]
                 ])
 
                 try:
