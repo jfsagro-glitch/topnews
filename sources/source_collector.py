@@ -8,6 +8,7 @@ from typing import List, Dict
 from config.config import SOURCES_CONFIG
 from parsers.rss_parser import RSSParser
 from parsers.html_parser import HTMLParser
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -26,28 +27,50 @@ class SourceCollector:
         # Cooldown для источников, которые возвращают 403/429
         self._cooldown_until = {}  # url -> timestamp
         
-        # Настройки парсеров для конкретных источников
-        self.rss_sources = {
-            'https://ria.ru/export/rss2/archive/index.xml': 'РИА Новости',
-            'https://lenta.ru/rss/': 'Лента.ру',
-            'https://www.gazeta.ru/rss/': 'Газета.ру',
-            'https://tass.ru/rss/index.xml': 'ТАСС',
-            'https://rg.ru/xml/': 'Российская газета',
-            'https://iz.ru/rss.xml': 'Известия',
-            'https://russian.rt.com/rss/': 'RT',
-            'https://www.rbc.ru/v10/static/rss/rbc_news.rss': 'РБК',
-            'https://rss.kommersant.ru/K40/': 'Коммерсантъ',
+        # Known RSS overrides by domain (when config contains site root)
+        self.rss_overrides = {
+            'ria.ru': 'https://ria.ru/export/rss2/archive/index.xml',
+            'lenta.ru': 'https://lenta.ru/rss/',
+            'www.gazeta.ru': 'https://www.gazeta.ru/rss/',
+            'tass.ru': 'https://tass.ru/rss/index.xml',
+            'rg.ru': 'https://rg.ru/xml/',
+            'iz.ru': 'https://iz.ru/rss.xml',
+            'russian.rt.com': 'https://russian.rt.com/rss/',
+            'www.rbc.ru': 'https://www.rbc.ru/v10/static/rss/rbc_news.rss',
+            'www.kommersant.ru': 'https://rss.kommersant.ru/K40/',
         }
-        
-        self.html_sources = {
-            'https://dzen.ru/news/rubric/chronologic': 'Яндекс.Дзен',
-            'https://ren.tv/news': 'РЕН ТВ',
-            'https://360.ru/rubriki/mosobl/': '360 (Подмосковье)',
-            'https://riamo.ru/': 'РИАМО',
-            'https://mosregtoday.ru/': 'МосРегион Today',
-            'https://www.interfax-russia.ru/center/novosti-podmoskovya': 'Интерфакс',
-            'https://regions.ru/news': 'Regions.ru',
-        }
+
+        # We'll dynamically build source list from `SOURCES_CONFIG` so all configured
+        # sources are actually collected. Each entry will be classified as 'rss' or 'html'.
+        self._configured_sources = []  # list of tuples (fetch_url, source_name, category, type)
+        for category_key, cfg in SOURCES_CONFIG.items():
+            for src in cfg.get('sources', []):
+                parsed = urlparse(src)
+                domain = parsed.netloc.lower()
+
+                # Prefer RSS override when we know the host's RSS endpoint
+                if domain in self.rss_overrides:
+                    fetch_url = self.rss_overrides[domain]
+                    src_type = 'rss'
+                    source_name = domain
+                else:
+                    # Heuristics: if URL looks like RSS or XML, treat as RSS
+                    if 'rss' in src.lower() or src.lower().endswith(('.xml', '.rss')):
+                        fetch_url = src
+                        src_type = 'rss'
+                        source_name = domain
+                    else:
+                        # t.me channels treated as HTML pages
+                        if domain.endswith('t.me'):
+                            fetch_url = src
+                            src_type = 'html'
+                            source_name = src.replace('https://', '')
+                        else:
+                            fetch_url = src
+                            src_type = 'html'
+                            source_name = domain
+
+                self._configured_sources.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type))
     
     def _in_cooldown(self, url: str) -> bool:
         """Check if URL is in cooldown period"""
@@ -68,16 +91,12 @@ class SourceCollector:
             # Параллельно запускаем сбор из разных типов источников
             tasks = []
             
-            # RSS источники
-            for url, source_name in self.rss_sources.items():
-                # Получаем категорию из конфига
-                category = self._get_category_for_url(url)
-                tasks.append(self._collect_from_rss(url, source_name, category))
-            
-            # HTML источники
-            for url, source_name in self.html_sources.items():
-                category = self._get_category_for_url(url)
-                tasks.append(self._collect_from_html(url, source_name, category))
+            # Используем сконфигурированные источники, автоматически классифицированные
+            for fetch_url, source_name, category, src_type in self._configured_sources:
+                if src_type == 'rss':
+                    tasks.append(self._collect_from_rss(fetch_url, source_name, category))
+                else:
+                    tasks.append(self._collect_from_html(fetch_url, source_name, category))
             
             # Запускаем все параллельно
             results = await asyncio.gather(*tasks, return_exceptions=True)
