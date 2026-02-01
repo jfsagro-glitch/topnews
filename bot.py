@@ -29,8 +29,12 @@ class NewsBot:
         # DeepSeek client (initialize early for use in SourceCollector)
         self.deepseek_client = DeepSeekClient()
         
+        # AI category verification toggle (can be controlled via button)
+        from config.config import AI_CATEGORY_VERIFICATION_ENABLED
+        self.ai_verification_enabled = AI_CATEGORY_VERIFICATION_ENABLED
+        
         # SourceCollector with optional AI verification
-        self.collector = SourceCollector(db=self.db, ai_client=self.deepseek_client)
+        self.collector = SourceCollector(db=self.db, ai_client=self.deepseek_client, bot=self)
         
         self.is_running = True
         self.is_paused = False
@@ -133,6 +137,7 @@ class NewsBot:
     async def cmd_filter(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /filter - выбор категорий для фильтрации"""
         # Создаем inline кнопки для выбора категорий
+        ai_status = "✅" if self.ai_verification_enabled else "❌"
         keyboard = [
             [
                 InlineKeyboardButton("#Мир", callback_data="filter_world"),
@@ -142,16 +147,21 @@ class NewsBot:
                 InlineKeyboardButton("#Москва", callback_data="filter_moscow"),
                 InlineKeyboardButton("#Подмосковье", callback_data="filter_moscow_region"),
                 InlineKeyboardButton("Все новости", callback_data="filter_all"),
+            ],
+            [
+                InlineKeyboardButton(f"AI {ai_status}", callback_data="toggle_ai"),
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
+        ai_status_text = "включена" if self.ai_verification_enabled else "отключена"
         await update.message.reply_text(
             "Выберите категорию для фильтрации новостей в канале:\n\n"
             "#Мир - Новости со всего мира\n"
             "#Россия - Новости России\n"
             "#Москва - Новости Москвы\n"
             "#Подмосковье - Новости Московской области\n"
-            "Все новости - Показывать все",
+            "Все новости - Показывать все\n\n"
+            f"🤖 AI верификация: {ai_status_text}",
             reply_markup=reply_markup
         )
     
@@ -159,7 +169,20 @@ class NewsBot:
         """Обработчик нажатия на кнопку"""
         query = update.callback_query
         
-        if query.data.startswith("filter_"):
+        if query.data == "toggle_ai":
+            # Переключение AI верификации
+            self.ai_verification_enabled = not self.ai_verification_enabled
+            status = "включена" if self.ai_verification_enabled else "отключена"
+            emoji = "✅" if self.ai_verification_enabled else "❌"
+            
+            await query.answer(f"{emoji} AI верификация {status}", show_alert=False)
+            await query.edit_message_text(
+                text=f"{emoji} AI верификация категорий {status}\n\n"
+                     f"DeepSeek {'теперь будет проверять' if self.ai_verification_enabled else 'больше не будет проверять'} "
+                     "правильность определения категорий новостей."
+            )
+        
+        elif query.data.startswith("filter_"):
             # Фильтрация по категориям
             filter_type = query.data.replace("filter_", "")
             self.category_filter = filter_type if filter_type != 'all' else None

@@ -17,12 +17,13 @@ logger = logging.getLogger(__name__)
 class SourceCollector:
     """Собирает новости из всех источников"""
     
-    def __init__(self, db=None, ai_client=None):
+    def __init__(self, db=None, ai_client=None, bot=None):
         self.db = db
         self.rss_parser = RSSParser(db=db)
         self.html_parser = HTMLParser()
         self.classifier = ContentClassifier()
         self.ai_client = ai_client  # Optional DeepSeek client for AI verification
+        self.bot = bot  # Reference to NewsBot for accessing ai_verification_enabled
         
         # Семафор для ограничения параллелизма (6 одновременных запросов)
         self._sem = asyncio.Semaphore(6)
@@ -200,13 +201,18 @@ class SourceCollector:
             Verified category or None if verification skipped/failed
         """
         try:
-            # Check if AI verification is enabled
-            from config.config import AI_CATEGORY_VERIFICATION_ENABLED, AI_CATEGORY_VERIFICATION_RATE
-            
-            if not AI_CATEGORY_VERIFICATION_ENABLED:
+            # Check if AI verification is enabled via bot toggle
+            if self.bot and not self.bot.ai_verification_enabled:
                 return None
             
+            # Fallback to config if bot reference not available
+            if not self.bot:
+                from config.config import AI_CATEGORY_VERIFICATION_ENABLED
+                if not AI_CATEGORY_VERIFICATION_ENABLED:
+                    return None
+            
             # Probabilistic verification: only verify X% of items to save costs
+            from config.config import AI_CATEGORY_VERIFICATION_RATE
             import random
             if random.random() > AI_CATEGORY_VERIFICATION_RATE:
                 return None
