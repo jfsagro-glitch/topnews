@@ -9,6 +9,7 @@ from config.config import SOURCES_CONFIG
 from parsers.rss_parser import RSSParser
 from parsers.html_parser import HTMLParser
 from urllib.parse import urlparse
+from utils.content_classifier import ContentClassifier
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ class SourceCollector:
         self.db = db
         self.rss_parser = RSSParser(db=db)
         self.html_parser = HTMLParser()
+        self.classifier = ContentClassifier()
         
         # Семафор для ограничения параллелизма (6 одновременных запросов)
         self._sem = asyncio.Semaphore(6)
@@ -120,8 +122,13 @@ class SourceCollector:
         async with self._sem:
             try:
                 news = await self.rss_parser.parse(url, source_name)
-                for item in news:
+                for # Классифицируем по контенту
+                    title = item.get('title', '')
+                    text = item.get('text', '') or item.get('lead_text', '')
                     item_url = item.get('url', '')
+                    
+                    detected_category = self.classifier.classify(title, text, item_url)
+                    item['category'] = detected_category or category
                     item['category'] = self._get_category_for_url(item_url, default=category)
                 return news
             except Exception as e:
@@ -133,8 +140,13 @@ class SourceCollector:
         async with self._sem:
             if self._in_cooldown(url):
                 logger.debug(f"Skipping {url} (in cooldown)")
-                return []
-            
+                retu# Классифицируем по контенту
+                    title = item.get('title', '')
+                    text = item.get('text', '') or item.get('lead_text', '')
+                    item_url = item.get('url', '')
+                    
+                    detected_category = self.classifier.classify(title, text, item_url)
+                    item['category'] = detected_category or category
             try:
                 news = await self.html_parser.parse(url, source_name)
                 for item in news:
@@ -158,37 +170,3 @@ class SourceCollector:
                 
                 logger.error(f"Error collecting from HTML {source_name} ({url}): {e}", exc_info=False)
                 return []
-    
-    def _get_category_for_url(self, url: str, default: str = 'russia') -> str:
-        """Определяет категорию по URL"""
-        url_lower = (url or '').lower()
-
-        # Московская область (Подмосковье)
-        moscow_region_markers = (
-            'moskovskaya-oblast',
-            'moskovskaja-oblast',
-            'moskovskaya_oblast',
-            'moskovskaja_oblast',
-            'podmoskovie',
-            'mosobl',
-            'mosreg',
-            'mosregtoday',
-            'riamo',
-            'regions.ru',
-        )
-        if any(marker in url_lower for marker in moscow_region_markers):
-            return 'moscow_region'
-
-        # Москва
-        moscow_markers = (
-            '/moscow',
-            '/moskva',
-            'moscow',
-            'moskva',
-            'moskvy',
-            'moskve',
-        )
-        if any(marker in url_lower for marker in moscow_markers):
-            return 'moscow'
-
-        return default
