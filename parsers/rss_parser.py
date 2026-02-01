@@ -28,8 +28,15 @@ class RSSParser:
         news_items = []
         
         try:
+            user_agents = [
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+            ]
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'User-Agent': random.choice(user_agents),
+                'Accept': 'application/rss+xml, application/xml;q=0.9, */*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Connection': 'keep-alive',
             }
             ssl_ctx = ssl.create_default_context(cafile=certifi.where())
 
@@ -38,15 +45,27 @@ class RSSParser:
             max_delay = 1.0
             attempts = 3
 
-            async with aiohttp.ClientSession(headers=headers) as session:
+            async with aiohttp.ClientSession(headers=headers, trust_env=False) as session:
                 for attempt in range(1, attempts + 1):
                     try:
-                        async with session.get(url, timeout=self.timeout, ssl=ssl_ctx) as response:
+                        async with session.get(url, timeout=self.timeout, ssl=ssl_ctx, allow_redirects=True) as response:
                             if response.status != 200:
                                 logger.warning(f"Failed to fetch {url}: {response.status}")
                                 return news_items
                             content = await response.text()
                             break
+                    except ssl.SSLCertVerificationError as e:
+                        logger.warning(f"SSL verification failed for RSS {url}: {e}; retrying insecurely")
+                        try:
+                            async with session.get(url, timeout=self.timeout, ssl=False, allow_redirects=True) as response:
+                                if response.status != 200:
+                                    logger.warning(f"Failed to fetch {url} (insecure): {response.status}")
+                                    return news_items
+                                content = await response.text()
+                                break
+                        except Exception as ie:
+                            logger.debug(f"Insecure RSS retry failed for {url}: {ie}")
+                            raise ie
                     except Exception as e:
                         logger.debug(f"RSS attempt {attempt} failed for {url}: {e}")
                         if attempt == attempts:

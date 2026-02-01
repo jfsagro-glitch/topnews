@@ -29,11 +29,18 @@ def clean_html(html_text: str) -> str:
         else:
             content = str(html_text)
 
+        # If input doesn't contain HTML tags, treat as plain text to avoid
+        # BeautifulSoup MarkupResemblesLocatorWarning when content looks like a filename.
+        if '<' not in content and '>' not in content:
+            text = unescape(content)
+            text = re.sub(r'\s+', ' ', text).strip()
+            return text
+
         soup = BeautifulSoup(content, 'html.parser')
 
         for tag in soup(['script', 'style', 'noscript']):
             tag.decompose()
-        
+
         # Берём текст
         text = soup.get_text(separator=' ')
         
