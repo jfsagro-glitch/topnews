@@ -38,6 +38,20 @@ CATEGORIES = {
 
 # Источники по категориям
 SOURCES_CONFIG = {
+    'world': {
+        'category': 'world',
+        'sources': [
+            'https://ria.ru/world/',
+            'https://lenta.ru/tags/geo/',
+            'https://tass.ru/world',
+            'https://www.gazeta.ru/world/',
+            'https://rg.ru/world/',
+            'https://rbc.ru/rbcfreenews',
+            'https://russian.rt.com/world/',
+            'https://www.interfax.ru/world/',
+            'https://dzen.ru/news/rubric/world',
+        ]
+    },
     'russia': {
         'category': 'russia',
         'sources': [
