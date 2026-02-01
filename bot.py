@@ -168,25 +168,68 @@ class NewsBot:
                 await query.answer("❌ Кэш истёк", show_alert=False)
                 return
             
-            # Формируем полный текст без форматирования (для легкого копирования)
-            full_text = f"{news['title']}\n\n{news['text']}\n\n{news['source']}\n{news['url']}"
-            
             try:
-                # Отправляем полный текст отдельным сообщением БЕЗ Markdown
-                # Это позволит легко копировать, редактировать и пересылать
-                sent_message = await context.bot.send_message(
-                    chat_id=query.from_user.id,
-                    text=full_text,
-                    disable_web_page_preview=True,
-                    disable_notification=True  # Тихо, без звука
-                )
+                # Подтягиваем полный текст статьи с URL
+                from net.http_client import get_http_client
+                from utils.text_cleaner import clean_html
                 
-                # Уведомляем пользователя
-                await query.answer("✅ Отправлено отдельным сообщением для копирования", show_alert=False)
+                await query.answer("⏳ Загружаю полную статью...", show_alert=False)
+                
+                http_client = await get_http_client()
+                response = await http_client.get(news['url'], retries=1)
+                full_article_text = clean_html(response.text)
+                
+                # Формируем полный текст без форматирования (для легкого копирования)
+                full_text = f"{news['title']}\n\n{full_article_text}\n\n{news['source']}\n{news['url']}"
+                
+                # Telegram имеет лимит 4096 символов на сообщение
+                # Если текст слишком длинный - разбиваем на части
+                max_length = 4000
+                if len(full_text) <= max_length:
+                    # Отправляем одним сообщением
+                    await context.bot.send_message(
+                        chat_id=query.from_user.id,
+                        text=full_text,
+                        disable_web_page_preview=True,
+                        disable_notification=True
+                    )
+                else:
+                    # Разбиваем на части
+                    parts = []
+                    # Первая часть - заголовок + начало текста
+                    header = f"{news['title']}\n\n"
+                    remaining = full_article_text
+                    
+                    while remaining:
+                        chunk_size = max_length - len(header) if not parts else max_length
+                        chunk = remaining[:chunk_size]
+                        parts.append(header + chunk if not parts else chunk)
+                        remaining = remaining[chunk_size:]
+                        header = ""  # Заголовок только в первой части
+                    
+                    # Добавляем источник в последнюю часть
+                    parts[-1] += f"\n\n{news['source']}\n{news['url']}"
+                    
+                    # Отправляем все части
+                    for i, part in enumerate(parts):
+                        await context.bot.send_message(
+                            chat_id=query.from_user.id,
+                            text=f"[Часть {i+1}/{len(parts)}]\n\n{part}" if len(parts) > 1 else part,
+                            disable_web_page_preview=True,
+                            disable_notification=True
+                        )
+                        await asyncio.sleep(0.5)  # Небольшая задержка между частями
                 
             except Exception as e:
-                logger.error(f"Error sending COPY text: {e}")
-                await query.answer(f"❌ Ошибка: {type(e).__name__}", show_alert=True)
+                logger.error(f"Error fetching full article: {e}")
+                # Fallback - отправляем хотя бы заголовок и ссылку
+                await context.bot.send_message(
+                    chat_id=query.from_user.id,
+                    text=f"{news['title']}\n\n{news['source']}\n{news['url']}\n\n⚠️ Не удалось загрузить полный текст. Перейдите по ссылке.",
+                    disable_web_page_preview=False,
+                    disable_notification=True
+                )
+                await query.answer("⚠️ Отправлена ссылка на статью", show_alert=False)
     
     async def _send_to_admins(self, message: str, keyboard: InlineKeyboardMarkup, news_id: int):
         """Отправляет новость всем админам в личные сообщения"""
@@ -266,12 +309,11 @@ class NewsBot:
                     category=category_emoji
                 )
                 
-                # Сохраняем в кэш для COPY кнопки
+                # Сохраняем в кэш для COPY кнопки (URL для получения полного текста)
                 self.news_cache[published_count] = {
                     'title': news.get('title', 'No title'),
-                    'text': news.get('text', '')[:2000],  # Ограничиваем до 2000 символов
+                    'url': news.get('url', ''),
                     'source': news.get('source', 'Unknown'),
-                    'url': news.get('url', '')
                 }
 
                 # Создаем кнопку COPY
