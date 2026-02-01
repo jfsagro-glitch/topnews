@@ -226,7 +226,8 @@ class NewsBot:
                 lead_text = news.get('lead_text') or news.get('text', '') or news.get('title', '')
                 from config.config import DEEPSEEK_COST_PER_1K_TOKENS_USD
 
-                summary, tokens = await self._summarize_with_deepseek(lead_text, news.get('title', ''))
+                news_url = news.get('url', '')
+                summary, tokens = await self._summarize_with_deepseek(lead_text, news.get('title', ''), url=news_url)
 
                 if summary:
                     cost_usd = (tokens / 1000.0) * DEEPSEEK_COST_PER_1K_TOKENS_USD
@@ -252,18 +253,53 @@ class NewsBot:
 
             await query.answer("❌ Неизвестная команда", show_alert=False)
     
-    async def _summarize_with_deepseek(self, text: str, title: str) -> tuple[str | None, int]:
+    async def _fetch_full_article(self, url: str, fallback_text: str) -> str:
+        """
+        Try to fetch full article text from URL.
+        Falls back to provided text if fetch fails.
+        
+        Args:
+            url: URL to fetch
+            fallback_text: Fallback text if fetch fails
+            
+        Returns:
+            Full article text or fallback text
+        """
+        try:
+            import httpx
+            from utils.article_extractor import extract_article_text
+            
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                
+                extracted = await extract_article_text(response.text, max_length=5000)
+                if extracted and len(extracted) > len(fallback_text):
+                    logger.debug(f"Fetched full article: {len(extracted)} chars")
+                    return extracted
+                    
+        except Exception as e:
+            logger.debug(f"Could not fetch full article from {url}: {e}")
+        
+        return fallback_text
+
+    async def _summarize_with_deepseek(self, text: str, title: str, url: str = None) -> tuple[str | None, int]:
         """
         Call DeepSeek API to summarize news.
         
         Args:
             text: Article text to summarize
             title: Article title
+            url: Optional URL to fetch full article from
             
         Returns:
             Summary string or None if error
         """
         try:
+            # Try to fetch full article if URL provided
+            if url:
+                text = await self._fetch_full_article(url, text)
+            
             summary, tokens = await self.deepseek_client.summarize(title=title, text=text)
             if summary:
                 logger.debug(f"DeepSeek summary created: {summary[:50]}...")
