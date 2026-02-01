@@ -294,19 +294,12 @@ class NewsBot:
 
                     cached_summary = self.db.get_cached_summary(news_id)
                     if cached_summary:
-                        # Send summary with copy button
-                        copy_text = cached_summary[:4096] if len(cached_summary) > 4096 else cached_summary
-                        keyboard = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("📋 Копировать", copy_text={"text": copy_text})]
-                        ])
-                        
                         await context.bot.send_message(
                             chat_id=user_id,
                             text=(
-                                f"Пересказ сгенерирован ИИ\n\n{cached_summary}\n\n"
-                                f"Источник: {news.get('source', '')}\n{news.get('url', '')}"
+                                f"🤖 Пересказ сгенерирован ИИ\n\n{cached_summary}\n\n"
+                                f"📰 Источник: {news.get('source', '')}\n{news.get('url', '')}"
                             ),
-                            reply_markup=keyboard,
                             disable_web_page_preview=True,
                             disable_notification=True
                         )
@@ -329,19 +322,12 @@ class NewsBot:
                         self.db.add_ai_usage(tokens=token_usage['total_tokens'], cost_usd=cost_usd, operation_type='summarize')
                         self.db.save_summary(news_id, summary)
                         
-                        # Send summary with copy button
-                        copy_text = summary[:4096] if len(summary) > 4096 else summary
-                        keyboard = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("📋 Копировать", copy_text={"text": copy_text})]
-                        ])
-                        
                         await context.bot.send_message(
                             chat_id=user_id,
                             text=(
-                                f"Пересказ сгенерирован ИИ\n\n{summary}\n\n"
-                                f"Источник: {news.get('source', '')}\n{news.get('url', '')}"
+                                f"🤖 Пересказ сгенерирован ИИ\n\n{summary}\n\n"
+                                f"📰 Источник: {news.get('source', '')}\n{news.get('url', '')}"
                             ),
-                            reply_markup=keyboard,
                             disable_web_page_preview=True,
                             disable_notification=True
                         )
