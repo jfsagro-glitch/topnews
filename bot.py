@@ -224,14 +224,18 @@ class NewsBot:
                     return
 
                 lead_text = news.get('lead_text') or news.get('text', '') or news.get('title', '')
-                from config.config import DEEPSEEK_COST_PER_1K_TOKENS_USD
+                from config.config import DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD, DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD
 
                 news_url = news.get('url', '')
-                summary, tokens = await self._summarize_with_deepseek(lead_text, news.get('title', ''), url=news_url)
+                summary, token_usage = await self._summarize_with_deepseek(lead_text, news.get('title', ''), url=news_url)
 
                 if summary:
-                    cost_usd = (tokens / 1000.0) * DEEPSEEK_COST_PER_1K_TOKENS_USD
-                    self.db.add_ai_usage(tokens=tokens, cost_usd=cost_usd)
+                    # Calculate cost based on input and output tokens
+                    input_cost = (token_usage['input_tokens'] / 1000.0) * DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD
+                    output_cost = (token_usage['output_tokens'] / 1000.0) * DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD
+                    cost_usd = input_cost + output_cost
+                    
+                    self.db.add_ai_usage(tokens=token_usage['total_tokens'], cost_usd=cost_usd)
                     self.db.save_summary(news_id, summary)
                     await context.bot.send_message(
                         chat_id=user_id,
@@ -283,7 +287,7 @@ class NewsBot:
         
         return fallback_text
 
-    async def _summarize_with_deepseek(self, text: str, title: str, url: str = None) -> tuple[str | None, int]:
+    async def _summarize_with_deepseek(self, text: str, title: str, url: str = None) -> tuple[str | None, dict]:
         """
         Call DeepSeek API to summarize news.
         
@@ -293,20 +297,20 @@ class NewsBot:
             url: Optional URL to fetch full article from
             
         Returns:
-            Summary string or None if error
+            Tuple of (summary string or None, token usage dict)
         """
         try:
             # Try to fetch full article if URL provided
             if url:
                 text = await self._fetch_full_article(url, text)
             
-            summary, tokens = await self.deepseek_client.summarize(title=title, text=text)
+            summary, token_usage = await self.deepseek_client.summarize(title=title, text=text)
             if summary:
                 logger.debug(f"DeepSeek summary created: {summary[:50]}...")
-            return summary, tokens
+            return summary, token_usage
         except Exception as e:
             logger.error(f"DeepSeek error: {e}")
-            return None, 0
+            return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
     async def _send_to_admins(self, message: str, keyboard: InlineKeyboardMarkup, news_id: int):
         """Отправляет новость всем админам в личные сообщения"""

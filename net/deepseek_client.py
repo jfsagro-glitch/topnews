@@ -101,10 +101,24 @@ class DeepSeekClient:
                     data = response.json()
                     summary = data["choices"][0]["message"]["content"]
                     usage = data.get("usage", {})
+                    
+                    # Get separate token counts for accurate pricing
+                    input_tokens = int(usage.get("prompt_tokens", 0) or 0)
+                    output_tokens = int(usage.get("completion_tokens", 0) or 0)
                     total_tokens = int(usage.get("total_tokens", 0) or 0)
+                    
                     if total_tokens == 0:
                         total_tokens = _estimate_tokens(text)
-                    return truncate_text(summary.strip(), max_length=800), total_tokens
+                        input_tokens = total_tokens
+                        output_tokens = 0
+                    
+                    # Return summary and token usage dict
+                    token_usage = {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": total_tokens
+                    }
+                    return truncate_text(summary.strip(), max_length=800), token_usage
 
                 logger.warning(
                     "DeepSeek API error: status=%s", response.status_code
@@ -117,4 +131,4 @@ class DeepSeekClient:
             await asyncio.sleep(backoff)
             backoff *= 2
 
-        return None, 0
+        return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}

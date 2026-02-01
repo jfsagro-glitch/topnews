@@ -112,4 +112,7 @@ DEEPSEEK_API_ENDPOINT = 'https://api.deepseek.com/v1/chat/completions'
 AI_SUMMARY_TIMEOUT = 10  # seconds
 AI_SUMMARY_MAX_REQUESTS_PER_MINUTE = 3  # Per user per minute
 CACHE_EXPIRY_HOURS = 1  # Summary cache TTL
-DEEPSEEK_COST_PER_1K_TOKENS_USD = float(os.getenv('DEEPSEEK_COST_PER_1K_TOKENS_USD', '0.0001'))
+
+# DeepSeek pricing (February 2026)
+DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD = float(os.getenv('DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD', '0.00014'))  # $0.14 per 1M
+DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD = float(os.getenv('DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD', '0.00028'))  # $0.28 per 1M
