@@ -66,6 +66,15 @@ class NewsDatabase:
                 )
             ''')
 
+            # Table for caching RSS items (for 304 Not Modified responses)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS rss_cache (
+                    url TEXT PRIMARY KEY,
+                    items TEXT NOT NULL,
+                    cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             # Table for caching AI summaries (legacy)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS ai_summaries (
@@ -461,6 +470,47 @@ class NewsDatabase:
         except Exception as e:
             logger.debug(f"Error setting RSS state for {url}: {e}")
             return False
+
+    def cache_rss_items(self, url: str, items: List) -> bool:
+        """
+        Cache RSS items for potential 304 Not Modified responses.
+        """
+        try:
+            import json
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                items_json = json.dumps(items)
+                cursor.execute(
+                    '''INSERT INTO rss_cache(url, items, cached_at) VALUES(?, ?, datetime('now'))
+                       ON CONFLICT(url) DO UPDATE SET items=excluded.items, cached_at=datetime('now')''',
+                    (url, items_json)
+                )
+                self._conn.commit()
+                return True
+        except Exception as e:
+            logger.debug(f"Error caching RSS items for {url}: {e}")
+            return False
+
+    def get_rss_cached_items(self, url: str) -> List | None:
+        """
+        Get cached RSS items (for 304 Not Modified responses).
+        Returns items if cache is fresh (< 24 hours old), otherwise None.
+        """
+        try:
+            import json
+            cursor = self._conn.cursor()
+            cursor.execute(
+                '''SELECT items FROM rss_cache 
+                   WHERE url = ? AND cached_at > datetime('now', '-24 hours')''',
+                (url,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return json.loads(row[0])
+            return None
+        except Exception as e:
+            logger.debug(f"Error getting cached RSS items for {url}: {e}")
+            return None
 
     def get_cached_summary(self, news_id: int) -> str | None:
         """

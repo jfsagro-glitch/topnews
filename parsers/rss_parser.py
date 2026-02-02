@@ -40,9 +40,15 @@ class RSSParser:
             
             response = await http_client.get(url, headers=headers if headers else None, retries=2)
             
-            # 304 Not Modified means content hasn't changed
+            # 304 Not Modified means content hasn't changed - use cached data
             if response.status_code == 304:
-                logger.debug(f"RSS {url} not modified (304), skipping")
+                logger.debug(f"RSS {url} not modified (304), using cached content")
+                if self.db:
+                    cached_items = self.db.get_rss_cached_items(url)
+                    if cached_items:
+                        logger.info(f"Using {len(cached_items)} cached items from {source_name} RSS")
+                        return cached_items
+                # If no cache available, treat as empty (first request)
                 return news_items
             
             # Check for error status codes
@@ -84,6 +90,10 @@ class RSSParser:
                         if preview:
                             news_item['text'] = preview
                     news_items.append(news_item)
+            
+            # Cache the items for potential 304 responses
+            if self.db and news_items:
+                self.db.cache_rss_items(url, news_items)
             
             logger.info(f"Parsed {len(news_items)} items from {source_name} RSS")
             
