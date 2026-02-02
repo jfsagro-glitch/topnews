@@ -387,6 +387,11 @@ class NewsBot:
         """Команда /filter - выбор категорий для фильтрации"""
         # Создаем inline кнопки для выбора категорий
         ai_status = "✅" if self.ai_verification_enabled else "❌"
+        
+        # Get user selection count
+        user_id = update.message.from_user.id
+        selection_count = len(self.user_selections.get(user_id, []))
+        
         keyboard = [
             [
                 InlineKeyboardButton("#Мир", callback_data="filter_world"),
@@ -399,6 +404,9 @@ class NewsBot:
             ],
             [
                 InlineKeyboardButton(f"AI {ai_status}", callback_data="toggle_ai"),
+            ],
+            [
+                InlineKeyboardButton(f"📄 Мои новости ({selection_count})", callback_data="show_my_selection"),
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -417,6 +425,28 @@ class NewsBot:
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик нажатия на кнопку"""
         query = update.callback_query
+        
+        if query.data == "show_my_selection":
+            # Показать выбранные новости с кнопками экспорта
+            user_id = query.from_user.id
+            selected = self.user_selections.get(user_id, [])
+            
+            if not selected:
+                await query.answer("📭 У вас нет выбранных новостей", show_alert=True)
+                return
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📄 Экспорт в DOC", callback_data="export_doc")],
+                [InlineKeyboardButton("🗑 Очистить выбранное", callback_data="clear_selection")]
+            ])
+            
+            await query.answer()
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"📌 Выбрано новостей: {len(selected)}\n\nНажмите кнопку ниже для экспорта в документ.",
+                reply_markup=keyboard
+            )
+            return
         
         if query.data == "export_doc":
             # Экспорт выбранных новостей в DOC
@@ -524,6 +554,10 @@ class NewsBot:
 
                     cached_summary = self.db.get_cached_summary(news_id)
                     if cached_summary:
+                        # Check if already selected
+                        is_selected = news_id in self.user_selections.get(user_id, [])
+                        select_btn_text = "✅ Выбрано" if is_selected else "📌 Выбрать"
+                        
                         await context.bot.send_message(
                             chat_id=user_id,
                             text=(
@@ -531,7 +565,10 @@ class NewsBot:
                                 f"📰 Источник: {news.get('source', '')}\n{news.get('url', '')}"
                             ),
                             disable_web_page_preview=True,
-                            disable_notification=True
+                            disable_notification=True,
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton(select_btn_text, callback_data=f"select:{news_id}")
+                            ]])
                         )
                         return
 
@@ -552,6 +589,10 @@ class NewsBot:
                         self.db.add_ai_usage(tokens=token_usage['total_tokens'], cost_usd=cost_usd, operation_type='summarize')
                         self.db.save_summary(news_id, summary)
                         
+                        # Check if already selected
+                        is_selected = news_id in self.user_selections.get(user_id, [])
+                        select_btn_text = "✅ Выбрано" if is_selected else "📌 Выбрать"
+                        
                         await context.bot.send_message(
                             chat_id=user_id,
                             text=(
@@ -559,7 +600,10 @@ class NewsBot:
                                 f"📰 Источник: {news.get('source', '')}\n{news.get('url', '')}"
                             ),
                             disable_web_page_preview=True,
-                            disable_notification=True
+                            disable_notification=True,
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton(select_btn_text, callback_data=f"select:{news_id}")
+                            ]])
                         )
                     else:
                         logger.warning(f"AI summarize failed for news_id={news_id}, no summary returned")
