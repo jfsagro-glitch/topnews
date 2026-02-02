@@ -11,9 +11,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/122.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
     "Cache-Control": "no-cache",
@@ -72,11 +70,20 @@ class HttpClient:
             try:
                 resp = await self._client.get(url, headers=merged_headers)
 
-                # Handle 304 Not Modified (for conditional GET)
+                # Handle 304 Not Modified - retry with cache busting
                 if resp.status_code == 304:
-                    if skip_on_304:
-                        return None
-                    return resp
+                    logger.debug(f"304 Not Modified for {url}, retrying with cache bust")
+                    # Retry with cache busting headers
+                    cache_bust_headers = merged_headers.copy()
+                    cache_bust_headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+                    cache_bust_headers['Pragma'] = 'no-cache'
+                    try:
+                        resp = await self._client.get(url, headers=cache_bust_headers)
+                        return resp
+                    except Exception:
+                        if skip_on_304:
+                            return None
+                        raise
 
                 if resp.status_code in RETRY_STATUSES:
                     raise httpx.HTTPStatusError(

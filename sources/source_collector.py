@@ -38,6 +38,7 @@ class SourceCollector:
         self._cooldown_until = {}  # url -> timestamp
         
         # Known RSS overrides by domain (when config contains site root)
+        # Includes fallback URLs for sites that block direct requests
         self.rss_overrides = {
             'ria.ru': 'https://ria.ru/export/rss2/archive/index.xml',
             'lenta.ru': 'https://lenta.ru/rss/',
@@ -49,16 +50,20 @@ class SourceCollector:
             'russian.rt.com': 'https://russian.rt.com/rss/',
             'www.rbc.ru': 'https://rssexport.rbc.ru/rbcnews/news/30/full.rss',
             'rbc.ru': 'https://rssexport.rbc.ru/rbcnews/news/30/full.rss',
-            'www.kommersant.ru': 'https://www.kommersant.ru/RSS/main.xml',
-            'kommersant.ru': 'https://www.kommersant.ru/RSS/main.xml',
-            'interfax.ru': 'https://www.interfax.ru/rss.asp',
-            'www.interfax.ru': 'https://www.interfax.ru/rss.asp',
-            'interfax-russia.ru': 'https://www.interfax-russia.ru/rss.asp',
-            'www.interfax-russia.ru': 'https://www.interfax-russia.ru/rss.asp',
+            'www.kommersant.ru': 'https://rss.kommersant.ru/K40/',
+            'kommersant.ru': 'https://rss.kommersant.ru/K40/',
+            'rss.kommersant.ru': 'https://rss.kommersant.ru/K40/',
+            'interfax.ru': 'https://www.interfax.ru/rss',
+            'www.interfax.ru': 'https://www.interfax.ru/rss',
+            'interfax-russia.ru': 'https://www.interfax-russia.ru/rss',
+            'www.interfax-russia.ru': 'https://www.interfax-russia.ru/rss',
             'ren.tv': 'https://ren.tv/export/rss.xml',
             'dzen.ru': None,  # Dzen не имеет RSS, нужен HTML парсинг
             '360.ru': 'https://360.ru/rss/',
             'regions.ru': 'https://regions.ru/rss/all/',
+            'riamo.ru': 'https://riamo.ru/feed.xml',
+            'mosregtoday.ru': None,  # HTML only
+            'mosreg.ru': None,  # HTML only, блокирует RSS
         }
 
         # We'll dynamically build source list from `SOURCES_CONFIG` so all configured
@@ -173,6 +178,11 @@ class SourceCollector:
         """Собирает из RSS источника"""
         async with self._sem:
             try:
+                # Проверяем cooldown
+                if self._in_cooldown(url):
+                    logger.warning(f"Source {source_name} in cooldown, skipping")
+                    return []
+                
                 news = await self.rss_parser.parse(url, source_name)
                 for item in news:
                     title = item.get('title', '')
@@ -198,7 +208,18 @@ class SourceCollector:
                     item['category'] = detected_category or category
                 return news
             except Exception as e:
-                logger.error(f"Error collecting from RSS {url}: {e}")
+                # Check if it's an HTTP error worth cooldown
+                error_str = str(e)
+                if '403' in error_str:
+                    self._set_cooldown(url, 1800)
+                    logger.warning(f"HTTP 403 from {source_name} ({url}), setting cooldown for 30 minutes")
+                elif '404' in error_str:
+                    self._set_cooldown(url, 3600)
+                    logger.warning(f"HTTP 404 from {source_name} ({url}), setting cooldown for 1 hour")
+                elif '429' in error_str:
+                    self._set_cooldown(url, 300)
+                    logger.warning(f"HTTP 429 from {source_name} ({url}), setting cooldown for 5 minutes")
+                logger.error(f"Error collecting from RSS {url}: {type(e).__name__}: {e}")
                 return []
     
     async def _collect_from_html(self, url: str, source_name: str, category: str) -> List[Dict]:

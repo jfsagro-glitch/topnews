@@ -54,12 +54,14 @@ SOURCES_CONFIG = {
             'https://ria.ru/world/',
             'https://lenta.ru/tags/geo/',
             'https://tass.ru/rss/index.xml',
-            'https://www.gazeta.ru/rss/',
+            'https://www.gazeta.ru/export/rss/lenta.xml',
             'https://rg.ru/world/',
             'https://www.rbc.ru/v10/static/rss/rbc_news.rss',
             'https://russian.rt.com/rss/',
             'https://www.interfax.ru/world/',
             'https://dzen.ru/news/rubric/world',
+            'https://iz.ru/xml/rss/all.xml',
+            'https://ren.tv/export/rss.xml',
         ]
     },
     'russia': {
@@ -68,14 +70,15 @@ SOURCES_CONFIG = {
             'https://dzen.ru/news/rubric/chronologic',
             'https://ria.ru/',
             'https://lenta.ru/',
-            'https://www.gazeta.ru/rss/',
-            'https://tass.ru/rss/index.xml',
+            'https://www.gazeta.ru/export/rss/lenta.xml',
+            'https://tass.ru/rss/v2.xml',
             'https://rg.ru/',
-            'https://ren.tv/news',
-            'https://iz.ru/rss.xml',
+            'https://ren.tv/export/rss.xml',
+            'https://iz.ru/xml/rss/all.xml',
             'https://russian.rt.com/rss/',
             'https://www.rbc.ru/v10/static/rss/rbc_news.rss',
             'https://rss.kommersant.ru/K40/',
+            'https://www.interfax.ru/rss',
         ]
     },
     'telegram': {
@@ -99,7 +102,7 @@ SOURCES_CONFIG = {
             'https://riamo.ru/tag/podmoskove/',
             'https://mosregtoday.ru/',
             'https://www.interfax-russia.ru/center/novosti-podmoskovya',
-            'https://regions.ru/news',
+            'https://regions.ru/rss/all/',
         ]
     },
 }
