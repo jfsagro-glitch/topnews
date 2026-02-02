@@ -1011,6 +1011,7 @@ class NewsBot:
     async def _generate_doc_file(self, user_id: int) -> str | None:
         """
         Generate DOC file with selected news for user.
+        Format: Title -> URL -> Tag -> Text (clean, minimal formatting)
         
         Args:
             user_id: Telegram user ID
@@ -1020,66 +1021,91 @@ class NewsBot:
         """
         try:
             from docx import Document
-            from docx.shared import Pt, RGBColor
+            from docx.shared import Pt
             from docx.enum.text import WD_ALIGN_PARAGRAPH
             import tempfile
-            from config.config import CATEGORIES
             
             selected_ids = self.user_selections.get(user_id, [])
             if not selected_ids:
                 return None
             
-            # Create document
+            # Create document with normal style throughout
             doc = Document()
-            doc.add_heading('Выбранные новости', 0)
             
-            # Add generation date
+            # Add header with generation date
             from datetime import datetime
-            p = doc.add_paragraph(f"Создано: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
-            p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            header_para = doc.add_paragraph(f"Создано: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+            header_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            
+            # Set default font for entire document (Times New Roman, 12pt)
+            style = doc.styles['Normal']
+            style.font.name = 'Times New Roman'
+            style.font.size = Pt(12)
             
             # Add each news
-            for news_id in selected_ids:
+            for idx, news_id in enumerate(selected_ids):
                 # Get news from DB or cache
                 news = self.db.get_news_by_id(news_id) or self.news_cache.get(news_id)
                 if not news:
                     continue
                 
-                # Add separator
-                doc.add_paragraph('_' * 80)
+                # Add spacing between articles (not separator lines)
+                if idx > 0:
+                    doc.add_paragraph()
                 
-                # Title
-                title_para = doc.add_heading(news.get('title', 'Без заголовка'), level=1)
+                # 1. Title
+                title = news.get('title', 'Без заголовка').strip()
+                title_para = doc.add_paragraph(title)
+                for run in title_para.runs:
+                    run.font.name = 'Times New Roman'
+                    run.font.size = Pt(12)
+                    run.font.bold = False
+                    run.font.color.rgb = None
                 
-                # Category tag
+                # 2. URL
+                url = news.get('url', '').strip()
+                if url:
+                    url_para = doc.add_paragraph(url)
+                    for run in url_para.runs:
+                        run.font.name = 'Times New Roman'
+                        run.font.size = Pt(12)
+                        run.font.color.rgb = None
+                
+                # 3. Tag (without emoji, just the hashtag)
                 category = news.get('category', 'russia')
-                category_tag = CATEGORIES.get(category, '🇷🇺 #Россия')
-                cat_para = doc.add_paragraph(category_tag)
-                cat_para.runs[0].font.bold = True
-                cat_para.runs[0].font.color.rgb = RGBColor(0, 102, 204)
+                category_map = {
+                    'world': '#Мир',
+                    'russia': '#Россия',
+                    'moscow': '#Москва',
+                    'moscow_region': '#Подмосковье',
+                }
+                tag = category_map.get(category, '#Россия')
+                tag_para = doc.add_paragraph(tag)
+                for run in tag_para.runs:
+                    run.font.name = 'Times New Roman'
+                    run.font.size = Pt(12)
+                    run.font.bold = False
+                    run.font.color.rgb = None
                 
-                # AI summary if exists
+                # 4. Text (AI summary if exists, otherwise original text)
                 summary = self.db.get_cached_summary(news_id)
-                if summary:
-                    doc.add_heading('🤖 Пересказ ИИ:', level=2)
-                    doc.add_paragraph(summary)
-                else:
-                    # Original text
-                    doc.add_heading('📄 Оригинальный текст:', level=2)
-                    text = news.get('text', news.get('lead_text', 'Текст недоступен'))
-                    doc.add_paragraph(text)
+                text = summary if summary else news.get('text', news.get('lead_text', 'Текст недоступен'))
+                text = text.strip()
                 
-                # Source and URL
-                doc.add_paragraph()
-                source_para = doc.add_paragraph(f"📰 Источник: {news.get('source', 'Неизвестно')}")
-                source_para.runs[0].font.size = Pt(10)
+                # Clean text: remove emoji and extra formatting
+                import re
+                text = re.sub(r'[😀-🙏🌀-🗿🚀-🛿]', '', text)  # Remove emoji
+                text = re.sub(r'📰|🔗|💬|✉️|✅|❌|🤖|📄|📌|🌍|🇷🇺|🏛️|🏘️', '', text)  # Remove specific emoji
+                text = re.sub(r'Источник:|Ссылка:|Тег:|Категория:|пересказ:|ИИ:|Оригинальный текст:', '', text, flags=re.IGNORECASE)  # Remove labels
+                text = re.sub(r'\s+', ' ', text).strip()  # Clean up whitespace
                 
-                url_para = doc.add_paragraph(f"🔗 Ссылка: {news.get('url', '')}")
-                url_para.runs[0].font.size = Pt(10)
-                url_para.runs[0].font.color.rgb = RGBColor(0, 0, 255)
-                
-                # Add spacing
-                doc.add_paragraph()
+                if text:
+                    text_para = doc.add_paragraph(text)
+                    for run in text_para.runs:
+                        run.font.name = 'Times New Roman'
+                        run.font.size = Pt(12)
+                        run.font.bold = False
+                        run.font.color.rgb = None
             
             # Save to temp file
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
