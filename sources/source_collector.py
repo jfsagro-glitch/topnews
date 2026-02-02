@@ -30,6 +30,9 @@ class SourceCollector:
 
         # Source health status: source_name -> bool (True ok, False error)
         self.source_health = {}
+        # Last collection counts per source (for /status reporting)
+        self.last_collected_counts = {}
+        self.last_collection_at = None
         
         # Семафор для ограничения параллелизма (6 одновременных запросов)
         self._sem = asyncio.Semaphore(6)
@@ -151,11 +154,16 @@ class SourceCollector:
             
             # Запускаем все параллельно
             results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
+
+            # Reset last collection stats
+            self.last_collected_counts = {}
+            self.last_collection_at = time.time()
             
             # Собираем результаты
             for (source_name, _task), result in zip(tasks, results):
                 if isinstance(result, list):
                     count = len(result)
+                    self.last_collected_counts[source_name] = count
                     all_news.extend(result)
                     self.source_health[source_name] = True
                     if count > 0:
