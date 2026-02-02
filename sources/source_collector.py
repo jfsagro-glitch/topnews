@@ -41,15 +41,24 @@ class SourceCollector:
         self.rss_overrides = {
             'ria.ru': 'https://ria.ru/export/rss2/archive/index.xml',
             'lenta.ru': 'https://lenta.ru/rss/',
-            'www.gazeta.ru': 'https://www.gazeta.ru/rss/',
-            'gazeta.ru': 'https://www.gazeta.ru/rss/',
-            'tass.ru': 'https://tass.ru/rss/index.xml',
-            'rg.ru': 'https://rg.ru/xml/',
-            'iz.ru': 'https://iz.ru/rss.xml',
+            'www.gazeta.ru': 'https://www.gazeta.ru/export/rss/lenta.xml',
+            'gazeta.ru': 'https://www.gazeta.ru/export/rss/lenta.xml',
+            'tass.ru': 'https://tass.ru/rss/v2.xml',
+            'rg.ru': 'https://rg.ru/xml/index.xml',
+            'iz.ru': 'https://iz.ru/xml/rss/all.xml',
             'russian.rt.com': 'https://russian.rt.com/rss/',
-            'www.rbc.ru': 'https://www.rbc.ru/v10/static/rss/rbc_news.rss',
-            'rbc.ru': 'https://www.rbc.ru/v10/static/rss/rbc_news.rss',
-            'www.kommersant.ru': 'https://rss.kommersant.ru/K40/',
+            'www.rbc.ru': 'https://rssexport.rbc.ru/rbcnews/news/30/full.rss',
+            'rbc.ru': 'https://rssexport.rbc.ru/rbcnews/news/30/full.rss',
+            'www.kommersant.ru': 'https://www.kommersant.ru/RSS/main.xml',
+            'kommersant.ru': 'https://www.kommersant.ru/RSS/main.xml',
+            'interfax.ru': 'https://www.interfax.ru/rss.asp',
+            'www.interfax.ru': 'https://www.interfax.ru/rss.asp',
+            'interfax-russia.ru': 'https://www.interfax-russia.ru/rss.asp',
+            'www.interfax-russia.ru': 'https://www.interfax-russia.ru/rss.asp',
+            'ren.tv': 'https://ren.tv/export/rss.xml',
+            'dzen.ru': None,  # Dzen не имеет RSS, нужен HTML парсинг
+            '360.ru': 'https://360.ru/rss/',
+            'regions.ru': 'https://regions.ru/rss/all/',
         }
 
         # We'll dynamically build source list from `SOURCES_CONFIG` so all configured
@@ -65,38 +74,44 @@ class SourceCollector:
                 # Prefer RSS override when we know the host's RSS endpoint
                 if domain in self.rss_overrides:
                     fetch_url = self.rss_overrides[domain]
-                    src_type = 'rss'
-                    source_name = domain
-                    entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type))
+                    if fetch_url is None:
+                        # Domain explicitly has no RSS (like dzen.ru), use HTML
+                        logger.info(f"Source {domain} configured for HTML parsing (no RSS available)")
+                        entries_to_add.append((src, domain, cfg.get('category', 'russia'), 'html'))
+                    else:
+                        src_type = 'rss'
+                        source_name = domain
+                        logger.info(f"Source {domain} using RSS override: {fetch_url}")
+                        entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type))
                 else:
                     # Heuristics: if URL looks like RSS or XML, treat as RSS
                     if 'rss' in src.lower() or src.lower().endswith(('.xml', '.rss')):
                         fetch_url = src
                         src_type = 'rss'
                         source_name = domain
+                        logger.info(f"Source {domain} detected as RSS: {fetch_url}")
                         entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type))
                     else:
                         # t.me channels: use RSSHub if configured
-                        if domain.endswith('t.me'):
-                            channel = src.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '')
+                        if domain.endswith('t.me') or 't.me' in domain:
+                            channel = src.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '').strip('/')
                             base = (RSSHUB_BASE_URL or '').strip()
                             if base and not base.startswith('http'):
                                 base = f"https://{base}"
                             base = base.rstrip('/') if base else ''
 
-                            source_name = f"t.me/{channel}"
+                            source_name = channel  # Use short name like 'mash' instead of 't.me/mash'
                             if base:
                                 fetch_url = f"{base}/telegram/channel/{channel}"
+                                logger.info(f"Telegram channel {channel} using RSSHub: {fetch_url}")
                                 entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), 'rss'))
-
-                            # Fallback to public RSSHub if custom base fails
-                            if base != 'https://rsshub.app':
-                                fallback_url = f"https://rsshub.app/telegram/channel/{channel}"
-                                entries_to_add.append((fallback_url, source_name, cfg.get('category', 'russia'), 'rss'))
+                            else:
+                                logger.warning(f"RSSHub not configured for Telegram channel {channel}")
                         else:
                             fetch_url = src
                             src_type = 'html'
                             source_name = domain
+                            logger.info(f"Source {domain} using HTML parsing: {fetch_url}")
                             entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type))
 
                 for entry in entries_to_add:
@@ -135,13 +150,19 @@ class SourceCollector:
             # Собираем результаты
             for (source_name, _task), result in zip(tasks, results):
                 if isinstance(result, list):
+                    count = len(result)
                     all_news.extend(result)
                     self.source_health[source_name] = True
+                    if count > 0:
+                        logger.info(f"✅ {source_name}: collected {count} items")
+                    else:
+                        logger.warning(f"⚠️ {source_name}: 0 items (no new content or parsing issue)")
                 elif isinstance(result, Exception):
-                    logger.error(f"Error in collector task: {result}")
+                    logger.error(f"❌ {source_name}: {type(result).__name__}: {result}")
                     self.source_health[source_name] = False
             
-            logger.info(f"Collected total {len(all_news)} news items")
+            logger.info(f"Collected total {len(all_news)} news items from {len([s for s in self.source_health.values() if s])} sources")
+
             
         except Exception as e:
             logger.error(f"Error in collect_all: {e}")

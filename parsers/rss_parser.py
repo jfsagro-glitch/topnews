@@ -45,6 +45,11 @@ class RSSParser:
                 logger.debug(f"RSS {url} not modified (304), skipping")
                 return news_items
             
+            # Check for error status codes
+            if response.status_code != 200:
+                logger.error(f"RSS {url} returned status {response.status_code}")
+                return news_items
+            
             # Store new ETag and Last-Modified for next request
             if self.db:
                 etag = response.headers.get('ETag')
