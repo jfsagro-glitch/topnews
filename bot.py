@@ -3,6 +3,8 @@
 """
 import logging
 import time
+import os
+import tempfile
 from net.deepseek_client import DeepSeekClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -63,6 +65,50 @@ class NewsBot:
         
         # User selected news for export (user_id -> [news_ids])
         self.user_selections = {}  # {user_id: [news_id1, news_id2, ...]}
+
+        # Instance lock (prevent double start)
+        self._instance_lock_fd = None
+        self._instance_lock_path = None
+
+    def _acquire_instance_lock(self) -> bool:
+        """Acquire a filesystem lock to prevent multiple bot instances."""
+        try:
+            lock_dir = tempfile.gettempdir()
+            lock_path = os.path.join(lock_dir, "topnews_bot.lock")
+            self._instance_lock_path = lock_path
+
+            # If stale lock older than 6 hours, remove it
+            stale_seconds = 6 * 3600
+            if os.path.exists(lock_path):
+                try:
+                    mtime = os.path.getmtime(lock_path)
+                    if time.time() - mtime > stale_seconds:
+                        logger.warning("Stale instance lock found. Removing.")
+                        os.remove(lock_path)
+                except Exception:
+                    pass
+
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            self._instance_lock_fd = fd
+            os.write(fd, str(os.getpid()).encode("utf-8"))
+            return True
+        except FileExistsError:
+            logger.error("Another bot instance appears to be running. Exiting.")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to acquire instance lock: {e}")
+            return False
+
+    def _release_instance_lock(self):
+        """Release filesystem instance lock."""
+        try:
+            if self._instance_lock_fd is not None:
+                os.close(self._instance_lock_fd)
+                self._instance_lock_fd = None
+            if self._instance_lock_path and os.path.exists(self._instance_lock_path):
+                os.remove(self._instance_lock_path)
+        except Exception as e:
+            logger.debug(f"Failed to release instance lock: {e}")
 
     def create_application(self) -> Application:
         """Создает и конфигурирует Telegram Application"""
@@ -1001,6 +1047,9 @@ class NewsBot:
     async def start(self):
         """Запускает бота"""
         logger.info("Starting bot...")
+
+        if not self._acquire_instance_lock():
+            return
         
         # Создаем приложение
         self.create_application()
@@ -1025,6 +1074,7 @@ class NewsBot:
             await self.application.updater.stop()
             await self.application.stop()
             await self.application.shutdown()
+            self._release_instance_lock()
     async def _generate_doc_file(self, user_id: int) -> str | None:
         """
         Generate DOC file with selected news for user.
