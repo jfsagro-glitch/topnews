@@ -60,6 +60,9 @@ class NewsBot:
         
         # Rate limiting for AI summarize requests (per user per minute)
         self.user_ai_requests = {}  # {user_id: [timestamp1, timestamp2, ...]}
+        
+        # User selected news for export (user_id -> [news_ids])
+        self.user_selections = {}  # {user_id: [news_id1, news_id2, ...]}
 
     def create_application(self) -> Application:
         """Создает и конфигурирует Telegram Application"""
@@ -77,6 +80,7 @@ class NewsBot:
         self.application.add_handler(CommandHandler("sync_deepseek", self.cmd_sync_deepseek))
         self.application.add_handler(CommandHandler("update_stats", self.cmd_update_stats))
         self.application.add_handler(CommandHandler("debug_sources", self.cmd_debug_sources))
+        self.application.add_handler(CommandHandler("my_selection", self.cmd_my_selection))
         
         # Обработчик текстовых сообщений (эмодзи-кнопки)
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_emoji_buttons))
@@ -143,6 +147,27 @@ class NewsBot:
             total += count
         text += f"\n📊 Всего новостей: {total}"
         await update.message.reply_text(text)
+    
+    async def cmd_my_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /my_selection - показать выбранные новости и экспортировать"""
+        user_id = update.message.from_user.id
+        selected = self.user_selections.get(user_id, [])
+        
+        if not selected:
+            await update.message.reply_text("📭 У вас нет выбранных новостей.\n\nВыберите новости, нажав 📌 под новостью в канале.")
+            return
+        
+        # Показать количество и кнопки действий
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📄 Экспорт в DOC", callback_data="export_doc")],
+            [InlineKeyboardButton("🗑 Очистить выбранное", callback_data="clear_selection")]
+        ])
+        
+        await update.message.reply_text(
+            f"📌 Выбрано новостей: {len(selected)}\n\n"
+            f"Нажмите кнопку ниже для экспорта в документ.",
+            reply_markup=keyboard
+        )
     
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /status"""
@@ -393,6 +418,39 @@ class NewsBot:
         """Обработчик нажатия на кнопку"""
         query = update.callback_query
         
+        if query.data == "export_doc":
+            # Экспорт выбранных новостей в DOC
+            user_id = query.from_user.id
+            await query.answer("📄 Генерирую документ...", show_alert=False)
+            
+            try:
+                doc_file = await self._generate_doc_file(user_id)
+                if doc_file:
+                    await context.bot.send_document(
+                        chat_id=user_id,
+                        document=open(doc_file, 'rb'),
+                        filename="selected_news.docx",
+                        caption=f"📰 Ваши выбранные новости ({len(self.user_selections.get(user_id, []))} шт.)"
+                    )
+                    # Удалить временный файл
+                    import os
+                    os.remove(doc_file)
+                else:
+                    await context.bot.send_message(user_id, "❌ Ошибка при создании документа")
+            except Exception as e:
+                logger.error(f"Error generating doc: {e}")
+                await context.bot.send_message(user_id, f"❌ Ошибка: {str(e)[:100]}")
+            return
+        
+        elif query.data == "clear_selection":
+            # Очистить выбранные новости
+            user_id = query.from_user.id
+            count = len(self.user_selections.get(user_id, []))
+            self.user_selections[user_id] = []
+            await query.answer(f"🗑 Очищено {count} новостей", show_alert=False)
+            await query.edit_message_text("✅ Выбранные новости очищены")
+            return
+        
         if query.data == "toggle_ai":
             # Переключение AI верификации
             self.ai_verification_enabled = not self.ai_verification_enabled
@@ -523,6 +581,43 @@ class NewsBot:
                         )
                     except:
                         pass
+                
+                return
+            
+            elif action == "select":
+                # Добавить/убрать новость из выбранных
+                user_id = query.from_user.id
+                if user_id not in self.user_selections:
+                    self.user_selections[user_id] = []
+                
+                if news_id in self.user_selections[user_id]:
+                    # Убрать из выбранных
+                    self.user_selections[user_id].remove(news_id)
+                    await query.answer("✅ Убрано из выбранных", show_alert=False)
+                    # Обновить кнопку
+                    new_keyboard = InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton("🤖 ИИ", callback_data=f"ai:{news_id}"),
+                            InlineKeyboardButton("📌 Выбрать", callback_data=f"select:{news_id}")
+                        ]
+                    ])
+                else:
+                    # Добавить в выбранные
+                    self.user_selections[user_id].append(news_id)
+                    await query.answer("✅ Добавлено в выбранные", show_alert=False)
+                    # Обновить кнопку
+                    new_keyboard = InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton("🤖 ИИ", callback_data=f"ai:{news_id}"),
+                            InlineKeyboardButton("✅ Выбрано", callback_data=f"select:{news_id}")
+                        ]
+                    ])
+                
+                # Обновить кнопки в сообщении
+                try:
+                    await query.edit_message_reply_markup(reply_markup=new_keyboard)
+                except:
+                    pass
                 
                 return
 
@@ -678,9 +773,12 @@ class NewsBot:
                     'category': news_category
                 }
 
-                # Создаем кнопку только ИИ пересказа (без кнопки категории)
+                # Создаем кнопки: ИИ пересказ и Выбрать
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("ИИ", callback_data=f"ai:{news_id}")]
+                    [
+                        InlineKeyboardButton("🤖 ИИ", callback_data=f"ai:{news_id}"),
+                        InlineKeyboardButton("📌 Выбрать", callback_data=f"select:{news_id}")
+                    ]
                 ])
 
                 try:
@@ -771,3 +869,86 @@ class NewsBot:
             await self.application.updater.stop()
             await self.application.stop()
             await self.application.shutdown()
+    async def _generate_doc_file(self, user_id: int) -> str | None:
+        """
+        Generate DOC file with selected news for user.
+        
+        Args:
+            user_id: Telegram user ID
+            
+        Returns:
+            Path to generated file or None if error
+        """
+        try:
+            from docx import Document
+            from docx.shared import Pt, RGBColor
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            import tempfile
+            from config.config import CATEGORIES
+            
+            selected_ids = self.user_selections.get(user_id, [])
+            if not selected_ids:
+                return None
+            
+            # Create document
+            doc = Document()
+            doc.add_heading('Выбранные новости', 0)
+            
+            # Add generation date
+            from datetime import datetime
+            p = doc.add_paragraph(f"Создано: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+            p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            
+            # Add each news
+            for news_id in selected_ids:
+                # Get news from DB or cache
+                news = self.db.get_news_by_id(news_id) or self.news_cache.get(news_id)
+                if not news:
+                    continue
+                
+                # Add separator
+                doc.add_paragraph('_' * 80)
+                
+                # Title
+                title_para = doc.add_heading(news.get('title', 'Без заголовка'), level=1)
+                
+                # Category tag
+                category = news.get('category', 'russia')
+                category_tag = CATEGORIES.get(category, '🇷🇺 #Россия')
+                cat_para = doc.add_paragraph(category_tag)
+                cat_para.runs[0].font.bold = True
+                cat_para.runs[0].font.color.rgb = RGBColor(0, 102, 204)
+                
+                # AI summary if exists
+                summary = self.db.get_cached_summary(news_id)
+                if summary:
+                    doc.add_heading('🤖 Пересказ ИИ:', level=2)
+                    doc.add_paragraph(summary)
+                else:
+                    # Original text
+                    doc.add_heading('📄 Оригинальный текст:', level=2)
+                    text = news.get('text', news.get('lead_text', 'Текст недоступен'))
+                    doc.add_paragraph(text)
+                
+                # Source and URL
+                doc.add_paragraph()
+                source_para = doc.add_paragraph(f"📰 Источник: {news.get('source', 'Неизвестно')}")
+                source_para.runs[0].font.size = Pt(10)
+                
+                url_para = doc.add_paragraph(f"🔗 Ссылка: {news.get('url', '')}")
+                url_para.runs[0].font.size = Pt(10)
+                url_para.runs[0].font.color.rgb = RGBColor(0, 0, 255)
+                
+                # Add spacing
+                doc.add_paragraph()
+            
+            # Save to temp file
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
+            doc.save(temp_file.name)
+            temp_file.close()
+            
+            return temp_file.name
+            
+        except Exception as e:
+            logger.error(f"Error generating DOC file: {e}", exc_info=True)
+            return None
