@@ -200,7 +200,7 @@ class NewsBot:
             f"{channels_text}"
             f"{sites_text}"
         )
-        await update.message.reply_text(status_text)
+        await update.message.reply_text(status_text, disable_web_page_preview=True)
     
     async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /pause"""
