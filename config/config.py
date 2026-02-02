@@ -44,7 +44,7 @@ CATEGORIES = {
 }
 
 # RSSHub (for Telegram channel RSS)
-RSSHUB_BASE_URL = os.getenv('RSSHUB_BASE_URL', 'https://rsshub.app')
+RSSHUB_BASE_URL = os.getenv('RSSHUB_BASE_URL', 'https://rsshub-production-a367.up.railway.app')
 
 # Источники по категориям
 SOURCES_CONFIG = {
