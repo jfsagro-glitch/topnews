@@ -3,6 +3,7 @@
 """
 import sqlite3
 import time
+import re
 from datetime import datetime
 from typing import List, Tuple, Optional
 import logging
@@ -242,11 +243,21 @@ class NewsDatabase:
             logger.error(f"Error checking published news: {e}")
             return False
     
-    def is_similar_title_published(self, title: str, threshold: float = 0.85) -> bool:
+    def is_similar_title_published(self, title: str, threshold: float = 0.75) -> bool:
         """Проверяет, есть ли в БД новость с похожим заголовком за последние 24 часа"""
         try:
-            # Нормализуем заголовок: убираем лишние пробелы, переводим в нижний регистр
-            normalized_title = ' '.join(title.lower().split())
+            # Нормализуем заголовок: убираем знаки препинания, лишние пробелы, переводим в нижний регистр
+            import re
+            normalized_title = re.sub(r'[^\w\s]', '', title.lower())
+            normalized_title = ' '.join(normalized_title.split())
+            title_words = set(normalized_title.split())
+            
+            # Фильтруем стоп-слова (короткие и распространённые)
+            stop_words = {'в', 'на', 'из', 'за', 'по', 'до', 'с', 'к', 'у', 'о', 'и', 'а', 'но', 'что', 'как', 'это', 'для'}
+            title_words = {w for w in title_words if len(w) > 2 and w not in stop_words}
+            
+            if len(title_words) < 3:  # Слишком короткий заголовок
+                return False
             
             cursor = self._conn.cursor()
             # Получаем заголовки за последние 24 часа
@@ -256,18 +267,33 @@ class NewsDatabase:
             ''')
             
             for row in cursor.fetchall():
-                existing_title = ' '.join(row[0].lower().split())
+                existing = re.sub(r'[^\w\s]', '', row[0].lower())
+                existing = ' '.join(existing.split())
+                existing_words = set(existing.split())
+                existing_words = {w for w in existing_words if len(w) > 2 and w not in stop_words}
                 
-                # Простая проверка на совпадение большей части заголовка
+                if len(existing_words) < 3:
+                    continue
+                
                 # Проверяем точное совпадение
-                if normalized_title == existing_title:
+                if normalized_title == existing:
                     logger.debug(f"Exact title match found: {title[:50]}")
                     return True
                 
-                # Проверяем включение одного в другой (для случаев с префиксами/суффиксами)
-                if len(normalized_title) > 30:  # Для коротких заголовков не применяем
-                    if normalized_title in existing_title or existing_title in normalized_title:
-                        logger.debug(f"Similar title found: {title[:50]}")
+                # Проверяем включение (для длинных заголовков)
+                if len(normalized_title) > 40:
+                    if normalized_title in existing or existing in normalized_title:
+                        logger.debug(f"Title substring match: {title[:50]}")
+                        return True
+                
+                # Проверяем процент совпадающих слов (Jaccard similarity)
+                common_words = title_words & existing_words
+                union_words = title_words | existing_words
+                
+                if len(union_words) > 0:
+                    similarity = len(common_words) / len(union_words)
+                    if similarity >= threshold:
+                        logger.debug(f"Similar title (words: {similarity:.2f}): {title[:50]}")
                         return True
                         
             return False

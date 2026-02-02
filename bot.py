@@ -942,8 +942,8 @@ class NewsBot:
                     # Отправляем админам в личку с кнопкой "ИИ"
                     await self._send_to_admins(message, keyboard, news_id)
 
-                    # Небольшая задержка между публикациями
-                    await asyncio.sleep(1)
+                    # Задержка между публикациями (защита от Telegram rate limiting)
+                    await asyncio.sleep(1.5)
 
                 except Exception as e:
                     logger.error(f"Error publishing news: {type(e).__name__} (URL hidden)")
