@@ -13,19 +13,17 @@ from telegram.constants import ParseMode
 import asyncio
 from config.config import TELEGRAM_TOKEN, TELEGRAM_CHANNEL_ID, CHECK_INTERVAL_SECONDS, ADMIN_IDS
 
+logger = logging.getLogger(__name__)
+
 # Import DATABASE_PATH from railway_config if available, else from config
 try:
     from config.railway_config import DATABASE_PATH
-    logger.info(f"Using Railway DATABASE_PATH: {DATABASE_PATH}")
 except (ImportError, ValueError):
     from config.config import DATABASE_PATH
-    logger.info(f"Using local DATABASE_PATH: {DATABASE_PATH}")
 
 from db.database import NewsDatabase
 from utils.text_cleaner import format_telegram_message
 from sources.source_collector import SourceCollector
-
-logger = logging.getLogger(__name__)
 
 
 class NewsBot:
