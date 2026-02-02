@@ -543,15 +543,23 @@ class NewsBot:
             try:
                 doc_file = await self._generate_doc_file(user_id)
                 if doc_file:
+                    count = len(self.user_selections.get(user_id, []))
                     await context.bot.send_document(
                         chat_id=user_id,
                         document=open(doc_file, 'rb'),
                         filename="selected_news.docx",
-                        caption=f"📰 Ваши выбранные новости ({len(self.user_selections.get(user_id, []))} шт.)"
+                        caption=f"📰 Ваши выбранные новости ({count} шт.)"
                     )
                     # Удалить временный файл
                     import os
                     os.remove(doc_file)
+                    
+                    # Очистить выбранные новости после отправки
+                    self.user_selections[user_id] = []
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="✅ Документ отправлен!\n\n📌 Выбранные новости очищены. Начните новую подборку!"
+                    )
                 else:
                     await context.bot.send_message(user_id, "❌ Ошибка при создании документа")
             except Exception as e:
