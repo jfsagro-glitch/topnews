@@ -27,6 +27,9 @@ class SourceCollector:
         self.classifier = ContentClassifier()
         self.ai_client = ai_client  # Optional DeepSeek client for AI verification
         self.bot = bot  # Reference to NewsBot for accessing ai_verification_enabled
+
+        # Source health status: source_name -> bool (True ok, False error)
+        self.source_health = {}
         
         # Семафор для ограничения параллелизма (6 одновременных запросов)
         self._sem = asyncio.Semaphore(6)
@@ -64,6 +67,7 @@ class SourceCollector:
                     fetch_url = self.rss_overrides[domain]
                     src_type = 'rss'
                     source_name = domain
+                    entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type))
                 else:
                     # Heuristics: if URL looks like RSS or XML, treat as RSS
                     if 'rss' in src.lower() or src.lower().endswith(('.xml', '.rss')):
@@ -97,6 +101,7 @@ class SourceCollector:
 
                 for entry in entries_to_add:
                     self._configured_sources.append(entry)
+                    self.source_health.setdefault(entry[1], False)
     
     def _in_cooldown(self, url: str) -> bool:
         """Check if URL is in cooldown period"""
@@ -115,24 +120,26 @@ class SourceCollector:
         
         try:
             # Параллельно запускаем сбор из разных типов источников
-            tasks = []
+            tasks = []  # list of tuples (source_name, task)
             
             # Используем сконфигурированные источники, автоматически классифицированные
             for fetch_url, source_name, category, src_type in self._configured_sources:
                 if src_type == 'rss':
-                    tasks.append(self._collect_from_rss(fetch_url, source_name, category))
+                    tasks.append((source_name, self._collect_from_rss(fetch_url, source_name, category)))
                 else:
-                    tasks.append(self._collect_from_html(fetch_url, source_name, category))
+                    tasks.append((source_name, self._collect_from_html(fetch_url, source_name, category)))
             
             # Запускаем все параллельно
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
             
             # Собираем результаты
-            for result in results:
+            for (source_name, _task), result in zip(tasks, results):
                 if isinstance(result, list):
                     all_news.extend(result)
+                    self.source_health[source_name] = True
                 elif isinstance(result, Exception):
                     logger.error(f"Error in collector task: {result}")
+                    self.source_health[source_name] = False
             
             logger.info(f"Collected total {len(all_news)} news items")
             

@@ -129,6 +129,10 @@ class NewsBot:
         stats = self.db.get_stats()
         ai_usage = self.db.get_ai_usage()
 
+        source_health = getattr(self.collector, "source_health", {})
+        def _status_icon(key: str) -> str:
+            return "🟢" if source_health.get(key) else "🔴"
+
         # Telegram channels overview
         telegram_sources = ACTIVE_SOURCES_CONFIG.get('telegram', {}).get('sources', [])
         channel_keys = []
@@ -143,7 +147,7 @@ class NewsBot:
         if channel_labels:
             lines = []
             for channel, key in zip(channel_labels, channel_keys):
-                lines.append(f"• {channel}: {channel_counts.get(key, 0)}")
+                lines.append(f"{_status_icon(key)} {channel}: {channel_counts.get(key, 0)}")
             channels_text = "\n📡 Каналы Telegram:\n" + "\n".join(lines)
 
         # Site sources overview (all non-telegram sources)
@@ -168,7 +172,7 @@ class NewsBot:
         if site_labels:
             lines = []
             for label, key in zip(site_labels, site_keys):
-                lines.append(f"• {label}: {site_counts.get(key, 0)}")
+                lines.append(f"{_status_icon(key)} {label}: {site_counts.get(key, 0)}")
             sites_text = "\n🌐 Сайты:\n" + "\n".join(lines)
         
         # Calculate realistic costs based on token counts
