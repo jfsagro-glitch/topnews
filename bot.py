@@ -13,6 +13,7 @@ from telegram.ext import (
     ContextTypes, ConversationHandler
 )
 from telegram.constants import ParseMode
+from telegram.error import Conflict
 import asyncio
 from config.config import TELEGRAM_TOKEN, TELEGRAM_CHANNEL_ID, CHECK_INTERVAL_SECONDS, ADMIN_IDS
 
@@ -71,6 +72,7 @@ class NewsBot:
         self._instance_lock_fd = None
         self._instance_lock_path = None
         self._db_instance_id = f"{socket.gethostname()}:{os.getpid()}"
+        self._shutdown_requested = False
 
     def _acquire_instance_lock(self) -> bool:
         """Acquire a filesystem lock to prevent multiple bot instances."""
@@ -135,6 +137,9 @@ class NewsBot:
         
         # Обработчик inline кнопок
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
+
+        # Global error handler
+        self.application.add_error_handler(self.on_error)
         
         logger.info("Application created successfully")
         return self.application
@@ -1082,6 +1087,32 @@ class NewsBot:
             await self.application.shutdown()
             self.db.release_bot_lock(self._db_instance_id)
             self._release_instance_lock()
+
+    async def _shutdown_due_to_conflict(self, reason: str):
+        """Shutdown bot immediately on 409 Conflict (duplicate instance)."""
+        if self._shutdown_requested:
+            return
+        self._shutdown_requested = True
+        logger.error(f"Shutting down due to конфликт: {reason}")
+        try:
+            self.is_running = False
+            if self.application and self.application.updater:
+                await self.application.updater.stop()
+            if self.application:
+                await self.application.stop()
+                await self.application.shutdown()
+        except Exception as e:
+            logger.debug(f"Error during конфликт shutdown: {e}")
+        finally:
+            self.db.release_bot_lock(self._db_instance_id)
+            self._release_instance_lock()
+            os._exit(0)
+
+    async def on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE):
+        """Global error handler for the bot."""
+        err = getattr(context, "error", None)
+        if isinstance(err, Conflict) or (err and "Conflict: terminated by other getUpdates request" in str(err)):
+            await self._shutdown_due_to_conflict(str(err))
     async def _generate_doc_file(self, user_id: int) -> str | None:
         """
         Generate DOC file with selected news for user.
