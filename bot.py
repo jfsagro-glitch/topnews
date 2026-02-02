@@ -249,6 +249,8 @@ class NewsBot:
             for channel, key in zip(channel_labels, channel_keys):
                 published_count = channel_counts.get(key, 0)
                 collected_count = last_collected.get(key)
+                # Debug: log what we found
+                logger.debug(f"Telegram channel status: {channel}: published={published_count}, collected={collected_count}, last_collected_keys={list(last_collected.keys())}")
                 if collected_count is not None:
                     lines.append(f"{_status_icon(key)} {channel}: {published_count} (собрано: {collected_count})")
                 else:

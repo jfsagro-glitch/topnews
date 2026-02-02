@@ -125,6 +125,13 @@ class SourceCollector:
                 for entry in entries_to_add:
                     self._configured_sources.append(entry)
                     self.source_health.setdefault(entry[1], False)
+        
+        # Log summary of configured sources
+        telegram_sources = [s[1] for s in self._configured_sources if 'telegram' in s[0].lower() or any(x in s[0] for x in ['t.me', 'telegram'])]
+        other_sources = [s[1] for s in self._configured_sources if s[1] not in telegram_sources]
+        if telegram_sources:
+            logger.info(f"📡 Configured Telegram channels for collection: {telegram_sources}")
+        logger.info(f"Total configured sources: {len(self._configured_sources)} (Telegram: {len(telegram_sources)}, Others: {len(other_sources)})")
     
     def _in_cooldown(self, url: str) -> bool:
         """Check if URL is in cooldown period"""
@@ -159,6 +166,10 @@ class SourceCollector:
             self.last_collected_counts = {}
             self.last_collection_at = time.time()
             
+            # Initialize all configured sources to 0 (will update below)
+            for fetch_url, source_name, category, src_type in self._configured_sources:
+                self.last_collected_counts[source_name] = 0
+            
             # Собираем результаты
             for (source_name, _task), result in zip(tasks, results):
                 if isinstance(result, list):
@@ -173,6 +184,8 @@ class SourceCollector:
                 elif isinstance(result, Exception):
                     logger.error(f"❌ {source_name}: {type(result).__name__}: {result}")
                     self.source_health[source_name] = False
+                    # Ensure we still record 0 for failed sources so they show in status
+                    self.last_collected_counts[source_name] = 0
             
             logger.info(f"Collected total {len(all_news)} news items from {len([s for s in self.source_health.values() if s])} sources")
 
