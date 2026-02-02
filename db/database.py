@@ -75,6 +75,15 @@ class NewsDatabase:
                 )
             ''')
 
+            # Table for bot instance lock (to prevent double запуск)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS bot_lock (
+                    name TEXT PRIMARY KEY,
+                    instance_id TEXT NOT NULL,
+                    locked_at TIMESTAMP NOT NULL
+                )
+            ''')
+
             # Table for caching AI summaries (legacy)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS ai_summaries (
@@ -538,6 +547,57 @@ class NewsDatabase:
         except Exception as e:
             logger.debug(f"Error getting cached summary for news_id {news_id}: {e}")
             return None
+
+    def acquire_bot_lock(self, instance_id: str, ttl_seconds: int = 600) -> bool:
+        """
+        Acquire bot instance lock using DB (best-effort).
+        Lock expires after ttl_seconds.
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    "SELECT instance_id, locked_at FROM bot_lock WHERE name = ?",
+                    ("news_bot",)
+                )
+                row = cursor.fetchone()
+                now = int(time.time())
+
+                if row:
+                    existing_instance, locked_at = row[0], row[1]
+                    try:
+                        locked_at_int = int(locked_at)
+                    except Exception:
+                        locked_at_int = 0
+                    if now - locked_at_int < ttl_seconds:
+                        logger.error(
+                            f"Bot lock held by {existing_instance}, refusing to start"
+                        )
+                        return False
+
+                cursor.execute(
+                    "INSERT INTO bot_lock(name, instance_id, locked_at) VALUES(?, ?, ?) "
+                    "ON CONFLICT(name) DO UPDATE SET instance_id=excluded.instance_id, locked_at=excluded.locked_at",
+                    ("news_bot", instance_id, str(now))
+                )
+                self._conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error acquiring bot lock: {e}")
+            return False
+
+    def release_bot_lock(self, instance_id: str) -> None:
+        """Release bot instance lock if held by instance_id."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    "DELETE FROM bot_lock WHERE name = ? AND instance_id = ?",
+                    ("news_bot", instance_id)
+                )
+                self._conn.commit()
+        except Exception as e:
+            logger.debug(f"Error releasing bot lock: {e}")
 
     def save_summary(self, news_id: int, summary_text: str) -> bool:
         """

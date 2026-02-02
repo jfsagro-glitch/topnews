@@ -5,6 +5,7 @@ import logging
 import time
 import os
 import tempfile
+import socket
 from net.deepseek_client import DeepSeekClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -69,6 +70,7 @@ class NewsBot:
         # Instance lock (prevent double start)
         self._instance_lock_fd = None
         self._instance_lock_path = None
+        self._db_instance_id = f"{socket.gethostname()}:{os.getpid()}"
 
     def _acquire_instance_lock(self) -> bool:
         """Acquire a filesystem lock to prevent multiple bot instances."""
@@ -1050,6 +1052,10 @@ class NewsBot:
 
         if not self._acquire_instance_lock():
             return
+
+        if not self.db.acquire_bot_lock(self._db_instance_id, ttl_seconds=600):
+            self._release_instance_lock()
+            return
         
         # Создаем приложение
         self.create_application()
@@ -1074,6 +1080,7 @@ class NewsBot:
             await self.application.updater.stop()
             await self.application.stop()
             await self.application.shutdown()
+            self.db.release_bot_lock(self._db_instance_id)
             self._release_instance_lock()
     async def _generate_doc_file(self, user_id: int) -> str | None:
         """
