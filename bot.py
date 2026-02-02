@@ -183,9 +183,10 @@ class NewsBot:
         channel_keys = []
         channel_labels = []
         for src in telegram_sources:
-            channel = src.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '')
+            channel = src.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '').strip('/')
             if channel:
-                channel_keys.append(f"t.me/{channel}")
+                # SourceCollector stores Telegram source_name as short channel (e.g. 'mash')
+                channel_keys.append(channel)
                 channel_labels.append(channel)
         channel_counts = self.db.get_source_counts(channel_keys) if channel_keys else {}
         channels_text = ""
