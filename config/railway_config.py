@@ -38,7 +38,7 @@ LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 LOG_FILE = os.getenv('LOG_FILE', 'logs/bot.log')
 
 # RSSHub (for Telegram channel RSS)
-RSSHUB_BASE_URL = os.getenv('RSSHUB_BASE_URL', 'https://rsshub.app')
+RSSHUB_BASE_URL = os.getenv('RSSHUB_BASE_URL', 'https://rsshub-production-a367.up.railway.app')
 
 # Категории
 CATEGORIES = {

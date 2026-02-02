@@ -57,6 +57,8 @@ class SourceCollector:
                 parsed = urlparse(src)
                 domain = parsed.netloc.lower()
 
+                entries_to_add = []
+
                 # Prefer RSS override when we know the host's RSS endpoint
                 if domain in self.rss_overrides:
                     fetch_url = self.rss_overrides[domain]
@@ -68,24 +70,33 @@ class SourceCollector:
                         fetch_url = src
                         src_type = 'rss'
                         source_name = domain
+                        entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type))
                     else:
                         # t.me channels: use RSSHub if configured
                         if domain.endswith('t.me'):
                             channel = src.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '')
-                            if RSSHUB_BASE_URL:
-                                fetch_url = f"{RSSHUB_BASE_URL.rstrip('/')}/telegram/channel/{channel}"
-                                src_type = 'rss'
-                                source_name = f"t.me/{channel}"
-                            else:
-                                fetch_url = src
-                                src_type = 'html'
-                                source_name = src.replace('https://', '')
+                            base = (RSSHUB_BASE_URL or '').strip()
+                            if base and not base.startswith('http'):
+                                base = f"https://{base}"
+                            base = base.rstrip('/') if base else ''
+
+                            source_name = f"t.me/{channel}"
+                            if base:
+                                fetch_url = f"{base}/telegram/channel/{channel}"
+                                entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), 'rss'))
+
+                            # Fallback to public RSSHub if custom base fails
+                            if base != 'https://rsshub.app':
+                                fallback_url = f"https://rsshub.app/telegram/channel/{channel}"
+                                entries_to_add.append((fallback_url, source_name, cfg.get('category', 'russia'), 'rss'))
                         else:
                             fetch_url = src
                             src_type = 'html'
                             source_name = domain
+                            entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type))
 
-                self._configured_sources.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type))
+                for entry in entries_to_add:
+                    self._configured_sources.append(entry)
     
     def _in_cooldown(self, url: str) -> bool:
         """Check if URL is in cooldown period"""
