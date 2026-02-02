@@ -31,6 +31,14 @@ from utils.text_cleaner import format_telegram_message
 from sources.source_collector import SourceCollector
 
 
+def escape_markdown_v2(text: str) -> str:
+    """Escape special characters for MarkdownV2"""
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
+
 class NewsBot:
     """Основной класс Telegram бота"""
     
@@ -393,6 +401,11 @@ class NewsBot:
         """Обработчик нажатия на кнопку"""
         query = update.callback_query
         
+        if query.data == "copy_hint":
+            # Подсказка для копирования
+            await query.answer("👆 Нажмите на текст выше и выберите 'Копировать'", show_alert=False)
+            return
+        
         if query.data == "toggle_ai":
             # Переключение AI верификации
             self.ai_verification_enabled = not self.ai_verification_enabled
@@ -494,6 +507,7 @@ class NewsBot:
                         self.db.add_ai_usage(tokens=token_usage['total_tokens'], cost_usd=cost_usd, operation_type='summarize')
                         self.db.save_summary(news_id, summary)
                         
+                        # Send summary with info
                         await context.bot.send_message(
                             chat_id=user_id,
                             text=(
@@ -502,6 +516,17 @@ class NewsBot:
                             ),
                             disable_web_page_preview=True,
                             disable_notification=True
+                        )
+                        
+                        # Send copyable version
+                        copy_text = f"{summary}"
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text=copy_text,
+                            disable_notification=True,
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton("📋 Нажмите на текст выше для копирования", callback_data="copy_hint")
+                            ]])
                         )
                     else:
                         logger.warning(f"AI summarize failed for news_id={news_id}, no summary returned")
