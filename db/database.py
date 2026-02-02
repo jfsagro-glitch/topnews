@@ -330,6 +330,22 @@ class NewsDatabase:
             logger.error(f"Error getting source counts: {e}")
             return {src: 0 for src in sources}
 
+    def get_all_sources(self) -> dict:
+        """Get all unique sources in DB with their counts (for debugging)."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute('''
+                SELECT source, COUNT(*)
+                FROM published_news
+                GROUP BY source
+                ORDER BY COUNT(*) DESC
+            ''')
+            rows = cursor.fetchall()
+            return {src: cnt for src, cnt in rows}
+        except Exception as e:
+            logger.error(f"Error getting all sources: {e}")
+            return {}
+
     def get_news_id_by_url(self, url: str) -> int | None:
         """
         Get news ID by URL.

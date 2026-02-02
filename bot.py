@@ -76,6 +76,7 @@ class NewsBot:
         self.application.add_handler(CommandHandler("filter", self.cmd_filter))
         self.application.add_handler(CommandHandler("sync_deepseek", self.cmd_sync_deepseek))
         self.application.add_handler(CommandHandler("update_stats", self.cmd_update_stats))
+        self.application.add_handler(CommandHandler("debug_sources", self.cmd_debug_sources))
         
         # Обработчик текстовых сообщений (эмодзи-кнопки)
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_emoji_buttons))
@@ -123,6 +124,25 @@ class NewsBot:
         except Exception as e:
             logger.error(f"Error in sync: {e}")
             await update.message.reply_text(f"❌ Ошибка при сборе: {e}")
+    
+    async def cmd_debug_sources(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /debug_sources - показать все источники в БД"""
+        if update.message.from_user.id not in ADMIN_IDS:
+            await update.message.reply_text("❌ Доступно только администраторам")
+            return
+        
+        all_sources = self.db.get_all_sources()
+        if not all_sources:
+            await update.message.reply_text("📭 В БД нет новостей ни от одного источника")
+            return
+        
+        text = "📋 Все источники в БД:\n\n"
+        total = 0
+        for source, count in all_sources.items():
+            text += f"• {source}: {count}\n"
+            total += count
+        text += f"\n📊 Всего новостей: {total}"
+        await update.message.reply_text(text)
     
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /status"""
