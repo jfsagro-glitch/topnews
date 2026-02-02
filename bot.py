@@ -93,7 +93,7 @@ class NewsBot:
 
     # Persistent reply keyboard for chats (anchored at bottom)
     REPLY_KEYBOARD = ReplyKeyboardMarkup(
-        [['🔄', '📊', '🔍', '⏸️', '▶️']], resize_keyboard=True
+        [['🔄', '✉️', '🔍', '⏸️', '▶️']], resize_keyboard=True
     )
     
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -374,8 +374,9 @@ class NewsBot:
         
         if text == '🔄':
             await self.cmd_sync(update, context)
-        elif text == '📊':
-            await self.cmd_status(update, context)
+        elif text == '✉️':
+            # Отправить в личку (Мои новости)
+            await self.cmd_my_selection(update, context)
         elif text == '🔍':
             await self.cmd_filter(update, context)
         elif text == '⏸️':
@@ -406,6 +407,9 @@ class NewsBot:
                 InlineKeyboardButton(f"AI {ai_status}", callback_data="toggle_ai"),
             ],
             [
+                InlineKeyboardButton("📊 Статус бота", callback_data="show_status"),
+            ],
+            [
                 InlineKeyboardButton(f"📄 Мои новости ({selection_count})", callback_data="show_my_selection"),
             ]
         ]
@@ -425,6 +429,89 @@ class NewsBot:
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик нажатия на кнопку"""
         query = update.callback_query
+        
+        if query.data == "show_status":
+            # Показать статус бота
+            await query.answer()
+            user_id = query.from_user.id
+            
+            # Получить статус
+            stats = self.db.get_stats()
+            ai_usage = self.db.get_ai_usage()
+            source_health = getattr(self.collector, "source_health", {})
+            def _status_icon(key: str) -> str:
+                return "🟢" if source_health.get(key) else "🔴"
+
+            # Telegram channels
+            telegram_sources = ACTIVE_SOURCES_CONFIG.get('telegram', {}).get('sources', [])
+            channel_keys = []
+            channel_labels = []
+            for src in telegram_sources:
+                channel = src.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '')
+                if channel:
+                    channel_keys.append(f"t.me/{channel}")
+                    channel_labels.append(channel)
+            channel_counts = self.db.get_source_counts(channel_keys) if channel_keys else {}
+            channels_text = ""
+            if channel_labels:
+                lines = []
+                for channel, key in zip(channel_labels, channel_keys):
+                    lines.append(f"{_status_icon(key)} {channel}: {channel_counts.get(key, 0)}")
+                channels_text = "\n📡 Каналы Telegram:\n" + "\n".join(lines) + "\n"
+
+            # Sites
+            site_domains = {}
+            for category_key, cfg in ACTIVE_SOURCES_CONFIG.items():
+                if category_key == 'telegram':
+                    continue
+                for src in cfg.get('sources', []):
+                    domain = src.replace('https://', '').replace('http://', '').split('/')[0]
+                    if domain.endswith('t.me') or domain in site_domains:
+                        continue
+                    site_domains[domain] = domain
+            
+            site_keys = list(site_domains.keys())
+            site_counts = self.db.get_source_counts(site_keys) if site_keys else {}
+            sites_text = ""
+            if site_keys:
+                lines = []
+                for key in sorted(site_keys):
+                    lines.append(f"{_status_icon(key)} {key}: {site_counts.get(key, 0)}")
+                sites_text = "\n🌐 Сайты:\n" + "\n".join(lines)
+            
+            # Calculate cost
+            input_tokens = int(ai_usage['total_tokens'] * 0.6)
+            output_tokens = int(ai_usage['total_tokens'] * 0.4)
+            input_cost = (input_tokens / 1_000_000.0) * 0.14
+            output_cost = (output_tokens / 1_000_000.0) * 0.28
+            estimated_cost = input_cost + output_cost
+            
+            status_text = (
+                f"📊 Статус бота:\n\n"
+                f"Статус: {'⏸️ PAUSED' if self.is_paused else '✅ RUNNING'}\n"
+                f"Всего опубликовано: {stats['total']}\n"
+                f"За сегодня: {stats['today']}\n"
+                f"Интервал проверки: {CHECK_INTERVAL_SECONDS} сек\n"
+                f"───────────────────────────────\n"
+                f"🧠 ИИ использование (автоматический учет):\n"
+                f"Всего запросов: {ai_usage['total_requests']}\n"
+                f"Всего токенов: {ai_usage['total_tokens']:,}\n"
+                f"Расчетная стоимость: ${estimated_cost:.4f}\n\n"
+                f"📝 Пересказы: {ai_usage['summarize_requests']} запр., {ai_usage['summarize_tokens']:,} токенов\n"
+                f"🏷️ Категории: {ai_usage['category_requests']} запр., {ai_usage['category_tokens']:,} токенов\n"
+                f"✨ Очистка текста: {ai_usage['text_clean_requests']} запр., {ai_usage['text_clean_tokens']:,} токенов\n"
+                f"───────────────────────────────"
+                f"{channels_text}"
+                f"───────────────────────────────"
+                f"{sites_text}"
+            )
+            
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=status_text,
+                disable_web_page_preview=True
+            )
+            return
         
         if query.data == "show_my_selection":
             # Показать выбранные новости с кнопками экспорта
