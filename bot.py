@@ -21,6 +21,11 @@ try:
 except (ImportError, ValueError):
     from config.config import DATABASE_PATH
 
+try:
+    from config.railway_config import SOURCES_CONFIG as ACTIVE_SOURCES_CONFIG
+except (ImportError, ValueError):
+    from config.config import SOURCES_CONFIG as ACTIVE_SOURCES_CONFIG
+
 from db.database import NewsDatabase
 from utils.text_cleaner import format_telegram_message
 from sources.source_collector import SourceCollector
@@ -123,6 +128,23 @@ class NewsBot:
         """Команда /status"""
         stats = self.db.get_stats()
         ai_usage = self.db.get_ai_usage()
+
+        # Telegram channels overview
+        telegram_sources = ACTIVE_SOURCES_CONFIG.get('telegram', {}).get('sources', [])
+        channel_keys = []
+        channel_labels = []
+        for src in telegram_sources:
+            channel = src.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '')
+            if channel:
+                channel_keys.append(f"t.me/{channel}")
+                channel_labels.append(channel)
+        channel_counts = self.db.get_source_counts(channel_keys) if channel_keys else {}
+        channels_text = ""
+        if channel_labels:
+            lines = []
+            for channel, key in zip(channel_labels, channel_keys):
+                lines.append(f"• {channel}: {channel_counts.get(key, 0)}")
+            channels_text = "\n📡 Каналы Telegram:\n" + "\n".join(lines)
         
         # Calculate realistic costs based on token counts
         # DeepSeek pricing: input $0.14/M, output $0.28/M tokens
@@ -146,6 +168,7 @@ class NewsBot:
             f"📝 Пересказы: {ai_usage['summarize_requests']} запр., {ai_usage['summarize_tokens']:,} токенов\n"
             f"🏷️ Категории: {ai_usage['category_requests']} запр., {ai_usage['category_tokens']:,} токенов\n"
             f"✨ Очистка текста: {ai_usage['text_clean_requests']} запр., {ai_usage['text_clean_tokens']:,} токенов"
+            f"{channels_text}"
         )
         await update.message.reply_text(status_text)
     

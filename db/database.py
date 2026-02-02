@@ -307,6 +307,29 @@ class NewsDatabase:
             logger.error(f"Error getting stats: {e}")
             return {'total': 0, 'today': 0}
 
+    def get_source_counts(self, sources: List[str]) -> dict:
+        """Get counts of published news by source."""
+        if not sources:
+            return {}
+        try:
+            cursor = self._conn.cursor()
+            placeholders = ','.join(['?'] * len(sources))
+            cursor.execute(
+                f'''SELECT source, COUNT(*)
+                    FROM published_news
+                    WHERE source IN ({placeholders})
+                    GROUP BY source''',
+                tuple(sources)
+            )
+            rows = cursor.fetchall()
+            counts = {src: 0 for src in sources}
+            for src, cnt in rows:
+                counts[src] = cnt or 0
+            return counts
+        except Exception as e:
+            logger.error(f"Error getting source counts: {e}")
+            return {src: 0 for src in sources}
+
     def get_news_id_by_url(self, url: str) -> int | None:
         """
         Get news ID by URL.
