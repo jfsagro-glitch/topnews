@@ -145,6 +145,31 @@ class NewsBot:
             for channel, key in zip(channel_labels, channel_keys):
                 lines.append(f"• {channel}: {channel_counts.get(key, 0)}")
             channels_text = "\n📡 Каналы Telegram:\n" + "\n".join(lines)
+
+        # Site sources overview (all non-telegram sources)
+        site_labels = []
+        site_keys = []
+        for category_key, cfg in ACTIVE_SOURCES_CONFIG.items():
+            if category_key == 'telegram':
+                continue
+            for src in cfg.get('sources', []):
+                # derive source key as used in SourceCollector (domain or t.me/<channel>)
+                parsed = src
+                domain = src.replace('https://', '').replace('http://', '').split('/')[0]
+                if domain.endswith('t.me'):
+                    continue
+                # normalize label as original source URL
+                label = src
+                key = domain
+                site_labels.append(label)
+                site_keys.append(key)
+        site_counts = self.db.get_source_counts(site_keys) if site_keys else {}
+        sites_text = ""
+        if site_labels:
+            lines = []
+            for label, key in zip(site_labels, site_keys):
+                lines.append(f"• {label}: {site_counts.get(key, 0)}")
+            sites_text = "\n🌐 Сайты:\n" + "\n".join(lines)
         
         # Calculate realistic costs based on token counts
         # DeepSeek pricing: input $0.14/M, output $0.28/M tokens
@@ -169,6 +194,7 @@ class NewsBot:
             f"🏷️ Категории: {ai_usage['category_requests']} запр., {ai_usage['category_tokens']:,} токенов\n"
             f"✨ Очистка текста: {ai_usage['text_clean_requests']} запр., {ai_usage['text_clean_tokens']:,} токенов"
             f"{channels_text}"
+            f"{sites_text}"
         )
         await update.message.reply_text(status_text)
     
