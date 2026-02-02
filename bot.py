@@ -229,7 +229,11 @@ class NewsBot:
 
         source_health = getattr(self.collector, "source_health", {})
         last_collected = getattr(self.collector, "last_collected_counts", {})
-        def _status_icon(key: str) -> str:
+        def _status_icon(key: str, collected: int = None) -> str:
+            # Зеленый если источник здоров И собрал хотя бы 1 новость
+            # Или если collected > 0 независимо от health
+            if collected is not None and collected > 0:
+                return "🟢"
             return "🟢" if source_health.get(key) else "🔴"
 
         # Telegram channels overview
@@ -248,13 +252,10 @@ class NewsBot:
             lines = []
             for channel, key in zip(channel_labels, channel_keys):
                 published_count = channel_counts.get(key, 0)
-                collected_count = last_collected.get(key)
-                # Debug: log what we found
-                logger.debug(f"Telegram channel status: {channel}: published={published_count}, collected={collected_count}, last_collected_keys={list(last_collected.keys())}")
-                if collected_count is not None:
-                    lines.append(f"{_status_icon(key)} {channel}: {published_count} (собрано: {collected_count})")
-                else:
-                    lines.append(f"{_status_icon(key)} {channel}: {published_count}")
+                collected_count = last_collected.get(key, 0)
+                # Зеленый если собрано > 0, иначе красный
+                icon = "🟢" if collected_count > 0 else "🔴"
+                lines.append(f"{icon} {channel}: {collected_count}")
             channels_text = "\n📡 Каналы Telegram:\n" + "\n".join(lines) + "\n"
 
         # Site sources overview (all non-telegram sources)
@@ -276,11 +277,10 @@ class NewsBot:
             lines = []
             for key in sorted(site_keys):
                 published_count = site_counts.get(key, 0)
-                collected_count = last_collected.get(key)
-                if collected_count is not None:
-                    lines.append(f"{_status_icon(key)} {key}: {published_count} (собрано: {collected_count})")
-                else:
-                    lines.append(f"{_status_icon(key)} {key}: {published_count}")
+                collected_count = last_collected.get(key, 0)
+                # Зеленый если собрано > 0, иначе красный
+                icon = "🟢" if collected_count > 0 else "🔴"
+                lines.append(f"{icon} {key}: {collected_count}")
             sites_text = "\n🌐 Сайты:\n" + "\n".join(lines)
         
         # Calculate realistic costs based on token counts
