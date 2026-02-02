@@ -37,6 +37,9 @@ DATABASE_PATH = os.getenv('DATABASE_PATH', 'db/news.db')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 LOG_FILE = os.getenv('LOG_FILE', 'logs/bot.log')
 
+# RSSHub (for Telegram channel RSS)
+RSSHUB_BASE_URL = os.getenv('RSSHUB_BASE_URL', 'https://rsshub.app')
+
 # Категории
 CATEGORIES = {
     'world': '#Мир',
@@ -47,20 +50,34 @@ CATEGORIES = {
 
 # Источники по категориям
 SOURCES_CONFIG = {
+    'world': {
+        'category': 'world',
+        'sources': [
+            'https://ria.ru/world/',
+            'https://lenta.ru/tags/geo/',
+            'https://tass.ru/rss/index.xml',
+            'https://www.gazeta.ru/rss/',
+            'https://rg.ru/world/',
+            'https://www.rbc.ru/v10/static/rss/rbc_news.rss',
+            'https://russian.rt.com/rss/',
+            'https://www.interfax.ru/world/',
+            'https://dzen.ru/news/rubric/world',
+        ]
+    },
     'russia': {
         'category': 'russia',
         'sources': [
             'https://dzen.ru/news/rubric/chronologic',
             'https://ria.ru/',
             'https://lenta.ru/',
-            'https://www.gazeta.ru/',
-            'https://tass.ru/',
+            'https://www.gazeta.ru/rss/',
+            'https://tass.ru/rss/index.xml',
             'https://rg.ru/',
             'https://ren.tv/news',
-            'https://iz.ru/',
-            'https://russian.rt.com/',
-            'https://www.rbc.ru/',
-            'https://www.kommersant.ru/',
+            'https://iz.ru/rss.xml',
+            'https://russian.rt.com/rss/',
+            'https://www.rbc.ru/v10/static/rss/rbc_news.rss',
+            'https://rss.kommersant.ru/K40/',
         ]
     },
     'telegram': {

@@ -5,7 +5,10 @@ import logging
 import asyncio
 import time
 from typing import List, Dict, Optional
-from config.config import SOURCES_CONFIG
+try:
+    from config.railway_config import SOURCES_CONFIG, RSSHUB_BASE_URL
+except (ImportError, ValueError):
+    from config.config import SOURCES_CONFIG, RSSHUB_BASE_URL
 from parsers.rss_parser import RSSParser
 from parsers.html_parser import HTMLParser
 from urllib.parse import urlparse
@@ -36,11 +39,13 @@ class SourceCollector:
             'ria.ru': 'https://ria.ru/export/rss2/archive/index.xml',
             'lenta.ru': 'https://lenta.ru/rss/',
             'www.gazeta.ru': 'https://www.gazeta.ru/rss/',
+            'gazeta.ru': 'https://www.gazeta.ru/rss/',
             'tass.ru': 'https://tass.ru/rss/index.xml',
             'rg.ru': 'https://rg.ru/xml/',
             'iz.ru': 'https://iz.ru/rss.xml',
             'russian.rt.com': 'https://russian.rt.com/rss/',
             'www.rbc.ru': 'https://www.rbc.ru/v10/static/rss/rbc_news.rss',
+            'rbc.ru': 'https://www.rbc.ru/v10/static/rss/rbc_news.rss',
             'www.kommersant.ru': 'https://rss.kommersant.ru/K40/',
         }
 
@@ -64,11 +69,17 @@ class SourceCollector:
                         src_type = 'rss'
                         source_name = domain
                     else:
-                        # t.me channels treated as HTML pages
+                        # t.me channels: use RSSHub if configured
                         if domain.endswith('t.me'):
-                            fetch_url = src
-                            src_type = 'html'
-                            source_name = src.replace('https://', '')
+                            channel = src.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '')
+                            if RSSHUB_BASE_URL:
+                                fetch_url = f"{RSSHUB_BASE_URL.rstrip('/')}/telegram/channel/{channel}"
+                                src_type = 'rss'
+                                source_name = f"t.me/{channel}"
+                            else:
+                                fetch_url = src
+                                src_type = 'html'
+                                source_name = src.replace('https://', '')
                         else:
                             fetch_url = src
                             src_type = 'html'
