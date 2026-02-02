@@ -97,19 +97,26 @@ class ContentClassifier:
             r'\bяпони[яи]',
             r'\bкоре[яи]',
             r'\bиран',
+            r'\bиранск',
             r'\bтегеран',
+            r'\bхамас',
             r'\bизраил',
             r'\bтель-авив',
             r'\bпалестин',
             r'\bсири[яи]',
+            r'\bасад',
             r'\bтурци[яи]',
             r'\bанкар',
+            r'\bердоган',
             r'\bгермани[яи]',
             r'\bберлин',
+            r'\bшольц',
             r'\bфранци[яи]',
             r'\bпариж',
+            r'\bмакрон',
             r'\bбритани[яи]',
             r'\bлондон',
+            r'\bчерчилль',
             r'\bитали[яи]',
             r'\bрим\b',
             r'\bиспани[яи]',
@@ -147,6 +154,14 @@ class ContentClassifier:
             r'\bмеждународн',
             r'\bдипломат',
             r'\bсанкци',
+            r'\bвоору?жен',  # вооружённые силы
+            r'\bудар\b',
+            r'\bракет',
+            r'\bдрон',
+            r'\bконфликт',
+            r'\bвойск',
+            r'\bпол[ё]т\b',
+            r'\bвоенн',
         ],
     }
     
@@ -195,9 +210,6 @@ class ContentClassifier:
         if not scores:
             return 'russia'
         
-        # Возвращаем категорию с максимальным количеством совпадений
-        best_category = max(scores.items(), key=lambda x: x[1])[0]
-        
         # Специальная логика: если нашли и Москву, и Подмосковье,
         # приоритет отдаём той, у которой больше упоминаний
         if 'moscow' in scores and 'moscow_region' in scores:
@@ -205,6 +217,18 @@ class ContentClassifier:
             if scores['moscow_region'] >= scores['moscow']:
                 return 'moscow_region'
             return 'moscow'
+        
+        # Если есть явные маркеры мировых событий (они обычно сильнее локальных),
+        # они должны иметь приоритет
+        if 'world' in scores:
+            # Мировые события имеют вес 1.5x для приоритета
+            adjusted_world_score = scores['world'] * 1.5
+            best_other = max([v for k, v in scores.items() if k != 'world'], default=0)
+            if adjusted_world_score > best_other:
+                return 'world'
+        
+        # Возвращаем категорию с максимальным количеством совпадений
+        best_category = max(scores.items(), key=lambda x: x[1])[0]
         
         return best_category
     
@@ -216,6 +240,7 @@ class ContentClassifier:
         url_lower = url.lower()
         
         # Московская область (точные маркеры в URL)
+        # Исключаем riamo.ru так как там публикуются новости разных категорий
         moscow_region_markers = (
             'moskovskaya-oblast',
             'moskovskaja-oblast',
@@ -223,7 +248,6 @@ class ContentClassifier:
             'mosobl',
             'mosreg',
             'mosregtoday',
-            'riamo.ru',
             'mosreg.ru',
             '360.ru/rubriki/mosobl',
         )
