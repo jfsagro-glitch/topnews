@@ -860,9 +860,14 @@ class NewsBot:
             news_items = await self.collector.collect_all()
             
             published_count = 0
+            max_publications = 40  # Лимит публикаций за цикл (защита от rate limiting)
             
             # Публикуем каждую новость
             for news in news_items:
+                # Проверяем лимит публикаций
+                if published_count >= max_publications:
+                    logger.info(f"Reached publication limit ({max_publications}), stopping")
+                    break
                 # Проверяем фильтр по категориям
                 if self.category_filter and news.get('category') != self.category_filter:
                     logger.debug(f"Skipping news (category filter): {news.get('title')[:50]}")
@@ -943,7 +948,7 @@ class NewsBot:
                     await self._send_to_admins(message, keyboard, news_id)
 
                     # Задержка между публикациями (защита от Telegram rate limiting)
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(2.5)
 
                 except Exception as e:
                     logger.error(f"Error publishing news: {type(e).__name__} (URL hidden)")
