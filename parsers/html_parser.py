@@ -67,6 +67,33 @@ class HTMLParser:
     
     def _find_article_elements(self, soup: BeautifulSoup, source_name: str):
         """Находит элементы статей в HTML"""
+        
+        # Специфичные селекторы для конкретных сайтов
+        if 'ren.tv' in source_name.lower() or 'ren.tv' in str(soup)[:1000].lower():
+            # Ren.TV использует специальные классы
+            articles = soup.find_all('article', class_=lambda x: x and 'news-card' in x.lower())
+            if not articles:
+                articles = soup.find_all('div', class_=lambda x: x and ('card' in x.lower() or 'news' in x.lower()))
+            if articles:
+                logger.debug(f"Found {len(articles)} ren.tv articles")
+                return articles[:15]
+        
+        if 'regions.ru' in source_name.lower():
+            # Regions.ru структура
+            articles = soup.find_all(['article', 'div'], class_=lambda x: x and ('news' in x.lower() or 'item' in x.lower()))
+            if articles:
+                logger.debug(f"Found {len(articles)} regions.ru articles")
+                return articles[:15]
+        
+        if 'iz.ru' in source_name.lower() or 'известия' in source_name.lower():
+            # Известия селекторы
+            articles = soup.find_all(['article', 'div'], class_=lambda x: x and ('lenta_news__item' in str(x) or 'node' in x.lower()))
+            if not articles:
+                articles = soup.find_all('article')
+            if articles:
+                logger.debug(f"Found {len(articles)} iz.ru articles")
+                return articles[:15]
+        
         # Универсальный поиск по классам/тегам
         articles = soup.find_all(['article', 'div'], class_=lambda x: x and any(
             keyword in x.lower() for keyword in ['news', 'article', 'item', 'post', 'story']

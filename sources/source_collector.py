@@ -42,26 +42,26 @@ class SourceCollector:
         self.rss_overrides = {
             'ria.ru': 'https://ria.ru/export/rss2/archive/index.xml',
             'lenta.ru': 'https://lenta.ru/rss/',
-            'www.gazeta.ru': 'https://www.gazeta.ru/rss/',
-            'gazeta.ru': 'https://www.gazeta.ru/rss/',
+            'www.gazeta.ru': 'https://www.gazeta.ru/export/rss/lenta.xml',
+            'gazeta.ru': 'https://www.gazeta.ru/export/rss/lenta.xml',
             'tass.ru': 'https://tass.ru/rss/v2.xml',
             'rg.ru': 'https://rg.ru/xml/index.xml',
-            'iz.ru': 'https://iz.ru/xml/rss/all.xml',
+            'iz.ru': 'https://iz.ru/xml/rss/all.xml',  # Will use HTML if blocked
             'russian.rt.com': 'https://russian.rt.com/rss/',
             'www.rbc.ru': 'https://rssexport.rbc.ru/rbcnews/news/30/full.rss',
             'rbc.ru': 'https://rssexport.rbc.ru/rbcnews/news/30/full.rss',
-            'www.kommersant.ru': 'https://www.kommersant.ru/rss/news/',
-            'kommersant.ru': 'https://www.kommersant.ru/rss/news/',
-            'rss.kommersant.ru': 'https://www.kommersant.ru/rss/news/',
+            'www.kommersant.ru': 'https://www.kommersant.ru/RSS/main.xml',
+            'kommersant.ru': 'https://www.kommersant.ru/RSS/main.xml',
+            'rss.kommersant.ru': 'https://www.kommersant.ru/RSS/main.xml',
             'interfax.ru': 'https://www.interfax.ru/rss',
             'www.interfax.ru': 'https://www.interfax.ru/rss',
             'interfax-russia.ru': 'https://www.interfax.ru/rss',
             'www.interfax-russia.ru': 'https://www.interfax.ru/rss',
-            'ren.tv': 'https://ren.tv/nova/export/rss.xml',
+            'ren.tv': None,  # Blocks RSS, use HTML
             'dzen.ru': None,  # Dzen не имеет RSS, нужен HTML парсинг
             '360.ru': 'https://360.ru/rss/',
-            'regions.ru': 'https://regions.ru/all/',
-            'riamo.ru': 'https://riamo.ru/news/rss/',
+            'regions.ru': None,  # RSS empty, use HTML
+            'riamo.ru': 'https://riamo.ru/feed',
             'mosregtoday.ru': None,  # HTML only
             'mosreg.ru': None,  # HTML only, блокирует RSS
         }
