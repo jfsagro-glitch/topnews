@@ -168,7 +168,7 @@ class NewsBot:
             lines = []
             for channel, key in zip(channel_labels, channel_keys):
                 lines.append(f"{_status_icon(key)} {channel}: {channel_counts.get(key, 0)}")
-            channels_text = "\n📡 Каналы Telegram:\n" + "\n".join(lines)
+            channels_text = "\n📡 Каналы Telegram:\n" + "\n".join(lines) + "\n"
 
         # Site sources overview (all non-telegram sources)
         site_labels = []
@@ -209,15 +209,18 @@ class NewsBot:
             f"Статус: {'⏸️ PAUSED' if self.is_paused else '✅ RUNNING'}\n"
             f"Всего опубликовано: {stats['total']}\n"
             f"За сегодня: {stats['today']}\n"
-            f"Интервал проверки: {CHECK_INTERVAL_SECONDS} сек\n\n"
+            f"Интервал проверки: {CHECK_INTERVAL_SECONDS} сек\n"
+            f"───────────────────────────────\n"
             f"🧠 ИИ использование (автоматический учет):\n"
             f"Всего запросов: {ai_usage['total_requests']}\n"
             f"Всего токенов: {ai_usage['total_tokens']:,}\n"
             f"Расчетная стоимость: ${estimated_cost:.4f}\n\n"
             f"📝 Пересказы: {ai_usage['summarize_requests']} запр., {ai_usage['summarize_tokens']:,} токенов\n"
             f"🏷️ Категории: {ai_usage['category_requests']} запр., {ai_usage['category_tokens']:,} токенов\n"
-            f"✨ Очистка текста: {ai_usage['text_clean_requests']} запр., {ai_usage['text_clean_tokens']:,} токенов"
+            f"✨ Очистка текста: {ai_usage['text_clean_requests']} запр., {ai_usage['text_clean_tokens']:,} токенов\n"
+            f"───────────────────────────────"
             f"{channels_text}"
+            f"───────────────────────────────"
             f"{sites_text}"
         )
         await update.message.reply_text(status_text, disable_web_page_preview=True)
