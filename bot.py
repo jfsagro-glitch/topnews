@@ -171,28 +171,24 @@ class NewsBot:
             channels_text = "\n📡 Каналы Telegram:\n" + "\n".join(lines) + "\n"
 
         # Site sources overview (all non-telegram sources)
-        site_labels = []
-        site_keys = []
+        # Group by domain to avoid duplicates (same domain from multiple categories)
+        site_domains = {}  # domain -> label (first occurrence)
         for category_key, cfg in ACTIVE_SOURCES_CONFIG.items():
             if category_key == 'telegram':
                 continue
             for src in cfg.get('sources', []):
-                # derive source key as used in SourceCollector (domain or t.me/<channel>)
-                parsed = src
                 domain = src.replace('https://', '').replace('http://', '').split('/')[0]
-                if domain.endswith('t.me'):
+                if domain.endswith('t.me') or domain in site_domains:
                     continue
-                # normalize label as original source URL
-                label = src
-                key = domain
-                site_labels.append(label)
-                site_keys.append(key)
+                site_domains[domain] = domain
+        
+        site_keys = list(site_domains.keys())
         site_counts = self.db.get_source_counts(site_keys) if site_keys else {}
         sites_text = ""
-        if site_labels:
+        if site_keys:
             lines = []
-            for label, key in zip(site_labels, site_keys):
-                lines.append(f"{_status_icon(key)} {label}: {site_counts.get(key, 0)}")
+            for key in sorted(site_keys):
+                lines.append(f"{_status_icon(key)} {key}: {site_counts.get(key, 0)}")
             sites_text = "\n🌐 Сайты:\n" + "\n".join(lines)
         
         # Calculate realistic costs based on token counts
