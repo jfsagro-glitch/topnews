@@ -23,7 +23,7 @@ async def test_deepseek():
     endpoint = 'https://api.deepseek.com/v1/chat/completions'
     
     payload = {
-        "model": "deepseek-v3",
+        "model": "deepseek-chat",
         "messages": [
             {"role": "system", "content": "Ты помощник."},
             {"role": "user", "content": "Привет!"},

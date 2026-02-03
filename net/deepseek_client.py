@@ -134,7 +134,7 @@ class DeepSeekClient:
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
         payload = {
-            "model": "deepseek-v3",
+            "model": "deepseek-chat",
             "messages": _build_messages(title, text),
             "temperature": 0.7,
             "max_tokens": 800,
@@ -172,15 +172,22 @@ class DeepSeekClient:
                     }
                     return truncate_text(summary.strip(), max_length=800), token_usage
 
-                logger.warning(
-                    "DeepSeek API error: status=%s, response=%s", 
-                    response.status_code, 
-                    response.text[:500]
-                )
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get('error', {}).get('message', response.text[:500])
+                    logger.error(
+                        f"DeepSeek API error: status={response.status_code}, "
+                        f"error={error_msg}, attempt={attempt}/3"
+                    )
+                except:
+                    logger.error(
+                        f"DeepSeek API error: status={response.status_code}, "
+                        f"response={response.text[:500]}, attempt={attempt}/3"
+                    )
             except (httpx.TimeoutException, asyncio.TimeoutError):
-                logger.warning("DeepSeek API timeout (attempt %s)", attempt)
+                logger.warning(f"DeepSeek API timeout (attempt {attempt}/3)")
             except Exception as e:
-                logger.error("DeepSeek API error: %s", e)
+                logger.error(f"DeepSeek API exception (attempt {attempt}/3): {e}")
 
             await asyncio.sleep(backoff)
             backoff *= 2
@@ -213,7 +220,7 @@ class DeepSeekClient:
             return None, token_usage
 
         payload = {
-            "model": "deepseek-v3",
+            "model": "deepseek-chat",
             "messages": _build_category_messages(title, text, current_category),
             "temperature": 0.3,  # Lower temperature for more deterministic classification
             "max_tokens": 20,
@@ -280,7 +287,7 @@ class DeepSeekClient:
             return None, token_usage
 
         payload = {
-            "model": "deepseek-v3",
+            "model": "deepseek-chat",
             "messages": _build_text_extraction_messages(title, raw_text),
             "temperature": 0.2,  # Low temperature for consistent extraction
             "max_tokens": 500,  # Allow up to 3-4 paragraphs for better context
