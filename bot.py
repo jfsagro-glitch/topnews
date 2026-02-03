@@ -438,6 +438,24 @@ class NewsBot:
     async def handle_emoji_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик эмодзи-кнопок"""
         text = update.message.text
+
+        # Custom export period input (hours)
+        if context.user_data.get("awaiting_export_hours"):
+            raw = (text or "").strip()
+            try:
+                hours = int(raw)
+                if hours < 1 or hours > 24:
+                    raise ValueError("hours out of range")
+            except Exception:
+                await update.message.reply_text(
+                    "❌ Укажите число часов от 1 до 24.\n"
+                    "Пример: 4"
+                )
+                return
+
+            context.user_data["awaiting_export_hours"] = False
+            await self._export_news_period(update.effective_user.id, context, hours=hours)
+            return
         
         if text == '🔄':
             await self.cmd_sync(update, context)
@@ -472,6 +490,9 @@ class NewsBot:
             ],
             [
                 InlineKeyboardButton(f"AI {ai_status}", callback_data="toggle_ai"),
+            ],
+            [
+                InlineKeyboardButton("📥 Unload", callback_data="export_menu"),
             ],
             [
                 InlineKeyboardButton("📊 Статус бота", callback_data="show_status"),
@@ -600,6 +621,58 @@ class NewsBot:
                 text=f"📌 Выбрано новостей: {len(selected)}\n\nНажмите кнопку ниже для экспорта в документ.",
                 reply_markup=keyboard
             )
+            return
+
+        if query.data == "export_menu":
+            await query.answer()
+            user_id = query.from_user.id
+
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("⏱ 1 час", callback_data="export_period:1"),
+                    InlineKeyboardButton("⏱ 2 часа", callback_data="export_period:2"),
+                    InlineKeyboardButton("⏱ 3 часа", callback_data="export_period:3"),
+                ],
+                [
+                    InlineKeyboardButton("⏱ 6 часов", callback_data="export_period:6"),
+                    InlineKeyboardButton("⏱ 12 часов", callback_data="export_period:12"),
+                    InlineKeyboardButton("⏱ 24 часа", callback_data="export_period:24"),
+                ],
+                [
+                    InlineKeyboardButton("🧩 Custom", callback_data="export_period:custom"),
+                ]
+            ])
+
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "📥 Unload: выберите период выгрузки (макс. 24 часа).\n"
+                    "Можно выбрать фиксированный период или Custom для своего значения."
+                ),
+                reply_markup=keyboard
+            )
+            return
+
+        if query.data.startswith("export_period:"):
+            await query.answer()
+            period = query.data.split(":", 1)[1]
+            user_id = query.from_user.id
+
+            if period == "custom":
+                context.user_data["awaiting_export_hours"] = True
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="🧩 Введите период в часах (1–24). Пример: 4"
+                )
+                return
+
+            try:
+                hours = int(period)
+            except ValueError:
+                await context.bot.send_message(chat_id=user_id, text="❌ Некорректный период")
+                return
+
+            await self._export_news_period(user_id, context, hours=hours)
             return
         
         if query.data == "export_doc":
@@ -957,14 +1030,9 @@ class NewsBot:
                 if not news_id:
                     logger.debug(f"Skipping duplicate URL: {news.get('url')}")
                     continue
-                
-                # Проверяем фильтр по категориям
-                news_category = news.get('category', 'russia')
-                if self.category_filter and news_category != self.category_filter:
-                    logger.debug(f"Skipping news due to category filter: {news_category}")
-                    continue
 
                 # Формируем сообщение
+                news_category = news.get('category', 'russia')
                 category_emoji = self._get_category_emoji(news_category)
                 message = format_telegram_message(
                     title=news.get('title', 'No title'),
@@ -1223,4 +1291,94 @@ class NewsBot:
             
         except Exception as e:
             logger.error(f"Error generating DOC file: {e}", exc_info=True)
+            return None
+
+    async def _export_news_period(self, user_id: int, context: ContextTypes.DEFAULT_TYPE, hours: int) -> None:
+        """Export news from the last N hours to Excel and send to user."""
+        from datetime import datetime, timedelta
+
+        try:
+            end_dt = datetime.now()
+            start_dt = end_dt - timedelta(hours=hours)
+
+            news_items = self.db.get_news_in_period(start_dt, end_dt)
+            if not news_items:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"📭 За последние {hours} ч. новостей нет."
+                )
+                return
+
+            excel_file = self._generate_excel_file_for_period(news_items)
+            if not excel_file:
+                await context.bot.send_message(chat_id=user_id, text="❌ Не удалось создать Excel")
+                return
+
+            filename = f"news_export_{hours}h_{end_dt.strftime('%Y%m%d_%H%M')}.xlsx"
+            await context.bot.send_document(
+                chat_id=user_id,
+                document=open(excel_file, 'rb'),
+                filename=filename,
+                caption=f"📥 Unload: новости за последние {hours} ч. ({len(news_items)} шт.)"
+            )
+
+            import os
+            os.remove(excel_file)
+
+        except Exception as e:
+            logger.error(f"Error exporting Excel: {e}")
+            await context.bot.send_message(chat_id=user_id, text="❌ Ошибка при выгрузке")
+
+    def _generate_excel_file_for_period(self, news_items: list) -> str | None:
+        """Generate Excel file for news items list."""
+        try:
+            from openpyxl import Workbook
+            from openpyxl.utils import get_column_letter
+            import tempfile
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "News"
+
+            headers = [
+                "Время новости",
+                "Источник",
+                "Ссылка",
+                "Заголовок",
+                "Содержание новости",
+                "Хештэг"
+            ]
+            ws.append(headers)
+
+            category_map = {
+                'world': '#Мир',
+                'russia': '#Россия',
+                'moscow': '#Москва',
+                'moscow_region': '#Подмосковье',
+            }
+
+            for news in news_items:
+                content = news.get('ai_summary') or news.get('lead_text') or ""
+                content = str(content).strip()
+                tag = category_map.get(news.get('category', 'russia'), '#Россия')
+                ws.append([
+                    news.get('published_at', ''),
+                    news.get('source', ''),
+                    news.get('url', ''),
+                    news.get('title', ''),
+                    content,
+                    tag
+                ])
+
+            # Set column widths for readability
+            col_widths = [20, 25, 50, 60, 80, 15]
+            for i, width in enumerate(col_widths, start=1):
+                ws.column_dimensions[get_column_letter(i)].width = width
+
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+            wb.save(temp_file.name)
+            temp_file.close()
+            return temp_file.name
+        except Exception as e:
+            logger.error(f"Error generating Excel file: {e}")
             return None
