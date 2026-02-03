@@ -87,6 +87,7 @@ SOURCES_CONFIG = {
             'https://t.me/mash',
             'https://t.me/bazabazon',
             'https://t.me/shot_shot',
+            'https://t.me/mod_russia',
         ]
     },
     'moscow_region': {
