@@ -334,6 +334,38 @@ class NewsDatabase:
         except Exception as e:
             logger.error(f"Error getting recent news: {e}")
             return []
+
+    def get_news_in_period(self, start_dt: datetime, end_dt: datetime) -> List[dict]:
+        """Get published news between start_dt and end_dt (inclusive)."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                '''
+                    SELECT id, url, title, source, category, lead_text, ai_summary, published_at
+                    FROM published_news
+                    WHERE datetime(published_at) >= datetime(?)
+                      AND datetime(published_at) <= datetime(?)
+                    ORDER BY published_at DESC
+                ''',
+                (start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S'))
+            )
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                results.append({
+                    'id': row[0],
+                    'url': row[1],
+                    'title': row[2],
+                    'source': row[3],
+                    'category': row[4],
+                    'lead_text': row[5] or "",
+                    'ai_summary': row[6],
+                    'published_at': row[7]
+                })
+            return results
+        except Exception as e:
+            logger.error(f"Error getting news in period: {e}")
+            return []
     
     def get_stats(self) -> dict:
         """Получает статистику БД"""
