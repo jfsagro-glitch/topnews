@@ -120,11 +120,12 @@ class DeepSeekClient:
         api_key = (env_key or self.api_key or '').strip()
         
         if not api_key:
-            logger.warning(
-                f"DeepSeek API key not configured. "
-                f"Env var exists: {env_key is not None}, "
+            logger.error(
+                f"❌ DeepSeek API key not configured! "
+                f"Env DEEPSEEK_API_KEY exists: {env_key is not None}, "
                 f"Env var empty: {env_key == ''}, "
-                f"Instance key: {bool(self.api_key)}"
+                f"Instance key set: {bool(self.api_key)}. "
+                f"Please add DEEPSEEK_API_KEY to environment variables."
             )
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
@@ -172,7 +173,9 @@ class DeepSeekClient:
                     return truncate_text(summary.strip(), max_length=800), token_usage
 
                 logger.warning(
-                    "DeepSeek API error: status=%s", response.status_code
+                    "DeepSeek API error: status=%s, response=%s", 
+                    response.status_code, 
+                    response.text[:500]
                 )
             except (httpx.TimeoutException, asyncio.TimeoutError):
                 logger.warning("DeepSeek API timeout (attempt %s)", attempt)
