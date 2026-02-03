@@ -128,7 +128,7 @@ class DeepSeekClient:
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
         payload = {
-            "model": "deepseek-chat",
+            "model": "deepseek-v3",
             "messages": _build_messages(title, text),
             "temperature": 0.7,
             "max_tokens": 800,
@@ -205,7 +205,7 @@ class DeepSeekClient:
             return None, token_usage
 
         payload = {
-            "model": "deepseek-chat",
+            "model": "deepseek-v3",
             "messages": _build_category_messages(title, text, current_category),
             "temperature": 0.3,  # Lower temperature for more deterministic classification
             "max_tokens": 20,
@@ -272,7 +272,7 @@ class DeepSeekClient:
             return None, token_usage
 
         payload = {
-            "model": "deepseek-chat",
+            "model": "deepseek-v3",
             "messages": _build_text_extraction_messages(title, raw_text),
             "temperature": 0.2,  # Low temperature for consistent extraction
             "max_tokens": 500,  # Allow up to 3-4 paragraphs for better context
