@@ -119,7 +119,7 @@ CLOSED_SOURCES = {
 
 # DeepSeek API Configuration
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')
-DEEPSEEK_API_ENDPOINT = 'https://api.deepseek.com/chat/completions'
+DEEPSEEK_API_ENDPOINT = 'https://api.deepseek.com/v1/chat/completions'
 AI_SUMMARY_TIMEOUT = 10  # seconds
 AI_SUMMARY_MAX_REQUESTS_PER_MINUTE = 3  # Per user per minute
 CACHE_EXPIRY_HOURS = 1  # Summary cache TTL
