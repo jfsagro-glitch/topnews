@@ -29,11 +29,21 @@ def setup_logger():
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
     
-    # Консольный логировщик
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(LOG_LEVEL)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
+    # Консольный логировщик (с обработкой Windows консоли)
+    try:
+        import sys
+        # Попытка безопасной инициализации консоли в Windows
+        if sys.platform == 'win32':
+            # Используем stdout напрямую без специальной обработки
+            console_handler = logging.StreamHandler(sys.stdout)
+        else:
+            console_handler = logging.StreamHandler()
+        console_handler.setLevel(LOG_LEVEL)
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+    except Exception as e:
+        # Если не удалось создать консольный логировщик, продолжаем без него
+        print(f"Warning: Could not setup console logging: {e}")
     
     return logger
 

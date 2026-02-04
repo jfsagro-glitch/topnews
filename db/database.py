@@ -95,6 +95,22 @@ class NewsDatabase:
                 )
             ''')
 
+            # Table for LLM response cache (hash-based)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS llm_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    task_type TEXT NOT NULL,
+                    response_json TEXT NOT NULL,
+                    input_tokens INTEGER,
+                    output_tokens INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP NOT NULL
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_llm_cache_expires ON llm_cache(expires_at)
+            ''')
+
             # Table for AI usage totals (persistent across deploys)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS ai_usage (
@@ -108,6 +124,8 @@ class NewsDatabase:
                     category_tokens INTEGER NOT NULL DEFAULT 0,
                     text_clean_requests INTEGER NOT NULL DEFAULT 0,
                     text_clean_tokens INTEGER NOT NULL DEFAULT 0,
+                    daily_cost_usd REAL NOT NULL DEFAULT 0.0,
+                    daily_cost_date TEXT,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')

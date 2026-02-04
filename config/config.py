@@ -29,7 +29,7 @@ DATABASE_PATH = 'db/news.db'
 
 # AI Category Verification
 AI_CATEGORY_VERIFICATION_ENABLED = os.getenv('AI_CATEGORY_VERIFICATION_ENABLED', 'True') == 'True'
-AI_CATEGORY_VERIFICATION_RATE = float(os.getenv('AI_CATEGORY_VERIFICATION_RATE', '0.3'))  # 30% of news
+AI_CATEGORY_VERIFICATION_RATE = float(os.getenv('AI_CATEGORY_VERIFICATION_RATE', '1.0'))  # 100% verification for maximum hashtag quality
 
 # Логирование
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')

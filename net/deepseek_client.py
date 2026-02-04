@@ -1,16 +1,23 @@
 """
 DeepSeek API client for AI summarization.
+OPTIMIZED: Uses caching, budget guard, optimized prompts.
 """
 from __future__ import annotations
 
 import asyncio
 import os
 import logging
+import uuid
 from typing import Optional
 
 import httpx
 
-from config.config import DEEPSEEK_API_ENDPOINT, AI_SUMMARY_TIMEOUT
+from config.config import (
+    DEEPSEEK_API_ENDPOINT, 
+    AI_SUMMARY_TIMEOUT,
+    DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD,
+    DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD
+)
 from utils.text_cleaner import truncate_text
 
 logger = logging.getLogger(__name__)
@@ -33,22 +40,23 @@ def _estimate_tokens(text: str) -> int:
 
 
 def _build_messages(title: str, text: str) -> list[dict]:
+    # Ты — редактор радионовостей (полный промпт с гарантией качества)
     system_prompt = (
         "Ты — редактор радионовостей.\n\n"
-        "Перепиши новость, строго соблюдая правила:\n\n"
-        "1. Начни с одной короткой фразы до 7 слов, передающей суть новости.\n"
-        "2. Используй только информацию из исходного текста.\n"
-        "3. Ничего не додумывай и не добавляй от себя.\n"
-        "4. Удали повторы, ссылки и второстепенные детали.\n"
-        "5. Объём: 100–150 слов (30–40 секунд при чтении вслух).\n"
-        "6. Каждое предложение — не длиннее 12 слов.\n"
-        "7. Предложения должны легко произноситься вслух.\n"
-        "8. Не используй деепричастия, причастия и пассивный залог.\n"
-        "9. Не используй канцеляризмы и формализмы.\n"
-        "10. Стиль — сухой, информационный, радионовости.\n"
-        "11. Не используй оценку. Только факты.\n"
-        "12. Прямые цитаты, если есть, приводи дословно в кавычках.\n"
-        "13. В конце укажи источник текстом (без ссылки).\n\n"
+        "Перепиши новость, строго соблюдая правила:\n"
+        "1. Начни с одной короткой фразы до 7 слов, передающей суть\n"
+        "2. Используй только информацию из исходного текста\n"
+        "3. Ничего не додумывай и не добавляй от себя\n"
+        "4. Удали повторы, ссылки и второстепенные детали\n"
+        "5. Объём: 100–150 слов (30–40 секунд при чтении вслух)\n"
+        "6. Каждое предложение — не длиннее 12 слов\n"
+        "7. Предложения должны легко произноситься вслух\n"
+        "8. Не используй деепричастия, причастия и пассивный залог\n"
+        "9. Не используй канцеляризмы и формализмы\n"
+        "10. Стиль — сухой, информационный, радионовости\n"
+        "11. Не используй оценку. Только факты\n"
+        "12. Прямые цитаты, если есть, приводи дословно в кавычках\n"
+        "13. В конце укажи источник текстом (без ссылки)\n\n"
         "Если информации недостаточно — сделай максимально краткий пересказ без домыслов."
     )
     user_content = f"Заголовок: {title}\n\nТекст: {text}"
@@ -99,39 +107,69 @@ def _build_text_extraction_messages(title: str, raw_text: str) -> list[dict]:
 
 
 class DeepSeekClient:
-    def __init__(self, api_key: str = None, endpoint: str = DEEPSEEK_API_ENDPOINT):
-        # Don't use config-time DEEPSEEK_API_KEY for parameter default
-        # It may be empty during import; we'll read from environment at request time
+    def __init__(self, api_key: str = None, endpoint: str = DEEPSEEK_API_ENDPOINT, db=None):
         self.api_key = api_key if api_key and api_key.strip() else None
         self.endpoint = endpoint
+        self.db = db
         
-        # Log initialization for debugging
+        # Initialize cache and budget managers if DB provided
+        self.cache = None
+        self.budget = None
+        if db:
+            try:
+                from net.llm_cache import LLMCacheManager, BudgetGuard
+                self.cache = LLMCacheManager(db)
+                self.budget = BudgetGuard(db, daily_limit_usd=float(os.getenv('DAILY_LLM_BUDGET_USD', '1.0')))
+                logger.info("✅ LLM cache and budget guard enabled")
+            except Exception as e:
+                logger.warning(f"Failed to initialize LLM cache/budget: {e}")
+        
         env_key_at_init = os.getenv('DEEPSEEK_API_KEY')
         logger.info(
             f"DeepSeekClient initialized. "
             f"Env DEEPSEEK_API_KEY exists: {env_key_at_init is not None}, "
-            f"Env var length: {len(env_key_at_init) if env_key_at_init else 0}"
+            f"Env var length: {len(env_key_at_init) if env_key_at_init else 0}, "
+            f"Cache: {self.cache is not None}, Budget guard: {self.budget is not None}"
         )
 
     async def summarize(self, title: str, text: str) -> tuple[Optional[str], dict]:
+        request_id = str(uuid.uuid4())[:8]
+        
+        # Check budget limit
+        if self.budget and not self.budget.can_make_request():
+            logger.warning(f"[{request_id}] ❌ Daily budget exceeded, skipping LLM call")
+            return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False, "budget_exceeded": True}
+        
+        # Check cache
+        if self.cache:
+            cache_key = self.cache.generate_cache_key('summarize', title, text)
+            cached = self.cache.get(cache_key)
+            if cached:
+                logger.info(f"[{request_id}] ✅ Cache HIT for summarize")
+                return cached['response'], {
+                    "input_tokens": cached['input_tokens'],
+                    "output_tokens": cached['output_tokens'],
+                    "total_tokens": cached['input_tokens'] + cached['output_tokens'],
+                    "cache_hit": True
+                }
+        
         # Always try to read API key from environment first (for Railway support)
-        # Fall back to instance variable if set
         env_key = os.getenv('DEEPSEEK_API_KEY')
         api_key = (env_key or self.api_key or '').strip()
         
         if not api_key:
             logger.error(
-                f"❌ DeepSeek API key not configured! "
+                f"[{request_id}] ❌ DeepSeek API key not configured! "
                 f"Env DEEPSEEK_API_KEY exists: {env_key is not None}, "
                 f"Env var empty: {env_key == ''}, "
                 f"Instance key set: {bool(self.api_key)}. "
                 f"Please add DEEPSEEK_API_KEY to environment variables."
             )
-            return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False}
 
         text = _truncate_input(text)
         if not text:
-            return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False}
 
         payload = {
             "model": "deepseek-chat",
@@ -139,6 +177,8 @@ class DeepSeekClient:
             "temperature": 0.7,
             "max_tokens": 800,
         }
+        
+        logger.info(f"[{request_id}] 🔄 API call: summarize")
 
         backoff = 0.8
         for attempt in range(1, 4):
@@ -164,13 +204,30 @@ class DeepSeekClient:
                         input_tokens = total_tokens
                         output_tokens = 0
                     
+                    # Calculate cost and update budget
+                    cost_usd = (input_tokens * DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD / 1000 +
+                                output_tokens * DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD / 1000)
+                    
+                    if self.budget:
+                        self.budget.add_cost(cost_usd)
+                    
+                    logger.info(f"[{request_id}] ✅ summarize: {input_tokens}+{output_tokens}={total_tokens} tokens, ${cost_usd:.4f}")
+                    
+                    # Store in cache
+                    result_text = truncate_text(summary.strip(), max_length=800)
+                    if self.cache:
+                        cache_key = self.cache.generate_cache_key('summarize', title, text)
+                        self.cache.set(cache_key, 'summarize', result_text, input_tokens, output_tokens, cost_usd)
+                    
                     # Return summary and token usage dict
                     token_usage = {
                         "input_tokens": input_tokens,
                         "output_tokens": output_tokens,
-                        "total_tokens": total_tokens
+                        "total_tokens": total_tokens,
+                        "cache_hit": False,
+                        "cost_usd": cost_usd
                     }
-                    return truncate_text(summary.strip(), max_length=800), token_usage
+                    return result_text, token_usage
 
                 try:
                     error_data = response.json()

@@ -42,8 +42,8 @@ class NewsBot:
         self.application = None
         self.db = NewsDatabase(db_path=DATABASE_PATH)  # Use path from config
         
-        # DeepSeek client (initialize early for use in SourceCollector)
-        self.deepseek_client = DeepSeekClient()
+        # DeepSeek client with cache and budget enabled
+        self.deepseek_client = DeepSeekClient(db=self.db)
         
         # AI category verification toggle (can be controlled via button)
         from config.config import AI_CATEGORY_VERIFICATION_ENABLED
@@ -292,6 +292,43 @@ class NewsBot:
         output_cost = (output_tokens / 1_000_000.0) * 0.28
         estimated_cost = input_cost + output_cost
         
+        # Get daily budget info from BudgetGuard
+        daily_budget_text = ""
+        if self.deepseek_client.budget:
+            try:
+                daily_cost = self.deepseek_client.budget.get_daily_cost()
+                daily_limit = self.deepseek_client.budget.daily_limit_usd
+                percentage = (daily_cost / daily_limit * 100) if daily_limit > 0 else 0
+                is_economy = self.deepseek_client.budget.is_economy_mode()
+                
+                budget_icon = "🟢"
+                if percentage >= 100:
+                    budget_icon = "🔴"
+                elif percentage >= 80:
+                    budget_icon = "🟡"
+                
+                daily_budget_text = (
+                    f"\n💰 Дневной бюджет LLM:\n"
+                    f"{budget_icon} ${daily_cost:.4f} / ${daily_limit:.2f} ({percentage:.1f}%)\n"
+                    f"{'⚠️ Режим экономии активен' if is_economy else ''}\n"
+                )
+            except Exception as e:
+                logger.error(f"Error getting budget info: {e}")
+        
+        # Get cache stats
+        cache_text = ""
+        if self.deepseek_client.cache:
+            try:
+                stats = self.deepseek_client.cache.get_stats()
+                hit_rate = (stats['hits'] / stats['total'] * 100) if stats['total'] > 0 else 0
+                cache_text = (
+                    f"\n💾 LLM кэш:\n"
+                    f"Хиты: {stats['hits']} / {stats['total']} ({hit_rate:.1f}%)\n"
+                    f"Записей: {stats['size']}\n"
+                )
+            except Exception as e:
+                logger.error(f"Error getting cache stats: {e}")
+        
         status_text = (
             f"📊 Статус бота:\n\n"
             f"Статус: {'⏸️ PAUSED' if self.is_paused else '✅ RUNNING'}\n"
@@ -299,13 +336,15 @@ class NewsBot:
             f"За сегодня: {stats['today']}\n"
             f"Интервал проверки: {CHECK_INTERVAL_SECONDS} сек\n"
             f"───────────────────────────────\n"
-            f"🧠 ИИ использование (автоматический учет):\n"
+            f"🧠 ИИ использование (всего):\n"
             f"Всего запросов: {ai_usage['total_requests']}\n"
             f"Всего токенов: {ai_usage['total_tokens']:,}\n"
             f"Расчетная стоимость: ${estimated_cost:.4f}\n\n"
             f"📝 Пересказы: {ai_usage['summarize_requests']} запр., {ai_usage['summarize_tokens']:,} токенов\n"
             f"🏷️ Категории: {ai_usage['category_requests']} запр., {ai_usage['category_tokens']:,} токенов\n"
             f"✨ Очистка текста: {ai_usage['text_clean_requests']} запр., {ai_usage['text_clean_tokens']:,} токенов\n"
+            f"{daily_budget_text}"
+            f"{cache_text}"
             f"───────────────────────────────"
             f"{channels_text}"
             f"───────────────────────────────"
