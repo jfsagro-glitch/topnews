@@ -541,8 +541,15 @@ def format_telegram_message(title: str, text: str, source_name: str,
         if phrase in title_lower:
             return ""  # Похоже на UI элемент
     
-    # Очищаем текст
-    text = clean_html(text) if text else ""
+    # Минимальная очистка текста - не используем clean_html() так как она слишком агрессивна
+    # Сразу переходим к обработке текста как есть
+    if not text:
+        text = ""
+    else:
+        # Просто убираем очень очевидные HTML теги и лишние пробелы
+        text = re.sub(r'<[^>]+>', '', text)  # Remove HTML tags
+        text = re.sub(r'\s+', ' ', text)  # Multiple spaces to one
+        text = text.strip()
     
     # Убираем нежелательные символы (вертикальная черта, слэши)
     text = text.replace('|', '').replace('\\', '').replace('/', ' ')
@@ -556,12 +563,20 @@ def format_telegram_message(title: str, text: str, source_name: str,
         text = text[len(title):].strip()
         text = text.lstrip('|:.-').strip()
     
-    # Выбираем лид через lead_extractor
-    from utils.lead_extractor import clean_text as clean_lead_text, choose_lead
-    lead_candidates = [clean_lead_text(text)] if text else []
-    paragraph = choose_lead(lead_candidates, max_len=800)
-    if not paragraph and text:
-        paragraph = truncate_text(text, max_length=800)
+    # ВАЖНО: Используем extract_lead_from_html прямо, не выкладываем через choose_lead
+    # которая может быть слишком строгой и отклонить хороший текст
+    from utils.lead_extractor import extract_lead_from_html
+    
+    if text:
+        # Текст уже очищен от HTML, но нужно его обработать как "ненормализованный"
+        # Просто берем первые 200-300 символов (достаточно для preview)
+        paragraph = text[:300].strip()
+    else:
+        paragraph = ""
+    
+    # Если все еще нет текста, попробуем minimal fallback
+    if not paragraph or len(paragraph) < 30:
+        paragraph = truncate_text(text, max_length=200) if text else ""
     
     # Экранируем спецсимволы для Markdown
     title = escape_markdown(title)

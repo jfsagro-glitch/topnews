@@ -213,7 +213,7 @@ class SourceCollector:
                     # CRITICAL: If text is missing or too short, fetch from page directly
                     if not text or len(text.strip()) < 80:
                         if item_url:
-                            logger.debug(f"Text too short ({len(text)} chars) for {source_name}, fetching from page...")
+                            logger.debug(f"Text too short ({len(text) if text else 0} chars) for {source_name} item: {title[:50]}, fetching from page...")
                             try:
                                 from net.http_client import get_http_client
                                 from utils.lead_extractor import extract_lead_from_html
@@ -223,15 +223,15 @@ class SourceCollector:
                                 fetched_text = extract_lead_from_html(response.text, max_len=800)
                                 
                                 if fetched_text and len(fetched_text.strip()) > 50:
-                                    logger.debug(f"Successfully fetched {len(fetched_text)} chars from {source_name}")
+                                    logger.info(f"✓ Successfully fetched {len(fetched_text)} chars from {source_name}: {title[:40]}...")
                                     text = fetched_text
                                     item['text'] = text
                                 else:
-                                    logger.debug(f"Fetched text too short: {len(fetched_text) if fetched_text else 0} chars")
+                                    logger.debug(f"Fetched text too short or empty for {title[:40]}: {len(fetched_text) if fetched_text else 0} chars")
                             except asyncio.TimeoutError:
-                                logger.debug(f"Timeout fetching article from {item_url}")
+                                logger.warning(f"Timeout fetching article from {source_name}: {title[:40]}")
                             except Exception as fetch_err:
-                                logger.debug(f"Error fetching article text: {type(fetch_err).__name__}")
+                                logger.debug(f"Error fetching article text from {source_name}: {type(fetch_err).__name__}: {str(fetch_err)[:100]}")
                     
                     # AI text cleaning (MANDATORY to remove any navigation/metadata garbage)
                     if self.ai_client and text:

@@ -1085,6 +1085,11 @@ class NewsBot:
                 # Формируем сообщение
                 news_category = news.get('category', 'russia')
                 category_emoji = self._get_category_emoji(news_category)
+                
+                # Debug: логируем текст перед форматированием
+                text_preview = news.get('text', '')[:100] if news.get('text') else "(no text)"
+                logger.debug(f"Formatting message: title={news.get('title', '')[:40]}... text={text_preview}...")
+                
                 message = format_telegram_message(
                     title=news.get('title', 'No title'),
                     text=news.get('text', ''),
