@@ -363,6 +363,10 @@ def clean_html(html_text: str) -> str:
 
         # Очищаем от множественных пробелов и переводов строк
         text = re.sub(r'\s+', ' ', text)  # Множественные пробелы → один
+        
+        # Удаляем косые черты и обратные слеши
+        text = text.replace('/', ' ').replace('\\', ' ')
+        
         text = text.strip()
         
         return text
