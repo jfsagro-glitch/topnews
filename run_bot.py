@@ -26,18 +26,25 @@ if os.path.exists(db_path):
     try:
         db = sqlite3.connect(db_path, timeout=5)
         c = db.cursor()
-        # Check if bot_lock table exists and clear expired locks
+        # Check if bot_lock table exists and clear ALL locks (aggressive mode)
         c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='bot_lock'")
         if c.fetchone():
             import time
             now = int(time.time())
-            # Delete locks older than 600 seconds (TTL)
-            c.execute("DELETE FROM bot_lock WHERE (? - CAST(locked_at AS INTEGER)) > 600", (now,))
+            # Delete ALL locks regardless of age (safety for restart)
+            c.execute("DELETE FROM bot_lock")
             db.commit()
-            print("[INFO] Expired bot locks cleared from database")
+            print("[INFO] All bot locks cleared from database (restart mode)")
         db.close()
     except Exception as e:
         print(f"[WARNING] Could not clear locks: {e}")
+        # If DB is locked/broken, delete it and let bot recreate
+        try:
+            if os.path.exists(db_path):
+                os.remove(db_path)
+                print(f"[INFO] Removed corrupted database: {db_path}")
+        except:
+            pass
 
 # Remove handlers before importing anything
 logging_config_file = os.path.join(os.path.dirname(__file__), 'utils', 'logger.py')
