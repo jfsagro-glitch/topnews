@@ -194,7 +194,11 @@ def extract_lead_from_html(html: str, max_len: int = 800) -> str:
         return ""
 
     text = clean_html(html)
-    if not text or len(text) < MIN_PARAGRAPH_LEN:
+    if not text:
+        return ""
+
+    # If we have very little text after cleaning, try emergency extraction
+    if len(text) < MIN_PARAGRAPH_LEN:
         return ""
 
     candidates = _extract_candidates_from_text(text, min_len=MIN_PARAGRAPH_LEN)
@@ -202,9 +206,27 @@ def extract_lead_from_html(html: str, max_len: int = 800) -> str:
     if lead:
         return lead
 
-    # Fallback: get first sentence
+    # Fallback 1: get first sentence
     fallback = _first_sentence_from_text(text, max_len=max_len)
-    return fallback
+    if fallback:
+        return fallback
+    
+    # Fallback 2: Emergency - just take first ~100 chars of clean text that looks reasonable
+    sentences = [s.strip() for s in SENTENCE_SPLIT_RE.split(text) if s.strip()]
+    for sentence in sentences:
+        if len(sentence) >= 80:  # Lower threshold for emergency
+            # Quick check: not spam
+            if not any(phrase in sentence.lower() for phrase in ['подписаться', 'реклама', 'читать далее']):
+                return truncate_text(sentence, max_len)
+    
+    # Last resort: just return first 100+ chars
+    if len(text) >= 100:
+        # Find a reasonable break point
+        break_points = [text.find('. ', 80), text.find('. ', 100), text.find(' ', 100)]
+        break_point = min([p for p in break_points if p > 0], default=120)
+        return text[:break_point].strip()
+    
+    return ""
 
 
 def extract_lead_from_rss(entry, max_len: int = 800) -> str:

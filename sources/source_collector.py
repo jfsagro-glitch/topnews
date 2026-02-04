@@ -210,6 +210,29 @@ class SourceCollector:
                     text = item.get('text', '') or item.get('lead_text', '')
                     item_url = item.get('url', '')
                     
+                    # CRITICAL: If text is missing or too short, fetch from page directly
+                    if not text or len(text.strip()) < 80:
+                        if item_url:
+                            logger.debug(f"Text too short ({len(text)} chars) for {source_name}, fetching from page...")
+                            try:
+                                from net.http_client import get_http_client
+                                from utils.lead_extractor import extract_lead_from_html
+                                
+                                http_client = await get_http_client()
+                                response = await http_client.get(item_url, retries=2, timeout=15)
+                                fetched_text = extract_lead_from_html(response.text, max_len=800)
+                                
+                                if fetched_text and len(fetched_text.strip()) > 50:
+                                    logger.debug(f"Successfully fetched {len(fetched_text)} chars from {source_name}")
+                                    text = fetched_text
+                                    item['text'] = text
+                                else:
+                                    logger.debug(f"Fetched text too short: {len(fetched_text) if fetched_text else 0} chars")
+                            except asyncio.TimeoutError:
+                                logger.debug(f"Timeout fetching article from {item_url}")
+                            except Exception as fetch_err:
+                                logger.debug(f"Error fetching article text: {type(fetch_err).__name__}")
+                    
                     # AI text cleaning (MANDATORY to remove any navigation/metadata garbage)
                     if self.ai_client and text:
                         clean_text = await self._clean_text_with_ai(title, text, source_type='rss')
