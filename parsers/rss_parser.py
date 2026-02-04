@@ -85,11 +85,17 @@ class RSSParser:
                 
                 if news_item['url']:  # Только если есть ссылка
                     # Если в RSS нет текста или он слишком короткий — пробуем получить абзац со страницы
-                    if not news_item.get('text') or len(news_item['text']) < 40:
+                    # For sources like ria.ru that don't provide text in RSS, always fetch
+                    if not news_item.get('text') or len(news_item['text']) < 60:
+                        logger.debug(f"Text too short or missing ({len(news_item.get('text', ''))} chars), fetching from page...")
                         preview = await self._fetch_article_preview(news_item['url'])
                         if preview:
                             news_item['text'] = preview
+                            logger.debug(f"Successfully fetched text ({len(preview)} chars) for: {news_item['title'][:50]}")
+                        else:
+                            logger.warning(f"Could not fetch text for: {news_item['title'][:50]}")
                     news_items.append(news_item)
+
             
             # Cache the items for potential 304 responses
             if self.db and news_items:
@@ -120,10 +126,20 @@ class RSSParser:
         """Пробует получить первые предложения со страницы статьи"""
         try:
             http_client = await get_http_client()
-            response = await http_client.get(url, retries=1)
-            lead = extract_lead_from_html(response.text, max_len=800)
-            if lead:
-                return lead
+            try:
+                response = await http_client.get(url, retries=1, timeout=10)
+                lead = extract_lead_from_html(response.text, max_len=800)
+                if lead:
+                    logger.debug(f"Fetched preview from {url}: {len(lead)} chars")
+                    return lead
+            except asyncio.TimeoutError:
+                logger.debug(f"Timeout fetching article preview from {url}, trying again with longer timeout")
+                # Retry with longer timeout
+                response = await http_client.get(url, retries=0, timeout=20)
+                lead = extract_lead_from_html(response.text, max_len=800)
+                if lead:
+                    logger.debug(f"Fetched preview (retry) from {url}: {len(lead)} chars")
+                    return lead
         except Exception as e:
-            logger.debug(f"Failed to fetch article preview from {url}: {e}")
+            logger.debug(f"Failed to fetch article preview from {url}: {type(e).__name__}: {str(e)[:80]}")
         return ""

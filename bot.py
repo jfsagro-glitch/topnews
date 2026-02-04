@@ -1041,6 +1041,9 @@ class NewsBot:
             published_count = 0
             max_publications = 40  # Лимит публикаций за цикл (защита от rate limiting)
             
+            # Кэш заголовков в текущей сессии (защита от дубликатов за весь цикл сбора)
+            session_titles = set()  # normalized titles for duplicate detection
+            
             # Публикуем каждую новость
             for news in news_items:
                 # Проверяем лимит публикаций
@@ -1052,9 +1055,18 @@ class NewsBot:
                     logger.debug(f"Skipping news (category filter): {news.get('title')[:50]}")
                     continue
                 
-                # Проверяем дубликат по заголовку (защита от одной новости на разных источниках)
-                if self.db.is_similar_title_published(news.get('title', '')):
-                    logger.debug(f"Skipping similar title: {news.get('title')[:50]}")
+                # Проверяем дубликат в текущей сессии (быстрая проверка)
+                import re
+                title = news.get('title', '')
+                normalized = re.sub(r'[^\w\s]', '', title.lower())
+                if normalized in session_titles:
+                    logger.debug(f"Skipping duplicate in session: {title[:50]}")
+                    continue
+                session_titles.add(normalized)
+                
+                # Проверяем дубликат по заголовку в БД (защита от одной новости на разных источниках)
+                if self.db.is_similar_title_published(title, threshold=0.85):  # Increased threshold to 0.85
+                    logger.debug(f"Skipping similar title: {title[:50]}")
                     continue
                 
                 # Попытка атомарно зарегистрировать новость в БД
