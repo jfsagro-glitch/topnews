@@ -354,6 +354,28 @@ class SourceCollector:
             Clean text or None if cleaning skipped/failed
         """
         try:
+            # Sandbox: honor AI cleanup level
+            try:
+                from config.railway_config import APP_ENV
+            except (ImportError, ValueError):
+                from config.config import APP_ENV
+
+            cleanup_level = 3
+            if APP_ENV == "sandbox" and self.bot:
+                try:
+                    from core.services.access_control import AILevelManager
+                    owner_id = None
+                    if hasattr(self.bot, "_get_sandbox_filter_user_id"):
+                        owner_id = self.bot._get_sandbox_filter_user_id()
+                    if owner_id:
+                        ai_manager = AILevelManager(self.bot.db)
+                        cleanup_level = ai_manager.get_level(str(owner_id), 'cleanup')
+                except Exception as e:
+                    logger.debug(f"AI cleanup level check failed: {e}")
+
+            if APP_ENV == "sandbox" and cleanup_level == 0:
+                return None
+
             # ⚠️ OPTIMIZATION: Skip AI cleaning for RSS sources
             # RSS feeds are already clean (no navigation, ads, etc.)
             # Only HTML scraped content needs AI cleaning
@@ -372,7 +394,7 @@ class SourceCollector:
                     return None
             
             # AI cleaning for HTML sources only
-            clean_text, token_usage = await self.ai_client.extract_clean_text(title, text)
+            clean_text, token_usage = await self.ai_client.extract_clean_text(title, text, level=cleanup_level)
             
             # Log token usage to database
             if token_usage and token_usage.get('total_tokens', 0) > 0:

@@ -88,6 +88,18 @@ class NewsBot:
         if ADMIN_USER_IDS:
             admin_ids.update(ADMIN_USER_IDS)
         return user_id in admin_ids
+
+    def _get_sandbox_filter_user_id(self) -> int | None:
+        """Pick a user id whose source settings control sandbox filtering."""
+        try:
+            from config.railway_config import ADMIN_USER_IDS
+        except (ImportError, ValueError):
+            from config.config import ADMIN_USER_IDS
+        if ADMIN_USER_IDS:
+            return ADMIN_USER_IDS[0]
+        if ADMIN_IDS:
+            return ADMIN_IDS[0]
+        return None
     
     def _init_sources(self):
         """Инициализировать список источников из ACTIVE_SOURCES_CONFIG"""
@@ -1395,6 +1407,16 @@ class NewsBot:
             # Собираем новости
             logger.info("Starting news collection...")
             news_items = await self.collector.collect_all()
+
+            # Sandbox: apply source settings to collected news
+            try:
+                from config.railway_config import APP_ENV
+            except (ImportError, ValueError):
+                from config.config import APP_ENV
+            if APP_ENV == "sandbox":
+                filter_user_id = self._get_sandbox_filter_user_id()
+                if filter_user_id:
+                    news_items = self._filter_news_by_user_sources(news_items, str(filter_user_id))
             
             published_count = 0
             max_publications = 40  # Лимит публикаций за цикл (защита от rate limiting)

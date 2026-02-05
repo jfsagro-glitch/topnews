@@ -340,7 +340,7 @@ class DeepSeekClient:
         
         return None, token_usage
     
-    async def extract_clean_text(self, title: str, raw_text: str) -> tuple[Optional[str], dict]:
+    async def extract_clean_text(self, title: str, raw_text: str, level: int = 3) -> tuple[Optional[str], dict]:
         """
         Use AI to extract clean article text, removing navigation/garbage.
         
@@ -363,12 +363,26 @@ class DeepSeekClient:
         if not raw_text or len(raw_text) < 50:
             return None, token_usage
 
+        # Sandbox: apply cleanup profile
+        try:
+            from config.railway_config import APP_ENV
+        except (ImportError, ValueError):
+            from config.config import APP_ENV
+        from core.services.access_control import get_llm_profile
+
+        if APP_ENV == "sandbox" and level == 0:
+            return None, token_usage
+
+        profile = get_llm_profile(level if APP_ENV == "sandbox" else 3, 'cleanup')
+
         payload = {
-            "model": "deepseek-chat",
+            "model": profile.get('model', 'deepseek-chat'),
             "messages": _build_text_extraction_messages(title, raw_text),
-            "temperature": 0.2,  # Low temperature for consistent extraction
-            "max_tokens": 500,  # Allow up to 3-4 paragraphs for better context
+            "temperature": profile.get('temperature', 0.2),
+            "max_tokens": profile.get('max_tokens', 500),
         }
+        if 'top_p' in profile:
+            payload['top_p'] = profile['top_p']
 
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
