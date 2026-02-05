@@ -77,6 +77,17 @@ class NewsBot:
         self._instance_lock_path = None
         self._db_instance_id = f"{socket.gethostname()}:{os.getpid()}"
         self._shutdown_requested = False
+
+    def _is_admin(self, user_id: int) -> bool:
+        """Check if user is admin (ADMIN_IDS or ADMIN_USER_IDS)."""
+        admin_ids = set(ADMIN_IDS or [])
+        try:
+            from config.railway_config import ADMIN_USER_IDS
+        except (ImportError, ValueError):
+            from config.config import ADMIN_USER_IDS
+        if ADMIN_USER_IDS:
+            admin_ids.update(ADMIN_USER_IDS)
+        return user_id in admin_ids
     
     def _init_sources(self):
         """Инициализировать список источников из ACTIVE_SOURCES_CONFIG"""
@@ -212,7 +223,7 @@ class NewsBot:
             from config.config import APP_ENV
         
         user_id = update.message.from_user.id
-        is_admin = user_id in ADMIN_IDS if ADMIN_IDS else False
+        is_admin = self._is_admin(user_id)
         env_marker = "\n🧪 SANDBOX" if APP_ENV == "sandbox" else ""
         
         # Choose keyboard based on admin status and environment
@@ -445,7 +456,7 @@ class NewsBot:
             await update.message.reply_text("❌ Management available only in sandbox")
             return
         
-        is_admin = user_id in ADMIN_IDS if ADMIN_IDS else False
+        is_admin = self._is_admin(user_id)
         if not is_admin:
             await update.message.reply_text("❌ Доступно только администраторам")
             return
@@ -858,6 +869,10 @@ class NewsBot:
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await query.edit_message_text(text=text, reply_markup=reply_markup)
+            return
+
+        if query.data == "noop":
+            await query.answer()
             return
         # ==================== OTHER CALLBACKS ====================
         if query.data == "show_status":
@@ -1908,7 +1923,7 @@ class NewsBot:
         user_id = str(query.from_user.id)
         
         # Check admin
-        is_admin = int(user_id) in ADMIN_IDS if ADMIN_IDS else False
+        is_admin = self._is_admin(int(user_id))
         if not is_admin or APP_ENV != "sandbox":
             await query.answer("❌ Доступ запрещён", show_alert=True)
             return
@@ -1992,7 +2007,7 @@ class NewsBot:
         user_id = str(query.from_user.id)
         
         # Check admin
-        is_admin = int(user_id) in ADMIN_IDS if ADMIN_IDS else False
+        is_admin = self._is_admin(int(user_id))
         if not is_admin or APP_ENV != "sandbox":
             await query.answer("❌ Доступ запрещён", show_alert=True)
             return
@@ -2030,7 +2045,7 @@ class NewsBot:
         user_id = query.from_user.id
 
         # Check admin
-        is_admin = user_id in ADMIN_IDS if ADMIN_IDS else False
+        is_admin = self._is_admin(user_id)
         if not is_admin or APP_ENV != "sandbox":
             await query.answer("❌ Доступ запрещён", show_alert=True)
             return
