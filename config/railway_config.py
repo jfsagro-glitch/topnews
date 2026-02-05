@@ -202,17 +202,17 @@ SOURCES_CONFIG = {
         ]
     },
     'additional': {
-        'category': 'world',
+        'category': 'russia',
         'sources': [
             # Yahoo News - официальные RSS фиды (стабильно, без consent/JS)
             # Преимущества: не упираемся в consent, меньше банов, стабильный парсинг
-            'https://news.yahoo.com/rss/',  # Общий фид
+            'https://news.yahoo.com/rss/',  # Общий фид - будет обработан как world через RSS override
             'https://news.yahoo.com/rss/world',  # Мировые новости
-            # Telegram channels
-            'https://t.me/ruptlyalert',
-            'https://t.me/tass_agency',
-            'https://t.me/rian_ru',
-            'https://t.me/mod_russia',
+            # Telegram channels - Russian news agencies
+            'https://t.me/ruptlyalert',  # Ruptly (видео-агентство Sputnik)
+            'https://t.me/tass_agency',  # TASS официальное
+            'https://t.me/rian_ru',  # РИА Новости
+            'https://t.me/mod_russia',  # Минобороны России
             # X (Twitter) accounts - ВРЕМЕННО ОТКЛЮЧЕНЫ (RSSHub и Nitter недоступны)
             # 'https://x.com/kadmitriev',  # Дмитриев
             # 'https://x.com/MedvedevRussia',  # Медведев
