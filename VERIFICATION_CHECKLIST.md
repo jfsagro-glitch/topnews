@@ -1,6 +1,6 @@
-# ✅ Optimization Verification Checklist
+# ✅ Verification Checklists
 
-## 🎯 Core Requirements
+## 🎯 Optimization Requirements
 
 - [x] **Reduce daily LLM costs to ≤ $1.00/day** - Achieved: ≤ $0.012/day
 - [x] **Maintain data quality** - No quality degradation from optimizations
@@ -8,6 +8,8 @@
 - [x] **Full production readiness** - All tests pass, ready to deploy
 
 ---
+
+## 🔄 Sandbox/Production Deployment Verification
 
 ## 📋 Implementation Verification
 
@@ -359,9 +361,89 @@
 
 ---
 
+### Sandbox/Production Deployment Implementation
+
+- [x] **Configuration Layer** - APP_ENV support in config.py and railway_config.py
+- [x] **Token Validation** - Mismatch detection in main.py and main_railway.py  
+- [x] **Database Isolation** - Separate db/news.db and db/news_sandbox.db
+- [x] **Cache Isolation** - Separate content/cache/prod/ and content/cache/sandbox/
+- [x] **Visual Marker** - Sandbox shows 🧪 in /start command
+- [x] **Webhook Support** - TG_MODE=webhook with WEBHOOK_BASE_URL validation
+- [x] **Environment Templates** - .env.prod.example and .env.sandbox.example
+- [x] **Docker Compose** - Two-service setup (bot-prod, bot-sandbox)
+- [x] **systemd Services** - bot-prod.service and bot-sandbox.service
+- [x] **Documentation** - README.md updated with deployment sections
+- [x] **Deployment Guide** - DEPLOYMENT_GUIDE.md with quick reference
+- [x] **Architecture Doc** - SANDBOX_ARCHITECTURE.md with overview and migration guide
+
+### Files Created/Modified (Sandbox Implementation)
+
+**New Files:**
+- ✅ `.env.prod.example` - Production config template
+- ✅ `.env.sandbox.example` - Sandbox config template
+- ✅ `docker-compose.example.yml` - Docker multi-container setup
+- ✅ `deploy/systemd/bot-sandbox.service` - Sandbox systemd unit
+- ✅ `utils/sandbox.py` - Guard helper for sandbox protection
+- ✅ `DEPLOYMENT_GUIDE.md` - Quick reference for deployment
+- ✅ `SANDBOX_ARCHITECTURE.md` - Architecture overview
+
+**Modified Files:**
+- ✅ `config/config.py` - Added APP_ENV, token validation, computed defaults
+- ✅ `config/railway_config.py` - Matched config.py additions
+- ✅ `bot.py` - Added sandbox marker and webhook support
+- ✅ `main.py` - Added token validation and logging
+- ✅ `main_railway.py` - Added token validation and logging
+- ✅ `README.md` - Added deployment sections
+- ✅ `deploy/systemd/bot-prod.service` - Created production systemd unit
+
+### Pre-Deployment Verification
+
+**Configuration Files:**
+- [ ] .env.prod created from .env.prod.example
+- [ ] .env.sandbox created from .env.sandbox.example
+- [ ] BOT_TOKEN_PROD set with valid production token
+- [ ] BOT_TOKEN_SANDBOX set with valid sandbox token
+- [ ] TELEGRAM_CHANNEL_ID_PROD points to production channel
+- [ ] TELEGRAM_CHANNEL_ID_SANDBOX points to sandbox channel
+
+**Local Testing:**
+- [ ] `python main.py --env .env.prod` starts successfully
+- [ ] `python main.py --env .env.sandbox` starts successfully
+- [ ] Token validation works (wrong token prevents startup)
+- [ ] /start shows marker only in sandbox
+- [ ] Database files created separately (news.db vs news_sandbox.db)
+- [ ] Cache directories created separately (prod vs sandbox)
+
+**Docker Testing:**
+- [ ] docker-compose up -d launches both services
+- [ ] Both containers show healthy status
+- [ ] Both bots respond to commands
+- [ ] Production logs show no SANDBOX marker
+- [ ] Sandbox logs show 🧪 SANDBOX marker
+- [ ] docker-compose down stops both services cleanly
+
+**systemd Testing (if deploying to Linux VPS):**
+- [ ] sudo systemctl start bot-prod succeeds
+- [ ] sudo systemctl start bot-sandbox succeeds
+- [ ] sudo systemctl status shows both active
+- [ ] sudo journalctl shows correct APP_ENV for each
+- [ ] Restart on crash works (kill service, waits 5s, auto-restarts)
+- [ ] sudo systemctl stop stops both services
+
+**Railway Testing (if deploying to cloud):**
+- [ ] Production project shows green/healthy
+- [ ] Sandbox project shows green/healthy
+- [ ] Each has separate database files
+- [ ] Production bot responds without marker
+- [ ] Sandbox bot responds with marker
+- [ ] Both write to their respective channels
+
+---
+
 **Verification Date:** 2025-02-05  
-**Verification Status:** ✅ APPROVED  
-**Deployment Status:** ✅ GO/NO-GO: **GO**
+**Optimization Status:** ✅ APPROVED  
+**Sandbox/Production Status:** ✅ READY FOR DEPLOYMENT  
+**Overall Deployment Status:** ✅ GO/NO-GO: **GO**
 
 ---
 

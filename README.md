@@ -1,6 +1,6 @@
 # TopNews - Telegram News Aggregation Bot
 
-Полностью функциональный Telegram-бот для автоматической агрегации новостей из множества источников.
+Полностью функциональный Telegram-бот для автоматической агрегации новостей из множества источников с поддержкой персонализации и фильтрации.
 
 ## 🎯 Возможности
 
@@ -11,9 +11,13 @@
 - ✅ Дедупликация по URL
 - ✅ Сохранение истории опубликованных новостей
 - ✅ Команды управления (/sync, /pause, /resume, /status)
+- ✅ ⚙️ **Меню настроек** с фильтром и управлением источниками
+- ✅ **Per-user управление источниками новостей** (вкл/выкл)
+- ✅ **Фильтрация новостей по категориям** (#Мир, #Россия, #Москва, #Подмосковье)
 - ✅ Inline кнопка для копирования новостей
 - ✅ Аккуратное форматирование сообщений
 - ✅ Логирование всех операций
+- ✅ Production/Sandbox архитектура
 
 ## 📋 Поддерживаемые источники
 
@@ -43,13 +47,13 @@
 - @bazabazon
 - @shot_shot
 
-## 🚀 Установка
+## 🚀 Установка и Запуск
 
 ### Требования
 - Python 3.8+
 - pip
 
-### Шаги установки
+### Шаги установки (локальная разработка)
 
 1. Клонируйте репозиторий:
 ```bash
@@ -61,17 +65,297 @@ cd TopNews
 pip install -r requirements.txt
 ```
 
-3. Создайте файл `.env`:
-```env
-TELEGRAM_TOKEN=YOUR_BOT_TOKEN_HERE
-TELEGRAM_CHANNEL_ID=-1001234567890
-LOG_LEVEL=INFO
-USE_PROXY=False
+3. Создайте файл `.env` (скопируйте из `.env.prod.example` или `.env.sandbox.example`):
+```bash
+cp .env.prod.example .env
+# или для sandbox:
+# cp .env.sandbox.example .env
 ```
 
-4. Запустите бота:
+4. Отредактируйте `.env` с вашими данными
+
+5. Запустите бота:
 ```bash
 python main.py
+```
+
+---
+
+## 🔄 Архитектура: Production vs Sandbox
+
+Бот поддерживает параллельное запуск **production** (основного) и **sandbox** (тестового) экземпляров с полной изоляцией:
+
+| Параметр | Production | Sandbox |
+|----------|-----------|---------|
+| **APP_ENV** | `prod` | `sandbox` |
+| **Database** | `db/news.db` | `db/news_sandbox.db` |
+| **Cache Prefix** | `prod:` | `sandbox:` |
+| **Media Cache** | `content/cache/prod/` | `content/cache/sandbox/` |
+| **Токен** | `BOT_TOKEN_PROD` | `BOT_TOKEN_SANDBOX` |
+| **Визуальный маркер** | нет | 🧪 SANDBOX в /start |
+| **Защита сторонних эффектов** | false | true |
+
+### Токены и безопасность
+- Каждый токен привязан к своей среде
+- При запуске бота проверяется соответствие токена среде (prod vs sandbox)
+- Если запустить prod с sandbox-токеном или наоборот - бот не запустится с ошибкой
+- Это предотвращает случайную публикацию тестовых новостей в основной канал
+
+### Как выбрать среду
+- Локальная разработка: используйте `APP_ENV=sandbox`
+- Основной канал (Railway/VPS): используйте `APP_ENV=prod`
+
+---
+
+## 💻 Локальный запуск
+
+### Production (основной экземпляр)
+
+1. Скопируйте шаблон:
+```bash
+cp .env.prod.example .env.prod
+```
+
+2. Отредактируйте `.env.prod`:
+```env
+APP_ENV=prod
+BOT_TOKEN_PROD=YOUR_MAIN_BOT_TOKEN
+BOT_TOKEN_SANDBOX=YOUR_SANDBOX_BOT_TOKEN
+TELEGRAM_CHANNEL_ID=-1001234567890
+LOG_LEVEL=INFO
+```
+
+3. Запустите:
+```bash
+export APP_ENV=prod
+# или на Windows:
+# set APP_ENV=prod
+
+python main.py --env .env.prod
+# или если используется стандартный .env:
+python main.py
+```
+
+### Sandbox (тестовый экземпляр)
+
+1. Скопируйте шаблон:
+```bash
+cp .env.sandbox.example .env.sandbox
+```
+
+2. Отредактируйте `.env.sandbox`:
+```env
+APP_ENV=sandbox
+BOT_TOKEN_SANDBOX=YOUR_SANDBOX_BOT_TOKEN
+BOT_TOKEN_PROD=YOUR_MAIN_BOT_TOKEN  # для валидации
+TELEGRAM_CHANNEL_ID=-1001234567891  # другой тестовый канал
+LOG_LEVEL=DEBUG
+DISABLE_PROD_SIDE_EFFECTS=true
+```
+
+3. Запустите:
+```bash
+export APP_ENV=sandbox
+python main.py --env .env.sandbox
+```
+
+---
+
+## 🐳 Docker и Docker Compose
+
+### Запуск обоих экземпляров одновременно
+
+1. Подготовьте конфигурацию:
+```bash
+cp docker-compose.example.yml docker-compose.yml
+cp .env.prod.example .env.prod
+cp .env.sandbox.example .env.sandbox
+```
+
+2. Отредактируйте `.env.prod` и `.env.sandbox` с вашими токенами
+
+3. Запустите оба сервиса:
+```bash
+docker-compose up -d
+```
+
+4. Проверьте логи:
+```bash
+docker-compose logs -f bot-prod
+docker-compose logs -f bot-sandbox
+```
+
+### Остановка
+```bash
+docker-compose down
+```
+
+### Docker Compose структура
+
+```yaml
+services:
+  bot-prod:
+    env_file: .env.prod          # Production конфиг
+    volumes:
+      - ./db:/app/db              # Отдельная БД
+      - ./content/cache/prod:/app/content/cache/prod
+      - ./logs:/app/logs
+
+  bot-sandbox:
+    env_file: .env.sandbox        # Sandbox конфиг
+    volumes:
+      - ./db:/app/db              # Отдельная БД
+      - ./content/cache/sandbox:/app/content/cache/sandbox
+      - ./logs:/app/logs
+```
+
+---
+
+## 🔧 systemd Сервисы (для VPS/Linux)
+
+Для запуска обоих экземпляров как сервисы на Linux сервере:
+
+### Установка
+
+1. Создайте директорию для приложения:
+```bash
+sudo mkdir -p /opt/topnews
+sudo chown $USER:$USER /opt/topnews
+```
+
+2. Скопируйте приложение:
+```bash
+cp -r . /opt/topnews/
+```
+
+3. Установите зависимости:
+```bash
+cd /opt/topnews
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+4. Создайте директорию для конфигов:
+```bash
+sudo mkdir -p /etc/topnews
+sudo chown $USER:$USER /etc/topnews
+```
+
+5. Скопируйте конфиги:
+```bash
+cp .env.prod.example /etc/topnews/.env.prod
+cp .env.sandbox.example /etc/topnews/.env.sandbox
+sudo chown root:root /etc/topnews/.env.*
+sudo chmod 600 /etc/topnews/.env.*
+```
+
+6. Отредактируйте конфиги:
+```bash
+sudo nano /etc/topnews/.env.prod
+sudo nano /etc/topnews/.env.sandbox
+```
+
+7. Скопируйте systemd юниты:
+```bash
+sudo cp deploy/systemd/bot-prod.service /etc/systemd/system/
+sudo cp deploy/systemd/bot-sandbox.service /etc/systemd/system/
+```
+
+8. Перезагрузите systemd:
+```bash
+sudo systemctl daemon-reload
+```
+
+### Запуск сервисов
+
+```bash
+# Production
+sudo systemctl start bot-prod
+sudo systemctl enable bot-prod
+
+# Sandbox
+sudo systemctl start bot-sandbox
+sudo systemctl enable bot-sandbox
+
+# Проверка статуса
+sudo systemctl status bot-prod
+sudo systemctl status bot-sandbox
+
+# Логи
+sudo journalctl -u bot-prod -f
+sudo journalctl -u bot-sandbox -f
+```
+
+### systemd Конфигурация
+
+**bot-prod.service:**
+```ini
+[Service]
+EnvironmentFile=/etc/topnews/.env.prod
+ExecStart=/opt/topnews/.venv/bin/python /opt/topnews/main.py
+Restart=always
+RestartSec=5
+```
+
+**bot-sandbox.service:**
+```ini
+[Service]
+EnvironmentFile=/etc/topnews/.env.sandbox
+ExecStart=/opt/topnews/.venv/bin/python /opt/topnews/main.py
+Restart=always
+RestartSec=5
+```
+
+---
+
+## 🚀 Railway Deployment (Cloud)
+
+Railway позволяет легко развернуть и production, и sandbox экземпляры в облаке.
+
+### Создание Production сервиса
+
+1. Подключитесь к Railway и создайте новый проект
+2. Выберите "Deploy from GitHub"
+3. В переменных окружения установите:
+   ```
+   APP_ENV=prod
+   BOT_TOKEN_PROD=<ваш_основной_токен>
+   BOT_TOKEN_SANDBOX=<ваш_sandbox_токен>
+   TELEGRAM_CHANNEL_ID=-1001234567890
+   TG_MODE=webhook
+   WEBHOOK_BASE_URL=https://your-railway-domain.up.railway.app
+   LOG_LEVEL=INFO
+   DISABLE_PROD_SIDE_EFFECTS=false
+   ```
+4. Запустите через `main.py`
+
+### Создание Sandbox сервиса
+
+1. Создайте второй проект в Railway
+2. Выберите тот же GitHub репозиторий
+3. В переменных окружения установите:
+   ```
+   APP_ENV=sandbox
+   BOT_TOKEN_SANDBOX=<ваш_sandbox_токен>
+   BOT_TOKEN_PROD=<ваш_основной_токен>
+   TELEGRAM_CHANNEL_ID=-1001234567891
+   TG_MODE=webhook
+   WEBHOOK_BASE_URL=https://your-sandbox-railway-domain.up.railway.app
+   LOG_LEVEL=DEBUG
+   DISABLE_PROD_SIDE_EFFECTS=true
+   ```
+4. Запустите через `main.py`
+
+### Webhook режим
+
+Когда `TG_MODE=webhook`, бот использует webhook вместо polling:
+- Более эффективно для облачных развертываний
+- Требует `WEBHOOK_BASE_URL` (ваш публичный домен)
+- WEBHOOK_SECRET создается автоматически или задается вручную
+
+Если используете polling (по умолчанию):
+```
+TG_MODE=polling
 ```
 
 ## 📝 Получение Telegram токена
@@ -91,7 +375,7 @@ python main.py
 ## 🎮 Команды бота
 
 ```
-/start     - Приветствие и введение
+/start     - Приветствие и введение (показывает 🧪 SANDBOX если в sandbox режиме)
 /help      - Справка по доступным командам
 /sync      - Принудительный запуск сбора новостей
 /status    - Показать статус бота и статистику
@@ -99,14 +383,79 @@ python main.py
 /resume    - Возобновить автоматический сбор
 ```
 
-## 🏗️ Архитектура
+**Примечание**: В sandbox режиме в сообщении /start будет показано "🧪 SANDBOX" для визуального отличия от production.
+
+## 📋 Переменные окружения
+
+### Обязательные для обеих сред
+
+| Переменная | Описание | Пример |
+|-----------|---------|--------|
+| `APP_ENV` | Среда: prod или sandbox | `prod` |
+| `BOT_TOKEN_PROD` | Токен production бота | `123456789:ABCdefGHIjklmnoPQRstuvWXYZ...` |
+| `BOT_TOKEN_SANDBOX` | Токен sandbox бота | `987654321:XYZabcdefGHIjklmnoPQRstuvW...` |
+| `TELEGRAM_CHANNEL_ID` | ID Telegram канала для публикации | `-1001234567890` |
+
+### Опциональные переменные
+
+| Переменная | Описание | Значение по умолчанию | Production | Sandbox |
+|-----------|---------|-------------------|-----------|---------|
+| `TG_MODE` | Режим: polling или webhook | `polling` | `polling` | `polling` |
+| `WEBHOOK_BASE_URL` | Публичный URL для webhook | - | ✓ для webhook | ✓ для webhook |
+| `WEBHOOK_PATH` | Путь для webhook | `/webhook` | опционально | опционально |
+| `WEBHOOK_SECRET` | Секрет для webhook | генерируется | опционально | опционально |
+| `PORT` | Порт для webhook | `8000` | опционально | опционально |
+| `LOG_LEVEL` | Уровень логирования | `INFO` | `INFO` | `DEBUG` |
+| `DISABLE_PROD_SIDE_EFFECTS` | Отключить сторонние эффекты | false (prod) / true (sandbox) | `false` | `true` |
+
+### Примеры конфигураций
+
+**Production с polling (.env.prod):**
+```env
+APP_ENV=prod
+BOT_TOKEN_PROD=123456789:ABCdefGHIjklmnoPQRstuvWXYZ
+BOT_TOKEN_SANDBOX=987654321:XYZabcdefGHIjklmnoPQRstuvW
+TELEGRAM_CHANNEL_ID=-1001234567890
+TG_MODE=polling
+LOG_LEVEL=INFO
+DISABLE_PROD_SIDE_EFFECTS=false
+```
+
+**Production с webhook (.env.prod):**
+```env
+APP_ENV=prod
+BOT_TOKEN_PROD=123456789:ABCdefGHIjklmnoPQRstuvWXYZ
+BOT_TOKEN_SANDBOX=987654321:XYZabcdefGHIjklmnoPQRstuvW
+TELEGRAM_CHANNEL_ID=-1001234567890
+TG_MODE=webhook
+WEBHOOK_BASE_URL=https://mybot.example.com
+WEBHOOK_PATH=/webhook
+WEBHOOK_SECRET=my_secure_secret_123
+PORT=8000
+LOG_LEVEL=INFO
+DISABLE_PROD_SIDE_EFFECTS=false
+```
+
+**Sandbox (.env.sandbox):**
+```env
+APP_ENV=sandbox
+BOT_TOKEN_PROD=123456789:ABCdefGHIjklmnoPQRstuvWXYZ
+BOT_TOKEN_SANDBOX=987654321:XYZabcdefGHIjklmnoPQRstuvW
+TELEGRAM_CHANNEL_ID=-1001234567891
+TG_MODE=polling
+LOG_LEVEL=DEBUG
+DISABLE_PROD_SIDE_EFFECTS=true
+```
 
 ```
 TopNews/
 ├── config/
-│   └── config.py           # Конфигурация приложения
+│   ├── config.py           # Конфигурация (локальная разработка)
+│   └── railway_config.py   # Конфигурация (Railway cloud)
 ├── db/
-│   └── database.py         # Управление базой данных (SQLite)
+│   ├── database.py         # Управление базой данных (SQLite)
+│   ├── news.db             # Production база (создается автоматически)
+│   └── news_sandbox.db     # Sandbox база (создается автоматически)
 ├── parsers/
 │   ├── rss_parser.py       # Парсер RSS фидов
 │   └── html_parser.py      # Парсер HTML страниц
@@ -116,12 +465,28 @@ TopNews/
 │   └── auth_source.py      # Сбор из закрытых источников
 ├── utils/
 │   ├── logger.py           # Настройка логирования
-│   └── text_cleaner.py     # Очистка и форматирование текста
+│   ├── text_cleaner.py     # Очистка и форматирование текста
+│   └── sandbox.py          # Защита от side-effects в sandbox
+├── content/
+│   └── cache/
+│       ├── prod/           # Кэш production (создается автоматически)
+│       └── sandbox/        # Кэш sandbox (создается автоматически)
+├── deploy/
+│   └── systemd/
+│       ├── bot-prod.service    # systemd юнит для production
+│       └── bot-sandbox.service # systemd юнит для sandbox
 ├── bot.py                  # Основной класс бота
 ├── main.py                 # Точка входа приложения
+├── main_railway.py         # Точка входа для Railway
 ├── requirements.txt        # Python зависимости
+├── Dockerfile              # Docker контейнер
+├── docker-compose.example.yml  # Docker Compose (обе среды)
+├── .env.prod.example       # Шаблон production конфига
+├── .env.sandbox.example    # Шаблон sandbox конфига
 ├── logs/                   # Логи приложения
-└── db/                     # База данных (создается автоматически)
+│   ├── bot_prod.log        # Production логи
+│   └── bot_sandbox.log     # Sandbox логи
+└── README.md               # Этот файл
 ```
 
 ## 📦 Структура публикуемого сообщения

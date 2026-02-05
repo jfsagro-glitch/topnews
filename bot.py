@@ -69,9 +69,6 @@ class NewsBot:
         # Rate limiting for AI summarize requests (per user per minute)
         self.user_ai_requests = {}  # {user_id: [timestamp1, timestamp2, ...]}
         
-        # User selected news for export (user_id -> [news_ids])
-        self.user_selections = {}  # {user_id: [news_id1, news_id2, ...]}
-
         # Instance lock (prevent double start)
         self._instance_lock_fd = None
         self._instance_lock_path = None
@@ -295,7 +292,7 @@ class NewsBot:
     async def cmd_my_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /my_selection - показать выбранные новости и экспортировать"""
         user_id = update.message.from_user.id
-        selected = self.user_selections.get(user_id, [])
+        selected = self.db.get_user_selections(user_id)
         
         if not selected:
             await update.message.reply_text("📭 У вас нет выбранных новостей.\n\nВыберите новости, нажав 📌 под новостью в канале.")
@@ -656,7 +653,7 @@ class NewsBot:
         
         # Get user selection count
         user_id = update.message.from_user.id
-        selection_count = len(self.user_selections.get(user_id, []))
+        selection_count = len(self.db.get_user_selections(user_id))
         
         keyboard = [
             [
@@ -977,7 +974,7 @@ class NewsBot:
         if query.data == "show_my_selection":
             # Показать выбранные новости с кнопками экспорта
             user_id = query.from_user.id
-            selected = self.user_selections.get(user_id, [])
+            selected = self.db.get_user_selections(user_id)
             
             if not selected:
                 await query.answer("📭 У вас нет выбранных новостей", show_alert=True)
@@ -1056,7 +1053,7 @@ class NewsBot:
             try:
                 doc_file = await self._generate_doc_file(user_id)
                 if doc_file:
-                    count = len(self.user_selections.get(user_id, []))
+                    count = len(self.db.get_user_selections(user_id))
                     await context.bot.send_document(
                         chat_id=user_id,
                         document=open(doc_file, 'rb'),
@@ -1068,7 +1065,7 @@ class NewsBot:
                     os.remove(doc_file)
                     
                     # Очистить выбранные новости после отправки
-                    self.user_selections[user_id] = []
+                    self.db.clear_user_selections(user_id)
                     await context.bot.send_message(
                         chat_id=user_id,
                         text="✅ Документ отправлен!\n\n📌 Выбранные новости очищены. Начните новую подборку!"
@@ -1083,8 +1080,8 @@ class NewsBot:
         elif query.data == "clear_selection":
             # Очистить выбранные новости
             user_id = query.from_user.id
-            count = len(self.user_selections.get(user_id, []))
-            self.user_selections[user_id] = []
+            count = len(self.db.get_user_selections(user_id))
+            self.db.clear_user_selections(user_id)
             await query.answer(f"🗑 Очищено {count} новостей", show_alert=False)
             await query.edit_message_text("✅ Выбранные новости очищены")
             return
@@ -1173,7 +1170,7 @@ class NewsBot:
                     cached_summary = self.db.get_cached_summary(news_id)
                     if cached_summary:
                         # Check if already selected
-                        is_selected = news_id in self.user_selections.get(user_id, [])
+                        is_selected = self.db.is_news_selected(user_id, news_id)
                         select_btn_text = "✅ Выбрано" if is_selected else "📌 Выбрать"
                         
                         await context.bot.send_message(
@@ -1208,7 +1205,7 @@ class NewsBot:
                         self.db.save_summary(news_id, summary)
                         
                         # Check if already selected
-                        is_selected = news_id in self.user_selections.get(user_id, [])
+                        is_selected = self.db.is_news_selected(user_id, news_id)
                         select_btn_text = "✅ Выбрано" if is_selected else "📌 Выбрать"
                         
                         await context.bot.send_message(
@@ -1249,12 +1246,10 @@ class NewsBot:
             elif action == "select":
                 # Добавить/убрать новость из выбранных
                 user_id = query.from_user.id
-                if user_id not in self.user_selections:
-                    self.user_selections[user_id] = []
                 
-                if news_id in self.user_selections[user_id]:
+                if self.db.is_news_selected(user_id, news_id):
                     # Убрать из выбранных
-                    self.user_selections[user_id].remove(news_id)
+                    self.db.remove_user_selection(user_id, news_id)
                     await query.answer("✅ Убрано из выбранных", show_alert=False)
                     # Обновить кнопку
                     new_keyboard = InlineKeyboardMarkup([
@@ -1265,7 +1260,7 @@ class NewsBot:
                     ])
                 else:
                     # Добавить в выбранные
-                    self.user_selections[user_id].append(news_id)
+                    self.db.add_user_selection(user_id, news_id)
                     await query.answer("✅ Добавлено в выбранные", show_alert=False)
                     # Обновить кнопку
                     new_keyboard = InlineKeyboardMarkup([
@@ -1671,7 +1666,7 @@ class NewsBot:
             from docx.enum.text import WD_ALIGN_PARAGRAPH
             import tempfile
             
-            selected_ids = self.user_selections.get(user_id, [])
+            selected_ids = self.db.get_user_selections(user_id)
             if not selected_ids:
                 return None
             

@@ -168,6 +168,17 @@ class NewsDatabase:
                 )
             ''')
 
+            # Table for user news selections (persistent across restarts)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_news_selections (
+                    user_id TEXT NOT NULL,
+                    news_id INTEGER NOT NULL,
+                    selected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, news_id),
+                    FOREIGN KEY (news_id) REFERENCES published_news(id) ON DELETE CASCADE
+                )
+            ''')
+
             # Ensure new columns exist for older DBs
             self._ensure_columns(cursor)
 
@@ -994,4 +1005,97 @@ class NewsDatabase:
                 return True
         except Exception as e:
             logger.error(f"Error setting feature flag: {e}")
+            return False
+    def add_user_selection(self, user_id: str, news_id: int) -> bool:
+        """
+        Добавить новость в выбранные пользователем.
+        Returns: True если успешно, False если ошибка
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                user_id = str(user_id)
+                cursor.execute(
+                    'INSERT OR IGNORE INTO user_news_selections (user_id, news_id, selected_at) VALUES (?, ?, CURRENT_TIMESTAMP)',
+                    (user_id, news_id)
+                )
+                self._conn.commit()
+                logger.debug(f"Added selection: user={user_id}, news_id={news_id}")
+                return True
+        except Exception as e:
+            logger.error(f"Error adding selection: {e}")
+            return False
+
+    def remove_user_selection(self, user_id: str, news_id: int) -> bool:
+        """
+        Удалить новость из выбранных пользователем.
+        Returns: True если успешно, False если ошибка
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                user_id = str(user_id)
+                cursor.execute(
+                    'DELETE FROM user_news_selections WHERE user_id = ? AND news_id = ?',
+                    (user_id, news_id)
+                )
+                self._conn.commit()
+                logger.debug(f"Removed selection: user={user_id}, news_id={news_id}")
+                return True
+        except Exception as e:
+            logger.error(f"Error removing selection: {e}")
+            return False
+
+    def get_user_selections(self, user_id: str) -> List[int]:
+        """
+        Получить список ID новостей, выбранных пользователем.
+        Returns: список news_id
+        """
+        try:
+            cursor = self._conn.cursor()
+            user_id = str(user_id)
+            cursor.execute(
+                'SELECT news_id FROM user_news_selections WHERE user_id = ? ORDER BY selected_at DESC',
+                (user_id,)
+            )
+            return [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting user selections: {e}")
+            return []
+
+    def clear_user_selections(self, user_id: str) -> bool:
+        """
+        Очистить все выбранные новости пользователя.
+        Returns: True если успешно, False если ошибка
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                user_id = str(user_id)
+                cursor.execute(
+                    'DELETE FROM user_news_selections WHERE user_id = ?',
+                    (user_id,)
+                )
+                self._conn.commit()
+                logger.debug(f"Cleared selections for user={user_id}")
+                return True
+        except Exception as e:
+            logger.error(f"Error clearing selections: {e}")
+            return False
+
+    def is_news_selected(self, user_id: str, news_id: int) -> bool:
+        """
+        Проверить, выбрана ли новость пользователем.
+        Returns: True если выбрана, False если нет
+        """
+        try:
+            cursor = self._conn.cursor()
+            user_id = str(user_id)
+            cursor.execute(
+                'SELECT 1 FROM user_news_selections WHERE user_id = ? AND news_id = ? LIMIT 1',
+                (user_id, news_id)
+            )
+            return cursor.fetchone() is not None
+        except Exception as e:
+            logger.error(f"Error checking selection: {e}")
             return False

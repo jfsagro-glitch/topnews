@@ -1,0 +1,14 @@
+[Unit]
+Description=TopNews Telegram Bot (sandbox)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/topnews
+EnvironmentFile=/etc/topnews/.env.sandbox
+ExecStart=/opt/topnews/.venv/bin/python /opt/topnews/main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
