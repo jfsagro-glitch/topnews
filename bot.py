@@ -450,14 +450,15 @@ class NewsBot:
             await update.message.reply_text("❌ Доступно только администраторам")
             return
         
-        # Show management menu
+        # Show management menu with AI and Users options
         keyboard = [
             [InlineKeyboardButton("🤖 AI переключатели", callback_data="mgmt:ai")],
-            [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:back")],
+            [InlineKeyboardButton("👥 Пользователи и инвайты", callback_data="mgmt:users")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
-            "🛠 Управление ботом",
+            "🛠 Управление ботом\n\n"
+            "Выберите раздел:",
             reply_markup=reply_markup
         )
     
@@ -756,6 +757,12 @@ class NewsBot:
             await self._show_ai_management(query)
             return
         
+        if query.data == "mgmt:users":
+            # Show users and invites management screen
+            await query.answer()
+            await self._show_users_management(query)
+            return
+        
         if query.data.startswith("mgmt:ai:inc:"):
             # Increment AI level
             module = query.data.split(":")[-1]
@@ -781,15 +788,77 @@ class NewsBot:
             await query.answer()
             keyboard = [
                 [InlineKeyboardButton("🤖 AI переключатели", callback_data="mgmt:ai")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:back")],
+                [InlineKeyboardButton("👥 Пользователи и инвайты", callback_data="mgmt:users")],
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
-                text="🛠 Управление ботом",
+                text="🛠 Управление ботом\n\nВыберите раздел:",
                 reply_markup=reply_markup
             )
+        
             return
         
+        if query.data == "mgmt:new_invite":
+            # Create new invite
+            from core.services.user_management import UserInviteManager
+            manager = UserInviteManager(self.db)
+            invite_code = manager.create_invite()
+            
+            if invite_code:
+                await query.answer(f"✅ Инвайт создан: {invite_code}", show_alert=True)
+            else:
+                await query.answer("❌ Ошибка при создании инвайта", show_alert=True)
+            
+            # Re-render users menu
+            await self._show_users_management(query)
+            return
+        
+        if query.data == "mgmt:users_list":
+            # Show detailed list of users and invites
+            from core.services.user_management import UserInviteManager
+            manager = UserInviteManager(self.db)
+            
+            approved_users = manager.get_approved_users()
+            pending_invites = manager.get_pending_invites()
+            
+            # Build text list
+            text = "📋 Список пользователей и инвайтов\n\n"
+            
+            if approved_users:
+                text += f"✅ Одобренные пользователи ({len(approved_users)}):\n"
+                for uid in approved_users[:10]:  # Show max 10
+                    text += f"  • {uid}\n"
+                if len(approved_users) > 10:
+                    text += f"  ... и ещё {len(approved_users) - 10}\n"
+            else:
+                text += "✅ Одобренные: нет\n"
+            
+            text += "\n"
+            
+            pending_count = len([i for i in pending_invites if not i.get("used")])
+            used_count = len([i for i in pending_invites if i.get("used")])
+            
+            if pending_count > 0:
+                text += f"📨 Активные инвайты ({pending_count}):\n"
+                for invite in pending_invites:
+                    if not invite.get("used"):
+                        text += f"  • {invite.get('code', 'unknown')}\n"
+            
+            if used_count > 0:
+                text += f"\n✔️ Использованные ({used_count}):\n"
+                for invite in pending_invites[-3:]:  # Show last 3
+                    if invite.get("used"):
+                        text += f"  • {invite.get('code', 'unknown')} (юзер: {invite.get('used_by', '?')})\n"
+            
+            if not approved_users and pending_count == 0 and used_count == 0:
+                text += "(пусто)"
+            
+            # Back button
+            keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:users")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(text=text, reply_markup=reply_markup)
+            return
         # ==================== OTHER CALLBACKS ====================
         if query.data == "show_status":
             # Показать статус бота
@@ -1949,3 +2018,63 @@ class NewsBot:
         
         # Re-render screen
         await self._show_ai_management(query)
+
+        async def _show_users_management(self, query):
+            """Show users and invites management screen"""
+            try:
+                from config.railway_config import APP_ENV
+            except (ImportError, ValueError):
+                from config.config import APP_ENV
+        
+            from core.services.user_management import UserInviteManager
+        
+            user_id = query.from_user.id
+        
+            # Check admin
+            is_admin = user_id in ADMIN_IDS if ADMIN_IDS else False
+            if not is_admin or APP_ENV != "sandbox":
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+        
+            # Get users and invites data
+            manager = UserInviteManager(self.db)
+            approved_users = manager.get_approved_users()
+            pending_invites = manager.get_pending_invites()
+        
+            # Build UI
+            keyboard = []
+        
+            # Users section
+            keyboard.append([InlineKeyboardButton("👥 Одобренные пользователи", callback_data="noop")])
+            if approved_users:
+                keyboard.append([InlineKeyboardButton(f"({len(approved_users)} чел.)", callback_data="noop")])
+            else:
+                keyboard.append([InlineKeyboardButton("(нет)", callback_data="noop")])
+        
+            # Invites section
+            keyboard.append([InlineKeyboardButton("📨 Ожидающие приглашения", callback_data="noop")])
+            pending_count = len([i for i in pending_invites if not i.get("used")])
+            if pending_count > 0:
+                keyboard.append([InlineKeyboardButton(f"({pending_count} приглашений)", callback_data="noop")])
+            else:
+                keyboard.append([InlineKeyboardButton("(нет)", callback_data="noop")])
+        
+            # Action buttons
+            keyboard.append([
+                InlineKeyboardButton("➕ Создать инвайт", callback_data="mgmt:new_invite"),
+                InlineKeyboardButton("👁️ Список", callback_data="mgmt:users_list"),
+            ])
+        
+            # Back button
+            keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:back")])
+        
+            reply_markup = InlineKeyboardMarkup(keyboard)
+        
+            text = (
+                "👥 Управление пользователями и инвайтами\n\n"
+                f"✅ Одобренные: {len(approved_users)} чел.\n"
+                f"📨 Ожидающие инвайты: {pending_count}\n\n"
+                "Используйте кнопки ниже для управления."
+            )
+        
+            await query.edit_message_text(text=text, reply_markup=reply_markup)
