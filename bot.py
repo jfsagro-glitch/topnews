@@ -1006,8 +1006,18 @@ class NewsBot:
                 bot_info = await self.application.bot.get_me()
                 BOT_SANDBOX_USERNAME = bot_info.username
             
+            # Формируем правильную ссылку с правильным форматом start параметра
             invite_link = f"https://t.me/{BOT_SANDBOX_USERNAME}?start={invite_code}"
-            share_text = f"🎉 Инвайт в News Aggregator Bot!%0A%0A📌 Код: {invite_code}%0A🔗 Ссылка: {invite_link}"
+            
+            # Красивое сообщение с эмодзи (без ссылки на бота)
+            from urllib.parse import quote
+            share_text = quote(
+                f"🎁 Приглашение в News Aggregator Bot!\n\n"
+                f"✨ Используйте этот инвайт-код для регистрации:\n"
+                f"👉 {invite_code}\n\n"
+                f"🚀 Перейти: {invite_link}"
+            )
+            
             share_url = f"https://t.me/share/url?url={invite_link}&text={share_text}"
             
             keyboard = [
