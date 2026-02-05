@@ -477,9 +477,8 @@ class NewsBot:
             await update.message.reply_text("❌ Доступно только администраторам")
             return
         
-        # Show management menu with AI and Users options
+        # Show management menu with Users option (AI moved to Settings)
         keyboard = [
-            [InlineKeyboardButton("🤖 AI переключатели", callback_data="mgmt:ai")],
             [InlineKeyboardButton("👥 Пользователи и инвайты", callback_data="mgmt:users")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -642,6 +641,7 @@ class NewsBot:
         keyboard = [
             [InlineKeyboardButton("🧰 Фильтр", callback_data="settings:filter")],
             [InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")],
+            [InlineKeyboardButton("🤖 AI переключатели", callback_data="mgmt:ai")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
