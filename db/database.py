@@ -179,6 +179,28 @@ class NewsDatabase:
                 )
             ''')
 
+            # Table for invite codes (access control)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS invites (
+                    code TEXT PRIMARY KEY,
+                    created_by TEXT NOT NULL,
+                    used_by TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    used_at TIMESTAMP
+                )
+            ''')
+
+            # Table for approved users (who have access to prod bot)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS approved_users (
+                    user_id TEXT PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    invited_by TEXT,
+                    approved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             # Ensure new columns exist for older DBs
             self._ensure_columns(cursor)
 
@@ -1098,4 +1120,136 @@ class NewsDatabase:
             return cursor.fetchone() is not None
         except Exception as e:
             logger.error(f"Error checking selection: {e}")
+            return False
+
+    def create_invite(self, created_by: str) -> Optional[str]:
+        """
+        Создать новый инвайт-код.
+        Returns: код инвайта или None при ошибке
+        """
+        try:
+            import secrets
+            code = secrets.token_urlsafe(12)  # Генерируем случайный код
+            
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                created_by = str(created_by)
+                cursor.execute(
+                    'INSERT INTO invites (code, created_by) VALUES (?, ?)',
+                    (code, created_by)
+                )
+                self._conn.commit()
+                logger.info(f"Created invite code: {code} by user {created_by}")
+                return code
+        except Exception as e:
+            logger.error(f"Error creating invite: {e}")
+            return None
+
+    def use_invite(self, code: str, user_id: str, username: str = None, first_name: str = None) -> bool:
+        """
+        Использовать инвайт-код для доступа к боту.
+        Returns: True если успешно, False если код неверный или уже использован
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                user_id = str(user_id)
+                
+                # Проверить, что код существует и не использован
+                cursor.execute(
+                    'SELECT created_by, used_by FROM invites WHERE code = ?',
+                    (code,)
+                )
+                row = cursor.fetchone()
+                
+                if not row:
+                    logger.warning(f"Invite code not found: {code}")
+                    return False
+                
+                created_by, used_by = row
+                
+                if used_by:
+                    logger.warning(f"Invite code already used: {code} by {used_by}")
+                    return False
+                
+                # Отметить код как использованный
+                cursor.execute(
+                    'UPDATE invites SET used_by = ?, used_at = CURRENT_TIMESTAMP WHERE code = ?',
+                    (user_id, code)
+                )
+                
+                # Добавить пользователя в approved_users
+                cursor.execute(
+                    'INSERT OR REPLACE INTO approved_users (user_id, username, first_name, invited_by) VALUES (?, ?, ?, ?)',
+                    (user_id, username, first_name, created_by)
+                )
+                
+                self._conn.commit()
+                logger.info(f"User {user_id} approved via invite {code}")
+                return True
+        except Exception as e:
+            logger.error(f"Error using invite: {e}")
+            return False
+
+    def is_user_approved(self, user_id: str) -> bool:
+        """
+        Проверить, одобрен ли пользователь для доступа к боту.
+        Returns: True если одобрен, False если нет
+        """
+        try:
+            cursor = self._conn.cursor()
+            user_id = str(user_id)
+            cursor.execute(
+                'SELECT 1 FROM approved_users WHERE user_id = ? LIMIT 1',
+                (user_id,)
+            )
+            return cursor.fetchone() is not None
+        except Exception as e:
+            logger.error(f"Error checking user approval: {e}")
+            return False
+
+    def get_unused_invites(self) -> List[Tuple[str, str, str]]:
+        """
+        Получить список неиспользованных инвайтов.
+        Returns: список (code, created_by, created_at)
+        """
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                'SELECT code, created_by, created_at FROM invites WHERE used_by IS NULL ORDER BY created_at DESC'
+            )
+            return cursor.fetchall()
+        except Exception as e:
+            logger.error(f"Error getting unused invites: {e}")
+            return []
+
+    def get_approved_users(self) -> List[Tuple[str, str, str, str]]:
+        """
+        Получить список одобренных пользователей.
+        Returns: список (user_id, username, first_name, approved_at)
+        """
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                'SELECT user_id, username, first_name, approved_at FROM approved_users ORDER BY approved_at DESC'
+            )
+            return cursor.fetchall()
+        except Exception as e:
+            logger.error(f"Error getting approved users: {e}")
+            return []
+
+    def delete_invite(self, code: str) -> bool:
+        """
+        Удалить инвайт-код.
+        Returns: True если успешно, False если ошибка
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute('DELETE FROM invites WHERE code = ?', (code,))
+                self._conn.commit()
+                logger.info(f"Deleted invite code: {code}")
+                return True
+        except Exception as e:
+            logger.error(f"Error deleting invite: {e}")
             return False

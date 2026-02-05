@@ -39,6 +39,9 @@ from core.services.access_control import AILevelManager, get_llm_profile
 class NewsBot:
     """Основной класс Telegram бота"""
     
+    # Администраторы с полным доступом к обоим ботам
+    ADMIN_IDS = [408817675, 464108692, 1592307306]
+    
     def __init__(self):
         self.application = None
         self.db = NewsDatabase(db_path=DATABASE_PATH)  # Use path from config
@@ -76,15 +79,83 @@ class NewsBot:
         self._shutdown_requested = False
 
     def _is_admin(self, user_id: int) -> bool:
-        """Check if user is admin (ADMIN_IDS or ADMIN_USER_IDS)."""
-        admin_ids = set(ADMIN_IDS or [])
+        """Check if user is admin (hardcoded ADMIN_IDS or config ADMIN_USER_IDS)."""
+        # Hardcoded admins
+        admin_ids = set(self.ADMIN_IDS)
+        
+        # Add admins from config
         try:
             from config.railway_config import ADMIN_USER_IDS
         except (ImportError, ValueError):
             from config.config import ADMIN_USER_IDS
         if ADMIN_USER_IDS:
             admin_ids.update(ADMIN_USER_IDS)
+        
         return user_id in admin_ids
+
+    def _has_access(self, user_id: int) -> bool:
+        """Check if user has access to bot (admin or approved via invite)."""
+        try:
+            from config.railway_config import APP_ENV
+        except (ImportError, ValueError):
+            from config.config import APP_ENV
+        
+        # Admins always have access
+        if self._is_admin(user_id):
+            return True
+        
+        # Sandbox is open to all
+        if APP_ENV == "sandbox":
+            return True
+        
+        # Prod requires approval via invite
+        return self.db.is_user_approved(str(user_id))
+
+    def _check_access(self, handler):
+        """Decorator to check user access before executing handler"""
+        async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            user_id = update.effective_user.id
+            
+            # /start can always be called (handles invite codes and access messages)
+            if handler.__name__ == 'cmd_start':
+                return await handler(update, context)
+            
+            # Check if user has access
+            if not self._has_access(user_id):
+                try:
+                    from config.railway_config import APP_ENV
+                except (ImportError, ValueError):
+                    from config.config import APP_ENV
+                
+                await update.message.reply_text(
+                    "🔒 Доступ к боту только по инвайту.\n\n"
+                    "Для получения доступа:\n"
+                    "1. Обратитесь к администратору\n"
+                    "2. Получите инвайт-ссылку\n"
+                    "3. Перейдите по ссылке для активации"
+                )
+                return
+            
+            # User has access, execute handler
+            return await handler(update, context)
+        
+        return wrapper
+
+    def _init_admins_access(self):
+        """Initialize admin users with access to prod bot"""
+        for admin_id in self.ADMIN_IDS:
+            # Check if already approved
+            if not self.db.is_user_approved(str(admin_id)):
+                # Add admin with "SYSTEM" as invited_by
+                from datetime import datetime
+                cursor = self.db._conn.cursor()
+                with self.db._write_lock:
+                    cursor.execute(
+                        'INSERT OR IGNORE INTO approved_users (user_id, username, first_name, invited_by, approved_at) VALUES (?, ?, ?, ?, ?)',
+                        (str(admin_id), None, f"Admin {admin_id}", "SYSTEM", datetime.now().isoformat())
+                    )
+                    self.db._conn.commit()
+                logger.info(f"Initialized admin access for user {admin_id}")
 
     def _get_sandbox_filter_user_id(self) -> int | None:
         """Pick a user id whose source settings control sandbox filtering."""
@@ -187,18 +258,18 @@ class NewsBot:
         
         self.application = Application.builder().token(TELEGRAM_TOKEN).build()
         
-        # Регистрируем обработчики команд
-        self.application.add_handler(CommandHandler("start", self.cmd_start))
-        self.application.add_handler(CommandHandler("help", self.cmd_help))
-        self.application.add_handler(CommandHandler("sync", self.cmd_sync))
-        self.application.add_handler(CommandHandler("status", self.cmd_status))
-        self.application.add_handler(CommandHandler("pause", self.cmd_pause))
-        self.application.add_handler(CommandHandler("resume", self.cmd_resume))
-        self.application.add_handler(CommandHandler("filter", self.cmd_filter))
-        self.application.add_handler(CommandHandler("sync_deepseek", self.cmd_sync_deepseek))
-        self.application.add_handler(CommandHandler("update_stats", self.cmd_update_stats))
-        self.application.add_handler(CommandHandler("debug_sources", self.cmd_debug_sources))
-        self.application.add_handler(CommandHandler("my_selection", self.cmd_my_selection))
+        # Регистрируем обработчики команд с проверкой доступа
+        self.application.add_handler(CommandHandler("start", self._check_access(self.cmd_start)))
+        self.application.add_handler(CommandHandler("help", self._check_access(self.cmd_help)))
+        self.application.add_handler(CommandHandler("sync", self._check_access(self.cmd_sync)))
+        self.application.add_handler(CommandHandler("status", self._check_access(self.cmd_status)))
+        self.application.add_handler(CommandHandler("pause", self._check_access(self.cmd_pause)))
+        self.application.add_handler(CommandHandler("resume", self._check_access(self.cmd_resume)))
+        self.application.add_handler(CommandHandler("filter", self._check_access(self.cmd_filter)))
+        self.application.add_handler(CommandHandler("sync_deepseek", self._check_access(self.cmd_sync_deepseek)))
+        self.application.add_handler(CommandHandler("update_stats", self._check_access(self.cmd_update_stats)))
+        self.application.add_handler(CommandHandler("debug_sources", self._check_access(self.cmd_debug_sources)))
+        self.application.add_handler(CommandHandler("my_selection", self._check_access(self.cmd_my_selection)))
         
         # Обработчик текстовых сообщений (эмодзи-кнопки)
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_emoji_buttons))
@@ -231,6 +302,39 @@ class NewsBot:
             from config.config import APP_ENV
         
         user_id = update.message.from_user.id
+        username = update.message.from_user.username
+        first_name = update.message.from_user.first_name
+        
+        # Проверка инвайт-кода (если передан через deep link)
+        if context.args and len(context.args) > 0:
+            invite_code = context.args[0]
+            
+            # Попытка использовать инвайт
+            if self.db.use_invite(invite_code, str(user_id), username, first_name):
+                await update.message.reply_text(
+                    "✅ Инвайт-код успешно активирован!\n\n"
+                    "Теперь у вас есть доступ к боту. Используйте /help для списка команд.",
+                    reply_markup=self.REPLY_KEYBOARD
+                )
+                return
+            else:
+                await update.message.reply_text(
+                    "❌ Неверный или уже использованный инвайт-код.\n\n"
+                    "Получите новый инвайт от администратора."
+                )
+                return
+        
+        # Проверка доступа
+        if not self._has_access(user_id):
+            await update.message.reply_text(
+                "🔒 Доступ к боту только по инвайту.\n\n"
+                "Для получения доступа:\n"
+                "1. Обратитесь к администратору\n"
+                "2. Получите инвайт-ссылку\n"
+                "3. Перейдите по ссылке для активации"
+            )
+            return
+        
         is_admin = self._is_admin(user_id)
         env_marker = "\n🧪 SANDBOX" if APP_ENV == "sandbox" else ""
         
@@ -824,12 +928,28 @@ class NewsBot:
         
         if query.data == "mgmt:new_invite":
             # Create new invite
-            from core.services.user_management import UserInviteManager
-            manager = UserInviteManager(self.db)
-            invite_code = manager.create_invite()
+            admin_id = str(query.from_user.id)
+            invite_code = self.db.create_invite(admin_id)
             
             if invite_code:
+                # Get bot username for link
+                bot_info = await self.application.bot.get_me()
+                bot_username = bot_info.username
+                invite_link = f"https://t.me/{bot_username}?start={invite_code}"
+                
                 await query.answer(f"✅ Инвайт создан: {invite_code}", show_alert=True)
+                
+                # Send invite link details
+                await self.application.bot.send_message(
+                    chat_id=admin_id,
+                    text=(
+                        f"🎉 Новый инвайт-код создан:\n\n"
+                        f"📌 Код: `{invite_code}`\n"
+                        f"🔗 Ссылка: {invite_link}\n\n"
+                        f"Отправьте эту ссылку пользователю для активации."
+                    ),
+                    parse_mode='Markdown'
+                )
             else:
                 await query.answer("❌ Ошибка при создании инвайта", show_alert=True)
             
@@ -839,19 +959,18 @@ class NewsBot:
         
         if query.data == "mgmt:users_list":
             # Show detailed list of users and invites
-            from core.services.user_management import UserInviteManager
-            manager = UserInviteManager(self.db)
-            
-            approved_users = manager.get_approved_users()
-            pending_invites = manager.get_pending_invites()
+            approved_users = self.db.get_approved_users()
+            unused_invites = self.db.get_unused_invites()
+            used_invites = self.db.get_unused_invites()  # In reality we need to get all invites
             
             # Build text list
             text = "📋 Список пользователей и инвайтов\n\n"
             
             if approved_users:
                 text += f"✅ Одобренные пользователи ({len(approved_users)}):\n"
-                for uid in approved_users[:10]:  # Show max 10
-                    text += f"  • {uid}\n"
+                for user_id, username, first_name, approved_at in approved_users[:10]:  # Show max 10
+                    name = first_name or username or user_id
+                    text += f"  • {name} (ID: {user_id})\n"
                 if len(approved_users) > 10:
                     text += f"  ... и ещё {len(approved_users) - 10}\n"
             else:
@@ -859,17 +978,12 @@ class NewsBot:
             
             text += "\n"
             
-            pending_count = len([i for i in pending_invites if not i.get("used")])
-            used_count = len([i for i in pending_invites if i.get("used")])
-            
-            if pending_count > 0:
-                text += f"📨 Активные инвайты ({pending_count}):\n"
-                for invite in pending_invites:
-                    if not invite.get("used"):
-                        text += f"  • {invite.get('code', 'unknown')}\n"
-            
-            if used_count > 0:
-                text += f"\n✔️ Использованные ({used_count}):\n"
+            if unused_invites:
+                text += f"📨 Активные инвайты ({len(unused_invites)}):\n"
+                for code, created_by, created_at in unused_invites[:10]:
+                    text += f"  • {code}\n"
+                if len(unused_invites) > 10:
+                    text += f"  ... и ещё {len(unused_invites) - 10}\n"
                 for invite in pending_invites[-3:]:  # Show last 3
                     if invite.get("used"):
                         text += f"  • {invite.get('code', 'unknown')} (юзер: {invite.get('used_by', '?')})\n"
@@ -1580,6 +1694,9 @@ class NewsBot:
             self._release_instance_lock()
             return
         
+        # Инициализируем админов в БД (при первом запуске)
+        self._init_admins_access()
+        
         # Создаем приложение
         self.create_application()
         
@@ -2065,20 +2182,18 @@ class NewsBot:
         except (ImportError, ValueError):
             from config.config import APP_ENV
 
-        from core.services.user_management import UserInviteManager
-
         user_id = query.from_user.id
 
         # Check admin
         is_admin = self._is_admin(user_id)
-        if not is_admin or APP_ENV != "sandbox":
+        if not is_admin:
             await query.answer("❌ Доступ запрещён", show_alert=True)
             return
 
-        # Get users and invites data
-        manager = UserInviteManager(self.db)
-        approved_users = manager.get_approved_users()
-        pending_invites = manager.get_pending_invites()
+        # For prod, sandbox restriction should not apply (admins can manage both)
+        # Get invites and approved users from DB
+        unused_invites = self.db.get_unused_invites()
+        approved_users = self.db.get_approved_users()
 
         # Build UI
         keyboard = []
@@ -2091,10 +2206,9 @@ class NewsBot:
             keyboard.append([InlineKeyboardButton("(нет)", callback_data="noop")])
 
         # Invites section
-        keyboard.append([InlineKeyboardButton("📨 Ожидающие приглашения", callback_data="noop")])
-        pending_count = len([i for i in pending_invites if not i.get("used")])
-        if pending_count > 0:
-            keyboard.append([InlineKeyboardButton(f"({pending_count} приглашений)", callback_data="noop")])
+        keyboard.append([InlineKeyboardButton("📨 Активные инвайты", callback_data="noop")])
+        if unused_invites:
+            keyboard.append([InlineKeyboardButton(f"({len(unused_invites)} инвайтов)", callback_data="noop")])
         else:
             keyboard.append([InlineKeyboardButton("(нет)", callback_data="noop")])
 
@@ -2112,8 +2226,9 @@ class NewsBot:
         text = (
             "👥 Управление пользователями и инвайтами\n\n"
             f"✅ Одобренные: {len(approved_users)} чел.\n"
-            f"📨 Ожидающие инвайты: {pending_count}\n\n"
+            f"📨 Активные инвайты: {len(unused_invites)}\n\n"
             "Используйте кнопки ниже для управления."
         )
 
         await query.edit_message_text(text=text, reply_markup=reply_markup)
+
