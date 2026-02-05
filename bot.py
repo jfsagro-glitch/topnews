@@ -707,116 +707,7 @@ class NewsBot:
         if not hasattr(self, '_pending_invites'):
             self._pending_invites = {}
         
-        if user_id in self._pending_invites and text and not text.startswith('/'):
-            # User is sending recipient for invite
-            invite_code = self._pending_invites[user_id]
-            recipient_input = text.strip()
-            
-            logger.info(f"Processing invite recipient input: {recipient_input} from admin {user_id}")
-            
-            try:
-                # Try to parse as user ID or @username
-                if recipient_input.startswith('@'):
-                    recipient_username = recipient_input[1:]
-                    # We can't look up user by username directly, so we'll ask for ID
-                    await update.message.reply_text(
-                        "❌ Укажите user_id (числовой ID пользователя), а не username.\n\n"
-                        "Пример: 123456789"
-                    )
-                    return
-                else:
-                    try:
-                        recipient_id = int(recipient_input)
-                    except ValueError:
-                        await update.message.reply_text(
-                            "❌ Неверный формат user_id.\n\n"
-                            "Укажите числовой ID пользователя.\n"
-                            "Пример: 123456789"
-                        )
-                        return
-                
-                logger.info(f"Parsed recipient_id: {recipient_id}, sending invite {invite_code}")
-                
-                # Get bot username for prod
-                try:
-                    from config.railway_config import BOT_PROD_USERNAME, APP_ENV
-                except (ImportError, ValueError):
-                    try:
-                        from config.config import BOT_PROD_USERNAME, APP_ENV
-                    except ImportError:
-                        BOT_PROD_USERNAME = None
-                        APP_ENV = "production"
-                
-                # In sandbox, send to sandbox bot; in prod, send to prod bot
-                if APP_ENV == "sandbox":
-                    try:
-                        from config.railway_config import BOT_SANDBOX_USERNAME
-                    except (ImportError, ValueError):
-                        try:
-                            from config.config import BOT_SANDBOX_USERNAME
-                        except ImportError:
-                            BOT_SANDBOX_USERNAME = None
-                    bot_username = BOT_SANDBOX_USERNAME if BOT_SANDBOX_USERNAME else BOT_PROD_USERNAME
-                else:
-                    bot_username = BOT_PROD_USERNAME
-                
-                if not bot_username:
-                    bot_info = await self.application.bot.get_me()
-                    bot_username = bot_info.username
-                
-                logger.info(f"Using bot_username: {bot_username}")
-                
-                invite_link = f"https://t.me/{bot_username}?start={invite_code}"
-                
-                # Send invite to recipient with hyperlink
-                try:
-                    await self.application.bot.send_message(
-                        chat_id=recipient_id,
-                        text=(
-                            f"🎉 Вам отправлен инвайт в News Aggregator Bot!\n\n"
-                            f"📌 Код инвайта: <code>{invite_code}</code>\n\n"
-                            f"🔗 Перейдите по ссылке:\n"
-                            f'<a href="{invite_link}">Открыть бота с инвайтом</a>\n\n'
-                            f"После этого введите код инвайта в боте и получите доступ!"
-                        ),
-                        parse_mode='HTML'
-                    )
-                    
-                    logger.info(f"Invite message sent successfully to {recipient_id}")
-                    
-                    # Confirm to admin
-                    await update.message.reply_text(
-                        f"✅ Инвайт успешно отправлен пользователю {recipient_id}!\n\n"
-                        f"🔗 Ссылка: <a href=\"{invite_link}\">открыть</a>\n"
-                        f"📌 Код: <code>{invite_code}</code>\n\n"
-                        f"Пользователь получил сообщение с ссылкой.",
-                        parse_mode='HTML'
-                    )
-                    
-                except Exception as e:
-                    logger.error(f"Error sending invite message to {recipient_id}: {e}")
-                    await update.message.reply_text(
-                        f"❌ Ошибка при отправке сообщения пользователю {recipient_id}:\n\n"
-                        f"{str(e)[:100]}\n\n"
-                        f"Проверьте что user_id правильный и пользователь не заблокировал бота."
-                    )
-                    # Clear pending invite anyway
-                    if user_id in self._pending_invites:
-                        del self._pending_invites[user_id]
-                    return
-                
-                # Clear pending invite
-                if user_id in self._pending_invites:
-                    del self._pending_invites[user_id]
-                
-            except Exception as e:
-                logger.error(f"Error in invite handler: {e}", exc_info=True)
-                await update.message.reply_text(
-                    f"❌ Ошибка: {str(e)[:100]}"
-                )
-                if user_id in self._pending_invites:
-                    del self._pending_invites[user_id]
-                return
+        # Old invite text input handler removed - now using share buttons
 
         # Custom export period input (hours)
         if context.user_data.get("awaiting_export_hours"):
@@ -1087,7 +978,7 @@ class NewsBot:
                 return
         
         if query.data.startswith("mgmt:send_invite:"):
-            # Show user selection for sending invite (works in sandbox only)
+            # Show share options for invite (works in sandbox only)
             await query.answer()
             try:
                 from config.railway_config import APP_ENV
@@ -1098,11 +989,29 @@ class NewsBot:
                 await query.edit_message_text("❌ Отправка инвайтов доступна только в песочнице")
                 return
             
+            # Extract invite code from callback data
             invite_code = query.data.split(":", 2)[2]
+            logger.info(f"Preparing to share invite {invite_code}")
             
-            # Get list of unapproved users or ask for user ID
+            # Get bot username
+            try:
+                from config.railway_config import BOT_SANDBOX_USERNAME
+            except (ImportError, ValueError):
+                try:
+                    from config.config import BOT_SANDBOX_USERNAME
+                except ImportError:
+                    BOT_SANDBOX_USERNAME = None
+            
+            if not BOT_SANDBOX_USERNAME:
+                bot_info = await self.application.bot.get_me()
+                BOT_SANDBOX_USERNAME = bot_info.username
+            
+            invite_link = f"https://t.me/{BOT_SANDBOX_USERNAME}?start={invite_code}"
+            share_text = f"🎉 Инвайт в News Aggregator Bot!%0A%0A📌 Код: {invite_code}%0A🔗 Ссылка: {invite_link}"
+            share_url = f"https://t.me/share/url?url={invite_link}&text={share_text}"
+            
             keyboard = [
-                [InlineKeyboardButton("Введите user_id в сообщении ниже", callback_data="noop")],
+                [InlineKeyboardButton("📤 Поделиться инвайтом", url=share_url)],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:users")],
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1110,20 +1019,13 @@ class NewsBot:
             await query.edit_message_text(
                 text=(
                     f"📤 Отправка инвайта\n\n"
-                    f"Введите в чате user_id пользователя, которому отправить инвайт\n"
-                    f"(или @username)\n\n"
-                    f"Текущий инвайт: <code>{invite_code}</code>"
+                    f"Нажмите кнопку 'Поделиться' и выберите контакт из Telegram\n\n"
+                    f"📌 Код инвайта: <code>{invite_code}</code>\n"
+                    f"🔗 Ссылка: <code>{invite_link}</code>"
                 ),
                 reply_markup=reply_markup,
                 parse_mode='HTML'
             )
-            
-            # Store invite code in context for next message handler
-            if not hasattr(self, '_pending_invites'):
-                self._pending_invites = {}
-            self._pending_invites[query.from_user.id] = invite_code
-            
-            logger.info(f"Stored pending invite {invite_code} for user {query.from_user.id}")
             
             return
         
@@ -1325,7 +1227,8 @@ class NewsBot:
                 f"Расчетная стоимость: ${estimated_cost:.4f}\n\n"
                 f"📝 Пересказы: {ai_usage['summarize_requests']} запр., {ai_usage['summarize_tokens']:,} токенов\n"
                 f"🏷️ Категории: {ai_usage['category_requests']} запр., {ai_usage['category_tokens']:,} токенов\n"
-                f"✨ Очистка текста: {ai_usage['text_clean_requests']} запр., {ai_usage['text_clean_tokens']:,} токенов\n"
+                f"✨ Очистка текста: {ai_usage['text_clean_requests']} запр., {ai_usage['text_clean_tokens']:,} токенов\n\n"
+                f"💡 Обновить из DeepSeek: /update_stats\n"
                 f"───────────────────────────────"
                 f"{channels_text}"
                 f"{sites_text}"
@@ -1850,19 +1753,28 @@ class NewsBot:
                 source = news.get('source', '').lower()
                 news_text = news.get('text', '')
                 
+                # Debug logging for auto-summarization trigger
+                is_lenta_or_ria = 'lenta.ru' in source or 'ria.ru' in source
+                logger.debug(f"Auto-summarize check: cleanup_level={cleanup_level}, source={source}, is_lenta_or_ria={is_lenta_or_ria}")
+                
                 # Auto-summarize lenta.ru and ria.ru when cleanup_level=5
-                if cleanup_level == 5 and ('lenta.ru' in source or 'ria.ru' in source):
+                if cleanup_level == 5 and is_lenta_or_ria:
                     logger.info(f"Auto-summarizing {source} (cleanup_level=5)")
                     try:
                         # Get or generate summary
                         cached_summary = self.db.get_cached_summary(news_id)
-                        if not cached_summary:
+                        if cached_summary:
+                            logger.debug(f"Using cached summary for {news_id}")
+                            news_text = cached_summary
+                        else:
                             # Generate summary (1-2 sentences)
                             full_text = news_text if news_text else news.get('title', '')
                             summary_level = ai_manager.get_level('global', 'summary')
                             
                             from core.services.access_control import get_llm_profile
                             profile = get_llm_profile(summary_level, 'summary')
+                            
+                            logger.debug(f"Summary profile for level {summary_level}: {profile}")
                             
                             if not profile.get('disabled'):
                                 prompt = f"Перескажи эту новость в 1-2 предложениях очень кратко:\n\n{full_text[:2000]}"
@@ -1876,9 +1788,13 @@ class NewsBot:
                                 if summary:
                                     self.db.cache_summary(news_id, summary)
                                     news_text = summary
-                                    logger.info(f"Generated auto-summary for {source}")
+                                    logger.info(f"Generated auto-summary for {source}: {summary[:50]}...")
+                                else:
+                                    logger.warning(f"Summarization returned empty result for {source}")
+                            else:
+                                logger.debug(f"Summary is disabled (level={summary_level})")
                     except Exception as e:
-                        logger.error(f"Error auto-summarizing {source}: {e}")
+                        logger.error(f"Error auto-summarizing {source}: {e}", exc_info=True)
                 
                 # Формируем сообщение
                 news_category = news.get('category', 'russia')
