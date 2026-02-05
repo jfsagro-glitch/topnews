@@ -207,12 +207,12 @@ class NewsBot:
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
         try:
-            from config.railway_config import APP_ENV, ADMIN_USER_IDS
+            from config.railway_config import APP_ENV
         except (ImportError, ValueError):
-            from config.config import APP_ENV, ADMIN_USER_IDS
+            from config.config import APP_ENV
         
         user_id = update.message.from_user.id
-        is_admin = user_id in ADMIN_USER_IDS if ADMIN_USER_IDS else False
+        is_admin = user_id in ADMIN_IDS if ADMIN_IDS else False
         env_marker = "\n🧪 SANDBOX" if APP_ENV == "sandbox" else ""
         
         # Choose keyboard based on admin status and environment
@@ -434,9 +434,9 @@ class NewsBot:
     async def cmd_management(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """🛠 Management menu (sandbox admin only)"""
         try:
-            from config.railway_config import APP_ENV, ADMIN_USER_IDS
+            from config.railway_config import APP_ENV
         except (ImportError, ValueError):
-            from config.config import APP_ENV, ADMIN_USER_IDS
+            from config.config import APP_ENV
         
         user_id = update.message.from_user.id
         
@@ -445,7 +445,7 @@ class NewsBot:
             await update.message.reply_text("❌ Management available only in sandbox")
             return
         
-        is_admin = user_id in ADMIN_USER_IDS if ADMIN_USER_IDS else False
+        is_admin = user_id in ADMIN_IDS if ADMIN_IDS else False
         if not is_admin:
             await update.message.reply_text("❌ Доступно только администраторам")
             return
@@ -1830,16 +1830,16 @@ class NewsBot:
     async def _show_ai_management(self, query):
         """Show AI levels management screen"""
         try:
-            from config.railway_config import APP_ENV, ADMIN_USER_IDS
-            from core.services.access_control import AILevelManager
+            from config.railway_config import APP_ENV
         except (ImportError, ValueError):
-            from config.config import APP_ENV, ADMIN_USER_IDS
-            from core.services.access_control import AILevelManager
+            from config.config import APP_ENV
+        
+        from core.services.access_control import AILevelManager
         
         user_id = str(query.from_user.id)
         
         # Check admin
-        is_admin = int(user_id) in ADMIN_USER_IDS if ADMIN_USER_IDS else False
+        is_admin = int(user_id) in ADMIN_IDS if ADMIN_IDS else False
         if not is_admin or APP_ENV != "sandbox":
             await query.answer("❌ Доступ запрещён", show_alert=True)
             return
