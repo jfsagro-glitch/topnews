@@ -1915,29 +1915,17 @@ class NewsBot:
                 ])
 
                 try:
-                    # Debug: логируем без реального токена/URL
-                    logger.debug(f"Sending message (chat_id hidden)")
-                    # Публикуем в канал
-                    sent = await self.application.bot.send_message(
-                        chat_id=TELEGRAM_CHANNEL_ID,
-                        text=message,
-                        parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=keyboard,
-                        disable_web_page_preview=True
-                    )
-
-                    # Сохраняем message_id для связи с news_id
-                    if sent and hasattr(sent, 'message_id'):
-                        self.db.set_telegram_message_id(news_id, sent.message_id)
-
+                    # ВРЕМЕННО ОТКЛЮЧЕНА: пересылка новостей в канал
+                    logger.info(f"[STUB] Would publish to channel: {news['title'][:50]}")
+                    
+                    # Сохраняем news_id как опубликованную (для корректной статистики)
                     published_count += 1
-                    logger.info(f"Published: {news['title'][:50]}")
                     
                     # Отправляем админам в личку с кнопкой "ИИ" и учётом их настроек источников
                     await self._send_to_admins(message, keyboard, news_id, news)
 
                     # Задержка между публикациями (защита от Telegram rate limiting)
-                    await asyncio.sleep(2.5)
+                    await asyncio.sleep(0.5)  # Меньше задержка так как не отправляем в канал
 
                 except Exception as e:
                     logger.error(f"Error publishing news: {type(e).__name__} (URL hidden)")
