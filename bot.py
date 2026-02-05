@@ -957,7 +957,19 @@ class NewsBot:
             )
             return
         
-        # ==================== MANAGEMENT CALLBACKS (SANDBOX ADMIN) ====================
+        # ==================== MANAGEMENT CALLBACKS (SANDBOX ADMIN ONLY) ====================
+        # Check if sandbox for all management operations
+        if query.data.startswith("mgmt:"):
+            try:
+                from config.railway_config import APP_ENV
+            except (ImportError, ValueError):
+                from config.config import APP_ENV
+            
+            # Management only in sandbox
+            if APP_ENV != "sandbox":
+                await query.answer("❌ Управление доступно только в песочнице", show_alert=True)
+                return
+        
         if query.data == "mgmt:ai":
             # Show AI levels management screen
             await query.answer()
