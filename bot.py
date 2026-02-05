@@ -1081,10 +1081,51 @@ class NewsBot:
             except (ImportError, ValueError):
                 from config.config import APP_ENV
             
-            # Management only in sandbox
-            if APP_ENV != "sandbox":
+            # Management only in sandbox (but allow send_invite to check separately)
+            if APP_ENV != "sandbox" and not query.data.startswith("mgmt:send_invite:"):
                 await query.answer("❌ Управление доступно только в песочнице", show_alert=True)
                 return
+        
+        if query.data.startswith("mgmt:send_invite:"):
+            # Show user selection for sending invite (works in sandbox only)
+            await query.answer()
+            try:
+                from config.railway_config import APP_ENV
+            except (ImportError, ValueError):
+                from config.config import APP_ENV
+            
+            if APP_ENV != "sandbox":
+                await query.edit_message_text("❌ Отправка инвайтов доступна только в песочнице")
+                return
+            
+            invite_code = query.data.split(":", 2)[2]
+            
+            # Get list of unapproved users or ask for user ID
+            keyboard = [
+                [InlineKeyboardButton("Введите user_id в сообщении ниже", callback_data="noop")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:users")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                text=(
+                    f"📤 Отправка инвайта\n\n"
+                    f"Введите в чате user_id пользователя, которому отправить инвайт\n"
+                    f"(или @username)\n\n"
+                    f"Текущий инвайт: <code>{invite_code}</code>"
+                ),
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+            
+            # Store invite code in context for next message handler
+            if not hasattr(self, '_pending_invites'):
+                self._pending_invites = {}
+            self._pending_invites[query.from_user.id] = invite_code
+            
+            logger.info(f"Stored pending invite {invite_code} for user {query.from_user.id}")
+            
+            return
         
         if query.data == "mgmt:users":
             # Show users and invites management screen
@@ -1166,36 +1207,6 @@ class NewsBot:
             else:
                 await query.answer("❌ Ошибка при создании инвайта", show_alert=True)
             
-            return
-        
-        if query.data.startswith("mgmt:send_invite:"):
-            # Show user selection for sending invite
-            invite_code = query.data.split(":", 2)[2]
-            
-            # Get list of unapproved users or ask for user ID
-            keyboard = [
-                [InlineKeyboardButton("Введите user_id в сообщении ниже", callback_data="noop")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:users")],
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await query.edit_message_text(
-                text=(
-                    f"📤 Отправка инвайта\n\n"
-                    f"Введите в чате user_id пользователя, которому отправить инвайт\n"
-                    f"(или @username)\n\n"
-                    f"Текущий инвайт: `{invite_code}`"
-                ),
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
-            )
-            
-            # Store invite code in context for next message handler
-            if not hasattr(self, '_pending_invites'):
-                self._pending_invites = {}
-            self._pending_invites[query.from_user.id] = invite_code
-            
-            await query.answer()
             return
         
         if query.data == "mgmt:users_list":
