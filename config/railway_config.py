@@ -55,7 +55,7 @@ if not BOT_TOKEN:
 TELEGRAM_TOKEN = BOT_TOKEN
 
 # Bot usernames for invite links
-BOT_PROD_USERNAME = env_str('BOT_PROD_USERNAME', 'topnews_prod_bot')
+BOT_PROD_USERNAME = env_str('BOT_PROD_USERNAME', 'Tops_News_bot')
 BOT_SANDBOX_USERNAME = env_str('BOT_SANDBOX_USERNAME', 'topnews_sandbox_bot')
 
 TELEGRAM_CHANNEL_ID = env_int('TELEGRAM_CHANNEL_ID', 0)
