@@ -993,21 +993,20 @@ class NewsBot:
             invite_code = query.data.split(":", 2)[2]
             logger.info(f"Preparing to share invite {invite_code}")
             
-            # Get bot username
+            # Get PROD bot username (инвайт должен вести на прод бота)
             try:
-                from config.railway_config import BOT_SANDBOX_USERNAME
+                from config.railway_config import BOT_PROD_USERNAME
             except (ImportError, ValueError):
                 try:
-                    from config.config import BOT_SANDBOX_USERNAME
+                    from config.config import BOT_PROD_USERNAME
                 except ImportError:
-                    BOT_SANDBOX_USERNAME = None
+                    BOT_PROD_USERNAME = "Tops_News_bot"  # Default prod bot
             
-            if not BOT_SANDBOX_USERNAME:
-                bot_info = await self.application.bot.get_me()
-                BOT_SANDBOX_USERNAME = bot_info.username
+            if not BOT_PROD_USERNAME:
+                BOT_PROD_USERNAME = "Tops_News_bot"
             
-            # Формируем правильную ссылку с правильным форматом start параметра
-            invite_link = f"https://t.me/{BOT_SANDBOX_USERNAME}?start={invite_code}"
+            # Формируем правильную ссылку на ПРОД бота
+            invite_link = f"https://t.me/{BOT_PROD_USERNAME}?start={invite_code}"
             
             # Красивое сообщение с эмодзи (без ссылки на бота)
             from urllib.parse import quote
