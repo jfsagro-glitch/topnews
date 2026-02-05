@@ -712,6 +712,8 @@ class NewsBot:
             invite_code = self._pending_invites[user_id]
             recipient_input = text.strip()
             
+            logger.info(f"Processing invite recipient input: {recipient_input}")
+            
             try:
                 # Try to parse as user ID or @username
                 if recipient_input.startswith('@'):
@@ -725,20 +727,34 @@ class NewsBot:
                 else:
                     recipient_id = int(recipient_input)
                 
+                logger.info(f"Sending invite {invite_code} to user {recipient_id}")
+                
                 # Send invite to recipient
                 try:
-                    from config.railway_config import BOT_PROD_USERNAME
+                    from config.railway_config import BOT_PROD_USERNAME, APP_ENV
                 except (ImportError, ValueError):
                     try:
-                        from config.config import BOT_PROD_USERNAME
+                        from config.config import BOT_PROD_USERNAME, APP_ENV
                     except ImportError:
                         BOT_PROD_USERNAME = None
+                        APP_ENV = "production"
                 
-                if not BOT_PROD_USERNAME:
-                    bot_info = await self.application.bot.get_me()
-                    bot_username = bot_info.username
+                # In sandbox, send to sandbox bot; in prod, send to prod bot
+                if APP_ENV == "sandbox":
+                    try:
+                        from config.railway_config import BOT_SANDBOX_USERNAME
+                    except (ImportError, ValueError):
+                        try:
+                            from config.config import BOT_SANDBOX_USERNAME
+                        except ImportError:
+                            BOT_SANDBOX_USERNAME = None
+                    bot_username = BOT_SANDBOX_USERNAME if BOT_SANDBOX_USERNAME else BOT_PROD_USERNAME
                 else:
                     bot_username = BOT_PROD_USERNAME
+                
+                if not bot_username:
+                    bot_info = await self.application.bot.get_me()
+                    bot_username = bot_info.username
                 
                 invite_link = f"https://t.me/{bot_username}?start={invite_code}"
                 
@@ -754,6 +770,8 @@ class NewsBot:
                     ),
                     parse_mode='Markdown'
                 )
+                
+                logger.info(f"Invite sent successfully to {recipient_id}")
                 
                 # Confirm to admin
                 await update.message.reply_text(
@@ -823,8 +841,9 @@ class NewsBot:
         keyboard = [
             [InlineKeyboardButton("🧰 Фильтр", callback_data="settings:filter")],
             [InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")],
-            [InlineKeyboardButton("🤖 AI переключатели", callback_data="mgmt:ai")],
+            [InlineKeyboardButton("🤖 AI переключатели", callback_data="ai:management")],
             [InlineKeyboardButton("📥 Экспорт новостей", callback_data="export_menu")],
+            [InlineKeyboardButton("📊 Статус бота", callback_data="show_status")],
         ]
         
         # Add global collection control buttons for admins
@@ -1008,6 +1027,33 @@ class NewsBot:
             )
             return
         
+        # ==================== AI MANAGEMENT CALLBACKS (ALL ADMINS) ====================
+        if query.data == "ai:management":
+            # Show AI levels management screen (works on prod too)
+            await query.answer()
+            await self._show_ai_management(query)
+            return
+        
+        if query.data.startswith("ai:inc:"):
+            # Increment AI level
+            module = query.data.split(":")[-1]
+            await self._handle_ai_level_change(query, module, action="inc")
+            return
+        
+        if query.data.startswith("ai:dec:"):
+            # Decrement AI level
+            module = query.data.split(":")[-1]
+            await self._handle_ai_level_change(query, module, action="dec")
+            return
+        
+        if query.data.startswith("ai:set:"):
+            # Set AI level directly
+            parts = query.data.split(":")
+            module = parts[2]
+            level = int(parts[3])
+            await self._handle_ai_level_change(query, module, action="set", level=level)
+            return
+        
         # ==================== MANAGEMENT CALLBACKS (SANDBOX ADMIN ONLY) ====================
         # Check if sandbox for all management operations
         if query.data.startswith("mgmt:"):
@@ -1021,22 +1067,10 @@ class NewsBot:
                 await query.answer("❌ Управление доступно только в песочнице", show_alert=True)
                 return
         
-        if query.data == "mgmt:ai":
-            # Show AI levels management screen
-            await query.answer()
-            await self._show_ai_management(query)
-            return
-        
         if query.data == "mgmt:users":
             # Show users and invites management screen
             await query.answer()
             await self._show_users_management(query)
-            return
-        
-        if query.data.startswith("mgmt:ai:inc:"):
-            # Increment AI level
-            module = query.data.split(":")[-1]
-            await self._handle_ai_level_change(query, module, action="inc")
             return
         
         if query.data.startswith("mgmt:ai:dec:"):
@@ -1057,7 +1091,7 @@ class NewsBot:
             # Back to management main menu
             await query.answer()
             keyboard = [
-                [InlineKeyboardButton("🤖 AI переключатели", callback_data="mgmt:ai")],
+                [InlineKeyboardButton("🤖 AI переключатели", callback_data="ai:management")],
                 [InlineKeyboardButton("👥 Пользователи и инвайты", callback_data="mgmt:users")],
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2288,9 +2322,9 @@ class NewsBot:
                 callback_data="noop"
             )])
             keyboard.append([
-                InlineKeyboardButton("−", callback_data="mgmt:ai:dec:hashtags"),
-                InlineKeyboardButton("OFF", callback_data="mgmt:ai:set:hashtags:0"),
-                InlineKeyboardButton("+", callback_data="mgmt:ai:inc:hashtags"),
+                InlineKeyboardButton("−", callback_data="ai:dec:hashtags"),
+                InlineKeyboardButton("OFF", callback_data="ai:set:hashtags:0"),
+                InlineKeyboardButton("+", callback_data="ai:inc:hashtags"),
             ])
             
             # Cleanup
@@ -2299,9 +2333,9 @@ class NewsBot:
                 callback_data="noop"
             )])
             keyboard.append([
-                InlineKeyboardButton("−", callback_data="mgmt:ai:dec:cleanup"),
-                InlineKeyboardButton("OFF", callback_data="mgmt:ai:set:cleanup:0"),
-                InlineKeyboardButton("+", callback_data="mgmt:ai:inc:cleanup"),
+                InlineKeyboardButton("−", callback_data="ai:dec:cleanup"),
+                InlineKeyboardButton("OFF", callback_data="ai:set:cleanup:0"),
+                InlineKeyboardButton("+", callback_data="ai:inc:cleanup"),
             ])
             
             # Summary
@@ -2310,13 +2344,13 @@ class NewsBot:
                 callback_data="noop"
             )])
             keyboard.append([
-                InlineKeyboardButton("−", callback_data="mgmt:ai:dec:summary"),
-                InlineKeyboardButton("OFF", callback_data="mgmt:ai:set:summary:0"),
-                InlineKeyboardButton("+", callback_data="mgmt:ai:inc:summary"),
+                InlineKeyboardButton("−", callback_data="ai:dec:summary"),
+                InlineKeyboardButton("OFF", callback_data="ai:set:summary:0"),
+                InlineKeyboardButton("+", callback_data="ai:inc:summary"),
             ])
             
             # Back button
-            keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:back")])
+            keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="settings:back")])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
             
