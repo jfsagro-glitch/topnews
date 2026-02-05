@@ -135,15 +135,21 @@ class DeepSeekClient:
     async def summarize(self, title: str, text: str, level: int = 3) -> tuple[Optional[str], dict]:
         request_id = str(uuid.uuid4())[:8]
         
-        # Check if AI level is 0 (disabled)
-        if level == 0:
+        # Check if AI level is 0 (disabled) - only in sandbox
+        from config.config import APP_ENV
+        if APP_ENV == 'sandbox' and level == 0:
             logger.info(f"[{request_id}] ⏭️ AI summary disabled (level=0)")
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False, "disabled": True}
         
-        # Get LLM profile for level
+        # Get LLM profile for level (always default to 3 in prod)
         from core.services.access_control import get_llm_profile
-        profile = get_llm_profile(level, 'summary')
-        logger.debug(f"[{request_id}] Using AI level {level}: {profile.get('description', 'N/A')}")
+        if APP_ENV == 'sandbox':
+            profile = get_llm_profile(level, 'summary')
+            logger.debug(f"[{request_id}] Using AI level {level}: {profile.get('description', 'N/A')}")
+        else:
+            # Prod uses default level 3
+            profile = get_llm_profile(3, 'summary')
+            logger.debug(f"[{request_id}] Prod mode: Using default level 3")
         
         # Check budget limit
         if self.budget and not self.budget.can_make_request():

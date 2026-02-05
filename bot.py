@@ -1046,16 +1046,17 @@ class NewsBot:
 
             if action == "ai":
                 try:
-                    from config.config import AI_SUMMARY_MAX_REQUESTS_PER_MINUTE
-                    from core.services.access_control import AILevelManager
+                    from config.config import AI_SUMMARY_MAX_REQUESTS_PER_MINUTE, APP_ENV
                     
-                    # Check AI summary level
-                    ai_manager = AILevelManager(self.db)
-                    summary_level = ai_manager.get_level(str(user_id), 'summary')
-                    
-                    if summary_level == 0:
-                        await query.answer("⚠️ AI пересказ отключён администратором", show_alert=True)
-                        return
+                    # Check AI summary level (sandbox only)
+                    if APP_ENV == 'sandbox':
+                        from core.services.access_control import AILevelManager
+                        ai_manager = AILevelManager(self.db)
+                        summary_level = ai_manager.get_level(str(user_id), 'summary')
+                        
+                        if summary_level == 0:
+                            await query.answer("⚠️ AI пересказ отключён администратором", show_alert=True)
+                            return
 
                     now = time.time()
                     timestamps = self.user_ai_requests.get(user_id, [])
@@ -1222,20 +1223,24 @@ class NewsBot:
             text: Article text to summarize
             title: Article title
             url: Optional URL to fetch full article from
-            user_id: User ID to get AI level preference
+            user_id: User ID to get AI level preference (sandbox only)
             
         Returns:
             Tuple of (summary string or None, token usage dict)
         """
         try:
-            # Get AI level for summary
-            from core.services.access_control import AILevelManager
-            ai_manager = AILevelManager(self.db)
-            level = ai_manager.get_level(str(user_id) if user_id else "0", 'summary')
+            from config.config import APP_ENV
             
             # Try to fetch full article if URL provided
             if url:
                 text = await self._fetch_full_article(url, text)
+            
+            # Get AI level for summary (sandbox only, default to 3 for prod)
+            level = 3  # default
+            if APP_ENV == 'sandbox' and user_id:
+                from core.services.access_control import AILevelManager
+                ai_manager = AILevelManager(self.db)
+                level = ai_manager.get_level(str(user_id), 'summary')
             
             summary, token_usage = await self.deepseek_client.summarize(title=title, text=text, level=level)
             if summary:
