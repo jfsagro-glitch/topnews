@@ -1183,15 +1183,18 @@ class NewsBot:
                     return "🟢"
                 return "🟢" if source_health.get(key) else "🔴"
 
-            # Telegram channels
-            telegram_sources = ACTIVE_SOURCES_CONFIG.get('telegram', {}).get('sources', [])
+            # Telegram channels - собираем из ВСЕХ категорий конфига
             channel_keys = []
             channel_labels = []
-            for src in telegram_sources:
-                channel = src.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '')
-                if channel:
-                    channel_keys.append(f"t.me/{channel}")
-                    channel_labels.append(channel)
+            for category_key, category_config in ACTIVE_SOURCES_CONFIG.items():
+                for src in category_config.get('sources', []):
+                    # Проверяем, является ли источник Telegram каналом
+                    if 't.me' in src.lower():
+                        channel = src.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '').strip('/')
+                        if channel and channel not in channel_labels:  # Избегаем дубликатов
+                            channel_keys.append(f"t.me/{channel}")
+                            channel_labels.append(channel)
+            
             channel_counts = self.db.get_source_counts(channel_keys) if channel_keys else {}
             channels_text = ""
             if channel_labels:
@@ -1201,16 +1204,19 @@ class NewsBot:
                 channels_text = "\n📡 Каналы Telegram:\n" + "\n".join(lines) + "\n"
 
             # Собираем ВСЕ веб-источники из всех категорий конфига
+            # Используем ту же логику, что и в source_collector для извлечения source_name
+            from urllib.parse import urlparse
             all_web_sources = set()
             for category_key, category_config in ACTIVE_SOURCES_CONFIG.items():
                 if category_key != 'telegram':  # Пропускаем телеграм, его уже обработали
                     for src in category_config.get('sources', []):
-                        # Извлекаем домен из URL
-                        from urllib.parse import urlparse
                         parsed = urlparse(src)
-                        domain = parsed.netloc.lower() or parsed.path.lower()
-                        if domain and not any(x in domain for x in ['t.me', 'telegram']):
-                            all_web_sources.add(domain)
+                        domain = parsed.netloc.lower()
+                        # Пропускаем X/Twitter (они отключены) и Telegram
+                        if not domain or any(x in domain for x in ['t.me', 'telegram', 'x.com', 'twitter.com']):
+                            continue
+                        # Используем домен как source_name (как в source_collector)
+                        all_web_sources.add(domain)
             
             # Получаем счетчики из БД
             all_sources_counts = self.db.get_all_sources()
