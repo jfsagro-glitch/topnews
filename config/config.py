@@ -52,6 +52,10 @@ if not BOT_TOKEN:
 TELEGRAM_TOKEN = BOT_TOKEN
 TELEGRAM_CHANNEL_ID = env_int('TELEGRAM_CHANNEL_ID', -1001234567890)
 
+# Bot usernames for invite links
+BOT_PROD_USERNAME = env_str('BOT_PROD_USERNAME', 'topnews_prod_bot')  # Change to actual prod bot username
+BOT_SANDBOX_USERNAME = env_str('BOT_SANDBOX_USERNAME', 'topnews_sandbox_bot')  # Change to actual sandbox bot username
+
 ADMIN_IDS = [464108692, 1592307306, 408817675]
 
 # Admin Users IDs for sandbox management (comma-separated from env)

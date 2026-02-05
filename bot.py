@@ -704,6 +704,85 @@ class NewsBot:
     async def handle_emoji_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик эмодзи-кнопок"""
         text = update.message.text
+        user_id = update.message.from_user.id
+
+        # Check if waiting for invite recipient
+        if not hasattr(self, '_pending_invites'):
+            self._pending_invites = {}
+        
+        if user_id in self._pending_invites and text and not text.startswith('/'):
+            # User is sending recipient for invite
+            invite_code = self._pending_invites[user_id]
+            recipient_input = text.strip()
+            
+            try:
+                # Try to parse as user ID or @username
+                if recipient_input.startswith('@'):
+                    recipient_username = recipient_input[1:]
+                    # We can't look up user by username directly, so we'll ask for ID
+                    await update.message.reply_text(
+                        "❌ Укажите user_id (числовой ID пользователя), а не username.\n\n"
+                        "Пример: 123456789"
+                    )
+                    return
+                else:
+                    recipient_id = int(recipient_input)
+                
+                # Send invite to recipient
+                try:
+                    from config.railway_config import BOT_PROD_USERNAME
+                except (ImportError, ValueError):
+                    try:
+                        from config.config import BOT_PROD_USERNAME
+                    except ImportError:
+                        BOT_PROD_USERNAME = None
+                
+                if not BOT_PROD_USERNAME:
+                    bot_info = await self.application.bot.get_me()
+                    bot_username = bot_info.username
+                else:
+                    bot_username = BOT_PROD_USERNAME
+                
+                invite_link = f"https://t.me/{bot_username}?start={invite_code}"
+                
+                # Send invite to recipient
+                await self.application.bot.send_message(
+                    chat_id=recipient_id,
+                    text=(
+                        f"🎉 Вам отправлен инвайт в News Aggregator Bot!\n\n"
+                        f"📌 Код инвайта: `{invite_code}`\n\n"
+                        f"🔗 Перейдите по ссылке:\n"
+                        f"{invite_link}\n\n"
+                        f"После этого введите код инвайта в боте и получите доступ!"
+                    ),
+                    parse_mode='Markdown'
+                )
+                
+                # Confirm to admin
+                await update.message.reply_text(
+                    f"✅ Инвайт успешно отправлен пользователю {recipient_id}!\n\n"
+                    f"Код: `{invite_code}`\n\n"
+                    f"Пользователь получит сообщение с ссылкой для активации.",
+                    parse_mode='Markdown'
+                )
+                
+                # Clear pending invite
+                del self._pending_invites[user_id]
+                
+            except ValueError:
+                await update.message.reply_text(
+                    "❌ Неверный формат user_id.\n\n"
+                    "Укажите числовой ID пользователя.\n"
+                    "Пример: 123456789"
+                )
+                return
+            except Exception as e:
+                logger.error(f"Error sending invite: {e}")
+                await update.message.reply_text(
+                    f"❌ Ошибка при отправке инвайта: {str(e)[:100]}"
+                )
+                del self._pending_invites[user_id]
+                return
 
         # Custom export period input (hours)
         if context.user_data.get("awaiting_export_hours"):
@@ -933,28 +1012,74 @@ class NewsBot:
             
             if invite_code:
                 # Get bot username for link
-                bot_info = await self.application.bot.get_me()
-                bot_username = bot_info.username
+                try:
+                    from config.railway_config import BOT_PROD_USERNAME
+                except (ImportError, ValueError):
+                    try:
+                        from config.config import BOT_PROD_USERNAME
+                    except ImportError:
+                        BOT_PROD_USERNAME = None
+                
+                if not BOT_PROD_USERNAME:
+                    # Fallback: try to get from bot info
+                    bot_info = await self.application.bot.get_me()
+                    bot_username = bot_info.username
+                else:
+                    bot_username = BOT_PROD_USERNAME
+                
                 invite_link = f"https://t.me/{bot_username}?start={invite_code}"
                 
-                await query.answer(f"✅ Инвайт создан: {invite_code}", show_alert=True)
+                # Show invite in popup with Send button
+                keyboard = [
+                    [InlineKeyboardButton("📤 Отправить пользователю", callback_data=f"mgmt:send_invite:{invite_code}")],
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:users")],
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
                 
-                # Send invite link details
-                await self.application.bot.send_message(
-                    chat_id=admin_id,
+                await query.edit_message_text(
                     text=(
-                        f"🎉 Новый инвайт-код создан:\n\n"
-                        f"📌 Код: `{invite_code}`\n"
-                        f"🔗 Ссылка: {invite_link}\n\n"
-                        f"Отправьте эту ссылку пользователю для активации."
+                        f"🎉 Новый инвайт-код создан!\n\n"
+                        f"📌 Код: `{invite_code}`\n\n"
+                        f"🔗 Ссылка для пользователя:\n"
+                        f"`{invite_link}`\n\n"
+                        f"Нажмите кнопку ниже для отправки инвайта пользователю."
                     ),
+                    reply_markup=reply_markup,
                     parse_mode='Markdown'
                 )
             else:
                 await query.answer("❌ Ошибка при создании инвайта", show_alert=True)
             
-            # Re-render users menu
-            await self._show_users_management(query)
+            return
+        
+        if query.data.startswith("mgmt:send_invite:"):
+            # Show user selection for sending invite
+            invite_code = query.data.split(":", 2)[2]
+            
+            # Get list of unapproved users or ask for user ID
+            keyboard = [
+                [InlineKeyboardButton("Введите user_id в сообщении ниже", callback_data="noop")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:users")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                text=(
+                    f"📤 Отправка инвайта\n\n"
+                    f"Введите в чате user_id пользователя, которому отправить инвайт\n"
+                    f"(или @username)\n\n"
+                    f"Текущий инвайт: `{invite_code}`"
+                ),
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+            
+            # Store invite code in context for next message handler
+            if not hasattr(self, '_pending_invites'):
+                self._pending_invites = {}
+            self._pending_invites[query.from_user.id] = invite_code
+            
+            await query.answer()
             return
         
         if query.data == "mgmt:users_list":
