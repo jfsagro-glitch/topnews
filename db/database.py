@@ -210,6 +210,15 @@ class NewsDatabase:
                 )
             ''')
 
+            # Table for global system settings
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS system_settings (
+                    setting_key TEXT PRIMARY KEY,
+                    setting_value TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             # Ensure new columns exist for older DBs
             self._ensure_columns(cursor)
 
@@ -1299,4 +1308,35 @@ class NewsDatabase:
             return row[0] == 1 if row else False
         except Exception as e:
             logger.error(f"Error checking user paused: {e}")
+            return False
+
+    # Global collection control methods
+    def set_collection_stopped(self, stopped: bool) -> bool:
+        """Set global collection stopped state"""
+        try:
+            with self._lock:
+                cursor = self._conn.cursor()
+                cursor.execute('''
+                    INSERT OR REPLACE INTO system_settings (setting_key, setting_value, updated_at)
+                    VALUES ('collection_stopped', ?, CURRENT_TIMESTAMP)
+                ''', ('1' if stopped else '0',))
+                self._conn.commit()
+            logger.info(f"Collection stopped state set to: {stopped}")
+            return True
+        except Exception as e:
+            logger.error(f"Error setting collection stopped: {e}")
+            return False
+
+    def is_collection_stopped(self) -> bool:
+        """Check if collection is globally stopped"""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                'SELECT setting_value FROM system_settings WHERE setting_key = ?',
+                ('collection_stopped',)
+            )
+            result = cursor.fetchone()
+            return result[0] == '1' if result else False
+        except Exception as e:
+            logger.error(f"Error checking collection stopped: {e}")
             return False

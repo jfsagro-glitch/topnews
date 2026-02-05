@@ -817,12 +817,24 @@ class NewsBot:
         """⚙️ Меню настроек"""
     async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """⚙️ Меню настроек"""
+        user_id = update.message.from_user.id
+        is_admin = self._is_admin(user_id)
+        
         keyboard = [
             [InlineKeyboardButton("🧰 Фильтр", callback_data="settings:filter")],
             [InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")],
             [InlineKeyboardButton("🤖 AI переключатели", callback_data="mgmt:ai")],
             [InlineKeyboardButton("📥 Экспорт новостей", callback_data="export_menu")],
         ]
+        
+        # Add global collection control buttons for admins
+        if is_admin:
+            is_stopped = self.db.is_collection_stopped()
+            if is_stopped:
+                keyboard.append([InlineKeyboardButton("🔄 Восстановить сбор", callback_data="collection:restore")])
+            else:
+                keyboard.append([InlineKeyboardButton("🛑 Остановить сбор", callback_data="collection:stop")])
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
             "⚙️ Настройки",
@@ -877,6 +889,45 @@ class NewsBot:
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик нажатия на кнопку"""
         query = update.callback_query
+        
+        # ==================== COLLECTION CONTROL CALLBACKS ====================
+        if query.data == "collection:stop":
+            # Stop global collection
+            await query.answer()
+            user_id = query.from_user.id
+            if not self._is_admin(user_id):
+                await query.edit_message_text("❌ Только администраторы могут остановить сбор")
+                return
+            
+            self.db.set_collection_stopped(True)
+            await query.edit_message_text(
+                "🛑 Сбор новостей остановлен глобально\n\n"
+                "Все боты перестали собирать новости.\n"
+                "Используйте кнопку Восстановить для запуска.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔄 Восстановить сбор", callback_data="collection:restore")
+                ]])
+            )
+            return
+        
+        if query.data == "collection:restore":
+            # Restore global collection
+            await query.answer()
+            user_id = query.from_user.id
+            if not self._is_admin(user_id):
+                await query.edit_message_text("❌ Только администраторы могут восстановить сбор")
+                return
+            
+            self.db.set_collection_stopped(False)
+            # Unpause the user who pressed restore
+            self.db.set_user_paused(str(user_id), False)
+            
+            await query.edit_message_text(
+                "🔄 Сбор новостей восстановлен!\n\n"
+                "Боты снова собирают новости в фоне.\n"
+                "Новости возобновлены для вас."
+            )
+            return
         
         # ==================== SETTINGS CALLBACKS ====================
         if query.data == "settings:filter":
@@ -1642,6 +1693,11 @@ class NewsBot:
         Собирает новости и публикует их
         Возвращает количество опубликованных новостей
         """
+        # Check global collection stop flag
+        if self.db.is_collection_stopped():
+            logger.info("Collection is stopped globally, skipping")
+            return 0
+        
         if self.is_paused:
             logger.info("Bot is paused, skipping collection")
             return 0
