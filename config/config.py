@@ -176,6 +176,25 @@ SOURCES_CONFIG = {
             'https://regions.ru/rss/all/',
         ]
     },
+    'additional': {
+        'category': 'world',
+        'sources': [
+            # American aggregator
+            'https://news.yahoo.com',
+            # Telegram channels
+            'https://t.me/ruptlyalert',
+            'https://t.me/tass_agency',
+            'https://t.me/rian_ru',
+            'https://t.me/mod_russia',
+            # X (Twitter) accounts
+            'https://x.com/kadmitriev',  # Дмитриев
+            'https://x.com/MedvedevRussia',  # Медведев
+            'https://x.com/realDonaldTrump',  # Трамп
+            'https://x.com/elonmusk',  # Маск
+            'https://x.com/durov',  # Дуров
+            'https://x.com/JDVance',  # Джей ди Венс
+        ]
+    },
 }
 
 # Закрытый источник требует авторизации
