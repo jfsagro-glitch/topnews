@@ -545,19 +545,16 @@ class NewsBot:
         await update.message.reply_text(status_text, disable_web_page_preview=True)
     
     async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /pause"""
-        self.is_paused = True
-        await update.message.reply_text("⏸️ Сбор новостей приостановлен")
+        """Команда /pause - приостановить новости для пользователя"""
+        user_id = update.message.from_user.id
+        self.db.set_user_paused(str(user_id), True)
+        await update.message.reply_text("⏸️ Новости приостановлены для вас\n\nСбор продолжается, но вы не получаете уведомления.\nНажмите ▶️ для возобновления.")
     
     async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /resume"""
-        self.is_paused = False
-        await update.message.reply_text("▶️ Сбор новостей возобновлен")
-        try:
-            published = await self.collect_and_publish()
-            await update.message.reply_text(f"✅ Собрано и опубликовано: {published}")
-        except Exception as e:
-            logger.error(f"Error during resume collection: {e}")
+        """Команда /resume - возобновить новости для пользователя"""
+        user_id = update.message.from_user.id
+        self.db.set_user_paused(str(user_id), False)
+        await update.message.reply_text("▶️ Новости возобновлены!\n\nТеперь вы снова получаете уведомления о новостях.")
     
     async def cmd_management(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """🛠 Management menu (sandbox admin only)"""
@@ -818,10 +815,13 @@ class NewsBot:
     
     async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """⚙️ Меню настроек"""
+    async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """⚙️ Меню настроек"""
         keyboard = [
             [InlineKeyboardButton("🧰 Фильтр", callback_data="settings:filter")],
             [InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")],
             [InlineKeyboardButton("🤖 AI переключатели", callback_data="mgmt:ai")],
+            [InlineKeyboardButton("📥 Экспорт новостей", callback_data="export_menu")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
@@ -1597,9 +1597,14 @@ class NewsBot:
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
     async def _send_to_admins(self, message: str, keyboard: InlineKeyboardMarkup, news_id: int, news_data: dict = None):
-        """Отправляет новость всем админам в личные сообщения, учитывая их настройки источников"""
+        """Отправляет новость всем админам в личные сообщения, учитывая их настройки источников и паузу"""
         for admin_id in ADMIN_IDS:
             try:
+                # Проверяем, не поставил ли пользователь на паузу
+                if self.db.is_user_paused(str(admin_id)):
+                    logger.debug(f"Skipping news for admin {admin_id}: user is paused")
+                    continue
+                
                 # Проверяем фильтр по источникам для этого админа
                 if news_data:
                     # Получаем список включённых источников для админа

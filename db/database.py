@@ -201,6 +201,15 @@ class NewsDatabase:
                 )
             ''')
 
+            # Table for user preferences (pause state, etc)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_preferences (
+                    user_id TEXT PRIMARY KEY,
+                    is_paused INTEGER DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             # Ensure new columns exist for older DBs
             self._ensure_columns(cursor)
 
@@ -1252,4 +1261,42 @@ class NewsDatabase:
                 return True
         except Exception as e:
             logger.error(f"Error deleting invite: {e}")
+            return False
+    def set_user_paused(self, user_id: str, is_paused: bool) -> bool:
+        """
+        Установить состояние паузы для пользователя.
+        Returns: True если успешно, False если ошибка
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                user_id = str(user_id)
+                paused_int = 1 if is_paused else 0
+                cursor.execute(
+                    'INSERT OR REPLACE INTO user_preferences (user_id, is_paused, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)',
+                    (user_id, paused_int)
+                )
+                self._conn.commit()
+                logger.debug(f"Set user {user_id} paused={is_paused}")
+                return True
+        except Exception as e:
+            logger.error(f"Error setting user paused: {e}")
+            return False
+
+    def is_user_paused(self, user_id: str) -> bool:
+        """
+        Проверить, приостановлены ли новости для пользователя.
+        Returns: True если приостановлены, False если нет
+        """
+        try:
+            cursor = self._conn.cursor()
+            user_id = str(user_id)
+            cursor.execute(
+                'SELECT is_paused FROM user_preferences WHERE user_id = ?',
+                (user_id,)
+            )
+            row = cursor.fetchone()
+            return row[0] == 1 if row else False
+        except Exception as e:
+            logger.error(f"Error checking user paused: {e}")
             return False
