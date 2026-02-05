@@ -207,13 +207,13 @@ SOURCES_CONFIG = {
             'https://t.me/tass_agency',
             'https://t.me/rian_ru',
             'https://t.me/mod_russia',
-            # X (Twitter) accounts
-            'https://x.com/kadmitriev',  # Дмитриев
-            'https://x.com/MedvedevRussia',  # Медведев
-            'https://x.com/realDonaldTrump',  # Трамп
-            'https://x.com/elonmusk',  # Маск
-            'https://x.com/durov',  # Дуров
-            'https://x.com/JDVance',  # Джей ди Венс
+            # X (Twitter) accounts - ВРЕМЕННО ОТКЛЮЧЕНЫ (RSSHub и Nitter недоступны)
+            # 'https://x.com/kadmitriev',  # Дмитриев
+            # 'https://x.com/MedvedevRussia',  # Медведев
+            # 'https://x.com/realDonaldTrump',  # Трамп
+            # 'https://x.com/elonmusk',  # Маск
+            # 'https://x.com/durov',  # Дуров
+            # 'https://x.com/JDVance',  # Джей ди Венс
         ]
     },
 }

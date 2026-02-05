@@ -515,6 +515,10 @@ def format_telegram_message(title: str, text: str, source_name: str,
     Форматирует новость в сообщение для Telegram (компактное, красивое)
     Оптимизировано для отображения в канале без scroll
     """
+    # Проверяем, является ли источник Telegram каналом
+    # Если да - не показываем заголовок (он дублирует начало текста)
+    is_telegram_source = source_name.startswith('@') or 'rsshub' in source_url.lower()
+    
     # Убираем категории-префиксы из заголовков Lenta.ru и других источников
     title = re.sub(r'^(Уход за собой|Политика|Украина|Экономика|Недвижимость|Общество|Культура|Спорт|Наука|Технологии|Преступная Россия|Силовые структуры|Прибалтика|Бывший СССР|Мир):\s*', '', title, flags=re.IGNORECASE)
     title = re.sub(r'^(Забота о себе|Из жизни|Среда обитания|Ценности|Путешествия):\s*', '', title, flags=re.IGNORECASE)
@@ -585,10 +589,15 @@ def format_telegram_message(title: str, text: str, source_name: str,
     source_url = escape_markdown(source_url)
     
     # Компактное форматирование (требуемый формат)
-    message = f"{title}\n"
-    if paragraph:
-        paragraph = paragraph.strip()
-        message += f"\n{paragraph}\n"
+    # Для Telegram источников НЕ показываем заголовок (он дублирует текст)
+    if is_telegram_source:
+        message = f"{paragraph}\n"
+    else:
+        message = f"{title}\n"
+        if paragraph:
+            paragraph = paragraph.strip()
+            message += f"\n{paragraph}\n"
+    
     message += f"\nИсточник: {source_name}\n{source_url}\n\n{category}"
     
     # Hard limit for telegram (1000 chars)

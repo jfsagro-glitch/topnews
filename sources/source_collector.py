@@ -67,6 +67,7 @@ class SourceCollector:
             'riamo.ru': 'https://riamo.ru/feed',
             'mosregtoday.ru': None,  # HTML only
             'mosreg.ru': None,  # HTML only, блокирует RSS
+            'news.yahoo.com': 'https://news.yahoo.com/rss/',
         }
 
         # We'll dynamically build source list from `SOURCES_CONFIG` so all configured
@@ -115,6 +116,22 @@ class SourceCollector:
                                 entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), 'rss'))
                             else:
                                 logger.warning(f"RSSHub not configured for Telegram channel {channel}")
+                        # x.com / twitter.com accounts: use RSSHub if configured
+                        elif 'x.com' in domain or 'twitter.com' in domain:
+                            # Extract username from URL like https://x.com/username
+                            username = src.replace('https://x.com/', '').replace('http://x.com/', '').replace('https://twitter.com/', '').replace('http://twitter.com/', '').replace('@', '').strip('/')
+                            base = (RSSHUB_BASE_URL or '').strip()
+                            if base and not base.startswith('http'):
+                                base = f"https://{base}"
+                            base = base.rstrip('/') if base else ''
+
+                            source_name = f"@{username}"  # Use @username format
+                            if base:
+                                fetch_url = f"{base}/twitter/user/{username}"
+                                logger.info(f"X/Twitter account {username} using RSSHub: {fetch_url}")
+                                entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), 'rss'))
+                            else:
+                                logger.warning(f"RSSHub not configured for X/Twitter account {username}")
                         else:
                             fetch_url = src
                             src_type = 'html'
@@ -263,6 +280,10 @@ class SourceCollector:
                 elif '429' in error_str:
                     self._set_cooldown(url, 300)
                     logger.warning(f"HTTP 429 from {source_name} ({url}), setting cooldown for 5 minutes")
+                elif '503' in error_str and '/twitter/' in url:
+                    # 503 from RSSHub Twitter/X feeds - likely API issues, short cooldown
+                    self._set_cooldown(url, 300)
+                    logger.warning(f"⚠️ RSSHub Twitter/X feed unavailable for {source_name} (503), will retry in 5 min")
                 logger.error(f"Error collecting from RSS {url}: {type(e).__name__}: {e}")
                 return []
     

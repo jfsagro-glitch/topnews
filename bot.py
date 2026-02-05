@@ -109,19 +109,18 @@ class NewsBot:
                 return
             sources_to_create = []
             
-            # Собрать все источники из конфига
+            # Собрать все источники из конфига, обрабатывая ВСЕ категории одинаково
             for category, cfg in ACTIVE_SOURCES_CONFIG.items():
-                if category == 'telegram':
-                    # Telegram каналы
-                    for src_url in cfg.get('sources', []):
+                for src_url in cfg.get('sources', []):
+                    # Telegram каналы - используем имя канала как код
+                    if 't.me' in src_url:
                         channel = src_url.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '').strip('/')
                         if channel:
                             sources_to_create.append({'code': channel, 'title': f"@{channel}"})
-                else:
-                    # Web источники (по домену)
-                    for src_url in cfg.get('sources', []):
+                    else:
+                        # Web источники (по домену)
                         domain = src_url.replace('https://', '').replace('http://', '').split('/')[0]
-                        if domain and not domain.endswith('t.me'):
+                        if domain:
                             sources_to_create.append({'code': domain, 'title': domain})
             
             # Убрать дубликаты
