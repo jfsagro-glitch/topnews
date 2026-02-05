@@ -67,7 +67,12 @@ class SourceCollector:
             'riamo.ru': 'https://riamo.ru/feed',
             'mosregtoday.ru': None,  # HTML only
             'mosreg.ru': None,  # HTML only, блокирует RSS
+            # Yahoo News - используем официальные RSS фиды (стабильно, без consent/JS)
+            # http://news.yahoo.com/rss (общий фид)
+            # http://rss.news.yahoo.com/rss/world (world news)
+            # https://news.yahoo.com/rss/us (US news)
             'news.yahoo.com': 'https://news.yahoo.com/rss/',
+            'rss.news.yahoo.com': None,  # Will use direct RSS URLs from config
         }
 
         # We'll dynamically build source list from `SOURCES_CONFIG` so all configured

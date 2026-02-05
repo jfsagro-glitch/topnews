@@ -201,8 +201,10 @@ SOURCES_CONFIG = {
     'additional': {
         'category': 'world',
         'sources': [
-            # American aggregator
-            'https://news.yahoo.com',
+            # Yahoo News - официальные RSS фиды (стабильно, без consent/JS)
+            # Преимущества: не упираемся в consent, меньше банов, стабильный парсинг
+            'https://news.yahoo.com/rss/',  # Общий фид
+            'https://news.yahoo.com/rss/world',  # Мировые новости
             # Telegram channels
             'https://t.me/ruptlyalert',
             'https://t.me/tass_agency',
