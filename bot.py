@@ -1984,16 +1984,15 @@ class NewsBot:
     async def _handle_ai_level_change(self, query, module: str, action: str, level: int = None):
         """Handle AI level change (inc/dec/set)"""
         try:
-            from config.railway_config import APP_ENV, ADMIN_USER_IDS
-            from core.services.access_control import AILevelManager
+            from config.railway_config import APP_ENV
         except (ImportError, ValueError):
-            from config.config import APP_ENV, ADMIN_USER_IDS
-            from core.services.access_control import AILevelManager
+            from config.config import APP_ENV
+        from core.services.access_control import AILevelManager
         
         user_id = str(query.from_user.id)
         
         # Check admin
-        is_admin = int(user_id) in ADMIN_USER_IDS if ADMIN_USER_IDS else False
+        is_admin = int(user_id) in ADMIN_IDS if ADMIN_IDS else False
         if not is_admin or APP_ENV != "sandbox":
             await query.answer("❌ Доступ запрещён", show_alert=True)
             return
@@ -2019,62 +2018,62 @@ class NewsBot:
         # Re-render screen
         await self._show_ai_management(query)
 
-        async def _show_users_management(self, query):
-            """Show users and invites management screen"""
-            try:
-                from config.railway_config import APP_ENV
-            except (ImportError, ValueError):
-                from config.config import APP_ENV
-        
-            from core.services.user_management import UserInviteManager
-        
-            user_id = query.from_user.id
-        
-            # Check admin
-            is_admin = user_id in ADMIN_IDS if ADMIN_IDS else False
-            if not is_admin or APP_ENV != "sandbox":
-                await query.answer("❌ Доступ запрещён", show_alert=True)
-                return
-        
-            # Get users and invites data
-            manager = UserInviteManager(self.db)
-            approved_users = manager.get_approved_users()
-            pending_invites = manager.get_pending_invites()
-        
-            # Build UI
-            keyboard = []
-        
-            # Users section
-            keyboard.append([InlineKeyboardButton("👥 Одобренные пользователи", callback_data="noop")])
-            if approved_users:
-                keyboard.append([InlineKeyboardButton(f"({len(approved_users)} чел.)", callback_data="noop")])
-            else:
-                keyboard.append([InlineKeyboardButton("(нет)", callback_data="noop")])
-        
-            # Invites section
-            keyboard.append([InlineKeyboardButton("📨 Ожидающие приглашения", callback_data="noop")])
-            pending_count = len([i for i in pending_invites if not i.get("used")])
-            if pending_count > 0:
-                keyboard.append([InlineKeyboardButton(f"({pending_count} приглашений)", callback_data="noop")])
-            else:
-                keyboard.append([InlineKeyboardButton("(нет)", callback_data="noop")])
-        
-            # Action buttons
-            keyboard.append([
-                InlineKeyboardButton("➕ Создать инвайт", callback_data="mgmt:new_invite"),
-                InlineKeyboardButton("👁️ Список", callback_data="mgmt:users_list"),
-            ])
-        
-            # Back button
-            keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:back")])
-        
-            reply_markup = InlineKeyboardMarkup(keyboard)
-        
-            text = (
-                "👥 Управление пользователями и инвайтами\n\n"
-                f"✅ Одобренные: {len(approved_users)} чел.\n"
-                f"📨 Ожидающие инвайты: {pending_count}\n\n"
-                "Используйте кнопки ниже для управления."
-            )
-        
-            await query.edit_message_text(text=text, reply_markup=reply_markup)
+    async def _show_users_management(self, query):
+        """Show users and invites management screen"""
+        try:
+            from config.railway_config import APP_ENV
+        except (ImportError, ValueError):
+            from config.config import APP_ENV
+
+        from core.services.user_management import UserInviteManager
+
+        user_id = query.from_user.id
+
+        # Check admin
+        is_admin = user_id in ADMIN_IDS if ADMIN_IDS else False
+        if not is_admin or APP_ENV != "sandbox":
+            await query.answer("❌ Доступ запрещён", show_alert=True)
+            return
+
+        # Get users and invites data
+        manager = UserInviteManager(self.db)
+        approved_users = manager.get_approved_users()
+        pending_invites = manager.get_pending_invites()
+
+        # Build UI
+        keyboard = []
+
+        # Users section
+        keyboard.append([InlineKeyboardButton("👥 Одобренные пользователи", callback_data="noop")])
+        if approved_users:
+            keyboard.append([InlineKeyboardButton(f"({len(approved_users)} чел.)", callback_data="noop")])
+        else:
+            keyboard.append([InlineKeyboardButton("(нет)", callback_data="noop")])
+
+        # Invites section
+        keyboard.append([InlineKeyboardButton("📨 Ожидающие приглашения", callback_data="noop")])
+        pending_count = len([i for i in pending_invites if not i.get("used")])
+        if pending_count > 0:
+            keyboard.append([InlineKeyboardButton(f"({pending_count} приглашений)", callback_data="noop")])
+        else:
+            keyboard.append([InlineKeyboardButton("(нет)", callback_data="noop")])
+
+        # Action buttons
+        keyboard.append([
+            InlineKeyboardButton("➕ Создать инвайт", callback_data="mgmt:new_invite"),
+            InlineKeyboardButton("👁️ Список", callback_data="mgmt:users_list"),
+        ])
+
+        # Back button
+        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:back")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        text = (
+            "👥 Управление пользователями и инвайтами\n\n"
+            f"✅ Одобренные: {len(approved_users)} чел.\n"
+            f"📨 Ожидающие инвайты: {pending_count}\n\n"
+            "Используйте кнопки ниже для управления."
+        )
+
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
