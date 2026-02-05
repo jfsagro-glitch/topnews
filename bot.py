@@ -453,6 +453,11 @@ class NewsBot:
         """Команда /resume"""
         self.is_paused = False
         await update.message.reply_text("▶️ Сбор новостей возобновлен")
+        try:
+            published = await self.collect_and_publish()
+            await update.message.reply_text(f"✅ Собрано и опубликовано: {published}")
+        except Exception as e:
+            logger.error(f"Error during resume collection: {e}")
     
     async def cmd_management(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """🛠 Management menu (sandbox admin only)"""
@@ -1936,87 +1941,91 @@ class NewsBot:
     async def _show_ai_management(self, query):
         """Show AI levels management screen"""
         try:
-            from config.railway_config import APP_ENV
-        except (ImportError, ValueError):
-            from config.config import APP_ENV
-        
-        from core.services.access_control import AILevelManager
-        
-        user_id = str(query.from_user.id)
-        
-        # Check admin
-        is_admin = self._is_admin(int(user_id))
-        if not is_admin or APP_ENV != "sandbox":
-            await query.answer("❌ Доступ запрещён", show_alert=True)
-            return
-        
-        # Get AI level manager
-        ai_manager = AILevelManager(self.db)
-        
-        # Get current levels
-        hashtags_level = ai_manager.get_level(user_id, 'hashtags')
-        cleanup_level = ai_manager.get_level(user_id, 'cleanup')
-        summary_level = ai_manager.get_level(user_id, 'summary')
-        
-        # Build UI
-        def level_text(level: int) -> str:
-            return "OFF" if level == 0 else str(level)
-        
-        def level_icon(level: int) -> str:
-            return "⬜️" if level == 0 else "✅"
-        
-        keyboard = []
-        
-        # Hashtags
-        keyboard.append([InlineKeyboardButton(
-            f"{level_icon(hashtags_level)} 🏷 Хештеги (AI): {level_text(hashtags_level)}",
-            callback_data="noop"
-        )])
-        keyboard.append([
-            InlineKeyboardButton("−", callback_data="mgmt:ai:dec:hashtags"),
-            InlineKeyboardButton("OFF", callback_data="mgmt:ai:set:hashtags:0"),
-            InlineKeyboardButton("+", callback_data="mgmt:ai:inc:hashtags"),
-        ])
-        
-        # Cleanup
-        keyboard.append([InlineKeyboardButton(
-            f"{level_icon(cleanup_level)} 🧹 Очистка (AI): {level_text(cleanup_level)}",
-            callback_data="noop"
-        )])
-        keyboard.append([
-            InlineKeyboardButton("−", callback_data="mgmt:ai:dec:cleanup"),
-            InlineKeyboardButton("OFF", callback_data="mgmt:ai:set:cleanup:0"),
-            InlineKeyboardButton("+", callback_data="mgmt:ai:inc:cleanup"),
-        ])
-        
-        # Summary
-        keyboard.append([InlineKeyboardButton(
-            f"{level_icon(summary_level)} 📝 Пересказ (AI): {level_text(summary_level)}",
-            callback_data="noop"
-        )])
-        keyboard.append([
-            InlineKeyboardButton("−", callback_data="mgmt:ai:dec:summary"),
-            InlineKeyboardButton("OFF", callback_data="mgmt:ai:set:summary:0"),
-            InlineKeyboardButton("+", callback_data="mgmt:ai:inc:summary"),
-        ])
-        
-        # Back button
-        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:back")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        text = (
-            "🤖 Управление AI модулями\n\n"
-            "Уровни 0-5:\n"
-            "• 0 = выключено (no LLM calls)\n"
-            "• 1-2 = быстрый/экономный режим\n"
-            "• 3 = стандартный (по умолчанию)\n"
-            "• 4-5 = максимальное качество\n\n"
-            "Используйте − и + для настройки уровня,\n"
-            "или OFF для полного отключения."
-        )
-        
-        await query.edit_message_text(text=text, reply_markup=reply_markup)
+            try:
+                from config.railway_config import APP_ENV
+            except (ImportError, ValueError):
+                from config.config import APP_ENV
+            
+            from core.services.access_control import AILevelManager
+            
+            user_id = str(query.from_user.id)
+            
+            # Check admin
+            is_admin = self._is_admin(int(user_id))
+            if not is_admin or APP_ENV != "sandbox":
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            
+            # Get AI level manager
+            ai_manager = AILevelManager(self.db)
+            
+            # Get current levels
+            hashtags_level = ai_manager.get_level(user_id, 'hashtags')
+            cleanup_level = ai_manager.get_level(user_id, 'cleanup')
+            summary_level = ai_manager.get_level(user_id, 'summary')
+            
+            # Build UI
+            def level_text(level: int) -> str:
+                return "OFF" if level == 0 else str(level)
+            
+            def level_icon(level: int) -> str:
+                return "⬜️" if level == 0 else "✅"
+            
+            keyboard = []
+            
+            # Hashtags
+            keyboard.append([InlineKeyboardButton(
+                f"{level_icon(hashtags_level)} 🏷 Хештеги (AI): {level_text(hashtags_level)}",
+                callback_data="noop"
+            )])
+            keyboard.append([
+                InlineKeyboardButton("−", callback_data="mgmt:ai:dec:hashtags"),
+                InlineKeyboardButton("OFF", callback_data="mgmt:ai:set:hashtags:0"),
+                InlineKeyboardButton("+", callback_data="mgmt:ai:inc:hashtags"),
+            ])
+            
+            # Cleanup
+            keyboard.append([InlineKeyboardButton(
+                f"{level_icon(cleanup_level)} 🧹 Очистка (AI): {level_text(cleanup_level)}",
+                callback_data="noop"
+            )])
+            keyboard.append([
+                InlineKeyboardButton("−", callback_data="mgmt:ai:dec:cleanup"),
+                InlineKeyboardButton("OFF", callback_data="mgmt:ai:set:cleanup:0"),
+                InlineKeyboardButton("+", callback_data="mgmt:ai:inc:cleanup"),
+            ])
+            
+            # Summary
+            keyboard.append([InlineKeyboardButton(
+                f"{level_icon(summary_level)} 📝 Пересказ (AI): {level_text(summary_level)}",
+                callback_data="noop"
+            )])
+            keyboard.append([
+                InlineKeyboardButton("−", callback_data="mgmt:ai:dec:summary"),
+                InlineKeyboardButton("OFF", callback_data="mgmt:ai:set:summary:0"),
+                InlineKeyboardButton("+", callback_data="mgmt:ai:inc:summary"),
+            ])
+            
+            # Back button
+            keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:back")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            text = (
+                "🤖 Управление AI модулями\n\n"
+                "Уровни 0-5:\n"
+                "• 0 = выключено (no LLM calls)\n"
+                "• 1-2 = быстрый/экономный режим\n"
+                "• 3 = стандартный (по умолчанию)\n"
+                "• 4-5 = максимальное качество\n\n"
+                "Используйте − и + для настройки уровня,\n"
+                "или OFF для полного отключения."
+            )
+            
+            await query.edit_message_text(text=text, reply_markup=reply_markup)
+        except Exception as e:
+            logger.error(f"AI management error: {e}")
+            await query.answer("❌ Ошибка меню AI", show_alert=True)
     
     async def _handle_ai_level_change(self, query, module: str, action: str, level: int = None):
         """Handle AI level change (inc/dec/set)"""
