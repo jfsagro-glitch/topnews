@@ -58,6 +58,19 @@ TELEGRAM_CHANNEL_ID = env_int('TELEGRAM_CHANNEL_ID', 0)
 if not TELEGRAM_CHANNEL_ID:
     raise ValueError("TELEGRAM_CHANNEL_ID not set. Please set it in Railway environment variables")
 
+# Admin Users IDs for sandbox management (comma-separated from env)
+ADMIN_USER_IDS = env_str('ADMIN_USER_IDS', '')
+if ADMIN_USER_IDS:
+    try:
+        ADMIN_USER_IDS = [int(uid.strip()) for uid in ADMIN_USER_IDS.split(',') if uid.strip()]
+    except ValueError:
+        ADMIN_USER_IDS = []
+else:
+    ADMIN_USER_IDS = []  # No default for Railway
+
+# Access Control DB (shared for prod/sandbox access control)
+ACCESS_DB_PATH = env_str('ACCESS_DB_PATH', 'db/access.db')
+
 # Интервалы
 CHECK_INTERVAL_SECONDS = env_int('CHECK_INTERVAL_SECONDS', 120)  # 2 минуты по умолчанию
 TIMEOUT_SECONDS = env_int('TIMEOUT_SECONDS', 30)
@@ -100,6 +113,14 @@ DISABLE_PROD_SIDE_EFFECTS = env_bool(
     'DISABLE_PROD_SIDE_EFFECTS',
     True if APP_ENV == 'sandbox' else False,
 )
+
+# AI Category Verification
+AI_CATEGORY_VERIFICATION_ENABLED = env_bool('AI_CATEGORY_VERIFICATION_ENABLED', True)
+
+# AI Module Levels (0-5, where 0=disabled, 3=default balanced, 5=best quality)
+AI_HASHTAGS_LEVEL_DEFAULT = env_int('AI_HASHTAGS_LEVEL_DEFAULT', 3)
+AI_CLEANUP_LEVEL_DEFAULT = env_int('AI_CLEANUP_LEVEL_DEFAULT', 3)
+AI_SUMMARY_LEVEL_DEFAULT = env_int('AI_SUMMARY_LEVEL_DEFAULT', 3)
 
 # Логирование
 LOG_LEVEL = env_str('LOG_LEVEL', 'INFO')

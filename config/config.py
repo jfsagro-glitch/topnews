@@ -54,6 +54,19 @@ TELEGRAM_CHANNEL_ID = env_int('TELEGRAM_CHANNEL_ID', -1001234567890)
 
 ADMIN_IDS = [464108692, 1592307306, 408817675]
 
+# Admin Users IDs for sandbox management (comma-separated from env)
+ADMIN_USER_IDS = env_str('ADMIN_USER_IDS', '')
+if ADMIN_USER_IDS:
+    try:
+        ADMIN_USER_IDS = [int(uid.strip()) for uid in ADMIN_USER_IDS.split(',') if uid.strip()]
+    except ValueError:
+        ADMIN_USER_IDS = []
+else:
+    ADMIN_USER_IDS = ADMIN_IDS  # Default to ADMIN_IDS if not specified
+
+# Access Control DB (shared for prod/sandbox access control)
+ACCESS_DB_PATH = env_str('ACCESS_DB_PATH', 'db/access.db')
+
 # Интервалы
 CHECK_INTERVAL_SECONDS = env_int('CHECK_INTERVAL_SECONDS', 120)  # 2 минуты
 TIMEOUT_SECONDS = env_int('TIMEOUT_SECONDS', 30)
@@ -100,6 +113,11 @@ DISABLE_PROD_SIDE_EFFECTS = env_bool(
 # AI Category Verification
 AI_CATEGORY_VERIFICATION_ENABLED = env_bool('AI_CATEGORY_VERIFICATION_ENABLED', True)
 AI_CATEGORY_VERIFICATION_RATE = float(env_str('AI_CATEGORY_VERIFICATION_RATE', '1.0'))  # 100% verification for maximum hashtag quality
+
+# AI Module Levels (0-5, where 0=disabled, 3=default balanced, 5=best quality)
+AI_HASHTAGS_LEVEL_DEFAULT = env_int('AI_HASHTAGS_LEVEL_DEFAULT', 3)
+AI_CLEANUP_LEVEL_DEFAULT = env_int('AI_CLEANUP_LEVEL_DEFAULT', 3)
+AI_SUMMARY_LEVEL_DEFAULT = env_int('AI_SUMMARY_LEVEL_DEFAULT', 3)
 
 # Логирование
 LOG_LEVEL = env_str('LOG_LEVEL', 'INFO')

@@ -132,8 +132,18 @@ class DeepSeekClient:
             f"Cache: {self.cache is not None}, Budget guard: {self.budget is not None}"
         )
 
-    async def summarize(self, title: str, text: str) -> tuple[Optional[str], dict]:
+    async def summarize(self, title: str, text: str, level: int = 3) -> tuple[Optional[str], dict]:
         request_id = str(uuid.uuid4())[:8]
+        
+        # Check if AI level is 0 (disabled)
+        if level == 0:
+            logger.info(f"[{request_id}] ⏭️ AI summary disabled (level=0)")
+            return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False, "disabled": True}
+        
+        # Get LLM profile for level
+        from core.services.access_control import get_llm_profile
+        profile = get_llm_profile(level, 'summary')
+        logger.debug(f"[{request_id}] Using AI level {level}: {profile.get('description', 'N/A')}")
         
         # Check budget limit
         if self.budget and not self.budget.can_make_request():
@@ -142,7 +152,7 @@ class DeepSeekClient:
         
         # Check cache
         if self.cache:
-            cache_key = self.cache.generate_cache_key('summarize', title, text)
+            cache_key = self.cache.generate_cache_key('summarize', title, text, level=level)
             cached = self.cache.get(cache_key)
             if cached:
                 logger.info(f"[{request_id}] ✅ Cache HIT for summarize")
@@ -172,13 +182,17 @@ class DeepSeekClient:
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False}
 
         payload = {
-            "model": "deepseek-chat",
+            "model": profile.get('model', 'deepseek-chat'),
             "messages": _build_messages(title, text),
-            "temperature": 0.7,
-            "max_tokens": 800,
+            "temperature": profile.get('temperature', 0.7),
+            "max_tokens": profile.get('max_tokens', 800),
         }
         
-        logger.info(f"[{request_id}] 🔄 API call: summarize")
+        # Add optional parameters
+        if 'top_p' in profile:
+            payload['top_p'] = profile['top_p']
+        
+        logger.info(f"[{request_id}] 🔄 API call: summarize (level={level}, max_tokens={payload['max_tokens']})")
 
         backoff = 0.8
         for attempt in range(1, 4):
@@ -216,7 +230,7 @@ class DeepSeekClient:
                     # Store in cache
                     result_text = truncate_text(summary.strip(), max_length=800)
                     if self.cache:
-                        cache_key = self.cache.generate_cache_key('summarize', title, text)
+                        cache_key = self.cache.generate_cache_key('summarize', title, text, level=level)
                         self.cache.set(cache_key, 'summarize', result_text, input_tokens, output_tokens, cost_usd)
                     
                     # Return summary and token usage dict

@@ -33,6 +33,7 @@ except (ImportError, ValueError):
 from db.database import NewsDatabase
 from utils.text_cleaner import format_telegram_message
 from sources.source_collector import SourceCollector
+from core.services.access_control import AILevelManager, get_llm_profile
 
 
 class NewsBot:
@@ -193,22 +194,34 @@ class NewsBot:
         return self.application
 
     # Persistent reply keyboard for chats (anchored at bottom)
+    # For regular users
     REPLY_KEYBOARD = ReplyKeyboardMarkup(
         [['🔄', '✉️', '⏸️', '▶️'], ['⚙️ Настройки']], resize_keyboard=True, one_time_keyboard=False
+    )
+    
+    # For sandbox admin users - includes Management button
+    REPLY_KEYBOARD_ADMIN = ReplyKeyboardMarkup(
+        [['🔄', '✉️', '⏸️', '▶️'], ['⚙️ Настройки', '🛠 Управление']], resize_keyboard=True, one_time_keyboard=False
     )
     
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
         try:
-            from config.railway_config import APP_ENV
+            from config.railway_config import APP_ENV, ADMIN_USER_IDS
         except (ImportError, ValueError):
-            from config.config import APP_ENV
+            from config.config import APP_ENV, ADMIN_USER_IDS
         
+        user_id = update.message.from_user.id
+        is_admin = user_id in ADMIN_USER_IDS if ADMIN_USER_IDS else False
         env_marker = "\n🧪 SANDBOX" if APP_ENV == "sandbox" else ""
+        
+        # Choose keyboard based on admin status and environment
+        keyboard = self.REPLY_KEYBOARD_ADMIN if (APP_ENV == "sandbox" and is_admin) else self.REPLY_KEYBOARD
+        
         await update.message.reply_text(
             "👋 Добро пожаловать в News Aggregator Bot!" + env_marker + "\n\n"
             "Используйте /help для списка команд",
-            reply_markup=self.REPLY_KEYBOARD
+            reply_markup=keyboard
         )
     
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -418,6 +431,36 @@ class NewsBot:
         self.is_paused = False
         await update.message.reply_text("▶️ Сбор новостей возобновлен")
     
+    async def cmd_management(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """🛠 Management menu (sandbox admin only)"""
+        try:
+            from config.railway_config import APP_ENV, ADMIN_USER_IDS
+        except (ImportError, ValueError):
+            from config.config import APP_ENV, ADMIN_USER_IDS
+        
+        user_id = update.message.from_user.id
+        
+        # Check if sandbox and admin
+        if APP_ENV != "sandbox":
+            await update.message.reply_text("❌ Management available only in sandbox")
+            return
+        
+        is_admin = user_id in ADMIN_USER_IDS if ADMIN_USER_IDS else False
+        if not is_admin:
+            await update.message.reply_text("❌ Доступно только администраторам")
+            return
+        
+        # Show management menu
+        keyboard = [
+            [InlineKeyboardButton("🤖 AI переключатели", callback_data="mgmt:ai")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:back")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "🛠 Управление ботом",
+            reply_markup=reply_markup
+        )
+    
     async def cmd_sync_deepseek(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /sync_deepseek - показать текущую статистику и инструкцию"""
         ai_usage = self.db.get_ai_usage()
@@ -563,6 +606,8 @@ class NewsBot:
             await self.cmd_resume(update, context)
         elif text == '⚙️ Настройки':
             await self.cmd_settings(update, context)
+        elif text == '🛠 Управление':
+            await self.cmd_management(update, context)
     
     async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """⚙️ Меню настроек"""
@@ -700,6 +745,47 @@ class NewsBot:
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
                 text="⚙️ Настройки",
+                reply_markup=reply_markup
+            )
+            return
+        
+        # ==================== MANAGEMENT CALLBACKS (SANDBOX ADMIN) ====================
+        if query.data == "mgmt:ai":
+            # Show AI levels management screen
+            await query.answer()
+            await self._show_ai_management(query)
+            return
+        
+        if query.data.startswith("mgmt:ai:inc:"):
+            # Increment AI level
+            module = query.data.split(":")[-1]
+            await self._handle_ai_level_change(query, module, action="inc")
+            return
+        
+        if query.data.startswith("mgmt:ai:dec:"):
+            # Decrement AI level
+            module = query.data.split(":")[-1]
+            await self._handle_ai_level_change(query, module, action="dec")
+            return
+        
+        if query.data.startswith("mgmt:ai:set:"):
+            # Set AI level directly
+            parts = query.data.split(":")
+            module = parts[2]
+            level = int(parts[3])
+            await self._handle_ai_level_change(query, module, action="set", level=level)
+            return
+        
+        if query.data == "mgmt:back":
+            # Back to management main menu
+            await query.answer()
+            keyboard = [
+                [InlineKeyboardButton("🤖 AI переключатели", callback_data="mgmt:ai")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:back")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                text="🛠 Управление ботом",
                 reply_markup=reply_markup
             )
             return
@@ -961,6 +1047,15 @@ class NewsBot:
             if action == "ai":
                 try:
                     from config.config import AI_SUMMARY_MAX_REQUESTS_PER_MINUTE
+                    from core.services.access_control import AILevelManager
+                    
+                    # Check AI summary level
+                    ai_manager = AILevelManager(self.db)
+                    summary_level = ai_manager.get_level(str(user_id), 'summary')
+                    
+                    if summary_level == 0:
+                        await query.answer("⚠️ AI пересказ отключён администратором", show_alert=True)
+                        return
 
                     now = time.time()
                     timestamps = self.user_ai_requests.get(user_id, [])
@@ -999,7 +1094,7 @@ class NewsBot:
 
                     news_url = news.get('url', '')
                     logger.debug(f"Calling DeepSeek: lead_text_len={len(lead_text)}, title='{news.get('title', '')[:30]}', url={bool(news_url)}")
-                    summary, token_usage = await self._summarize_with_deepseek(lead_text, news.get('title', ''), url=news_url)
+                    summary, token_usage = await self._summarize_with_deepseek(lead_text, news.get('title', ''), url=news_url, user_id=user_id)
                     logger.debug(f"DeepSeek response: summary={bool(summary)}, tokens={token_usage.get('total_tokens', 0)}")
 
                     if summary:
@@ -1119,7 +1214,7 @@ class NewsBot:
         
         return fallback_text
 
-    async def _summarize_with_deepseek(self, text: str, title: str, url: str = None) -> tuple[str | None, dict]:
+    async def _summarize_with_deepseek(self, text: str, title: str, url: str = None, user_id: int = None) -> tuple[str | None, dict]:
         """
         Call DeepSeek API to summarize news.
         
@@ -1127,18 +1222,24 @@ class NewsBot:
             text: Article text to summarize
             title: Article title
             url: Optional URL to fetch full article from
+            user_id: User ID to get AI level preference
             
         Returns:
             Tuple of (summary string or None, token usage dict)
         """
         try:
+            # Get AI level for summary
+            from core.services.access_control import AILevelManager
+            ai_manager = AILevelManager(self.db)
+            level = ai_manager.get_level(str(user_id) if user_id else "0", 'summary')
+            
             # Try to fetch full article if URL provided
             if url:
                 text = await self._fetch_full_article(url, text)
             
-            summary, token_usage = await self.deepseek_client.summarize(title=title, text=text)
+            summary, token_usage = await self.deepseek_client.summarize(title=title, text=text, level=level)
             if summary:
-                logger.debug(f"DeepSeek summary created: {summary[:50]}...")
+                logger.debug(f"DeepSeek summary created (level={level}): {summary[:50]}...")
             return summary, token_usage
         except Exception as e:
             logger.error(f"DeepSeek error: {e}")
@@ -1721,3 +1822,125 @@ class NewsBot:
         
         return filtered
 
+    async def _show_ai_management(self, query):
+        """Show AI levels management screen"""
+        try:
+            from config.railway_config import APP_ENV, ADMIN_USER_IDS
+            from core.services.access_control import AILevelManager
+        except (ImportError, ValueError):
+            from config.config import APP_ENV, ADMIN_USER_IDS
+            from core.services.access_control import AILevelManager
+        
+        user_id = str(query.from_user.id)
+        
+        # Check admin
+        is_admin = int(user_id) in ADMIN_USER_IDS if ADMIN_USER_IDS else False
+        if not is_admin or APP_ENV != "sandbox":
+            await query.answer("❌ Доступ запрещён", show_alert=True)
+            return
+        
+        # Get AI level manager
+        ai_manager = AILevelManager(self.db)
+        
+        # Get current levels
+        hashtags_level = ai_manager.get_level(user_id, 'hashtags')
+        cleanup_level = ai_manager.get_level(user_id, 'cleanup')
+        summary_level = ai_manager.get_level(user_id, 'summary')
+        
+        # Build UI
+        def level_text(level: int) -> str:
+            return "OFF" if level == 0 else str(level)
+        
+        def level_icon(level: int) -> str:
+            return "⬜️" if level == 0 else "✅"
+        
+        keyboard = []
+        
+        # Hashtags
+        keyboard.append([InlineKeyboardButton(
+            f"{level_icon(hashtags_level)} 🏷 Хештеги (AI): {level_text(hashtags_level)}",
+            callback_data="noop"
+        )])
+        keyboard.append([
+            InlineKeyboardButton("−", callback_data="mgmt:ai:dec:hashtags"),
+            InlineKeyboardButton("OFF", callback_data="mgmt:ai:set:hashtags:0"),
+            InlineKeyboardButton("+", callback_data="mgmt:ai:inc:hashtags"),
+        ])
+        
+        # Cleanup
+        keyboard.append([InlineKeyboardButton(
+            f"{level_icon(cleanup_level)} 🧹 Очистка (AI): {level_text(cleanup_level)}",
+            callback_data="noop"
+        )])
+        keyboard.append([
+            InlineKeyboardButton("−", callback_data="mgmt:ai:dec:cleanup"),
+            InlineKeyboardButton("OFF", callback_data="mgmt:ai:set:cleanup:0"),
+            InlineKeyboardButton("+", callback_data="mgmt:ai:inc:cleanup"),
+        ])
+        
+        # Summary
+        keyboard.append([InlineKeyboardButton(
+            f"{level_icon(summary_level)} 📝 Пересказ (AI): {level_text(summary_level)}",
+            callback_data="noop"
+        )])
+        keyboard.append([
+            InlineKeyboardButton("−", callback_data="mgmt:ai:dec:summary"),
+            InlineKeyboardButton("OFF", callback_data="mgmt:ai:set:summary:0"),
+            InlineKeyboardButton("+", callback_data="mgmt:ai:inc:summary"),
+        ])
+        
+        # Back button
+        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:back")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = (
+            "🤖 Управление AI модулями\n\n"
+            "Уровни 0-5:\n"
+            "• 0 = выключено (no LLM calls)\n"
+            "• 1-2 = быстрый/экономный режим\n"
+            "• 3 = стандартный (по умолчанию)\n"
+            "• 4-5 = максимальное качество\n\n"
+            "Используйте − и + для настройки уровня,\n"
+            "или OFF для полного отключения."
+        )
+        
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+    
+    async def _handle_ai_level_change(self, query, module: str, action: str, level: int = None):
+        """Handle AI level change (inc/dec/set)"""
+        try:
+            from config.railway_config import APP_ENV, ADMIN_USER_IDS
+            from core.services.access_control import AILevelManager
+        except (ImportError, ValueError):
+            from config.config import APP_ENV, ADMIN_USER_IDS
+            from core.services.access_control import AILevelManager
+        
+        user_id = str(query.from_user.id)
+        
+        # Check admin
+        is_admin = int(user_id) in ADMIN_USER_IDS if ADMIN_USER_IDS else False
+        if not is_admin or APP_ENV != "sandbox":
+            await query.answer("❌ Доступ запрещён", show_alert=True)
+            return
+        
+        # Get AI level manager
+        ai_manager = AILevelManager(self.db)
+        
+        # Perform action
+        if action == "inc":
+            new_level = ai_manager.inc_level(user_id, module)
+        elif action == "dec":
+            new_level = ai_manager.dec_level(user_id, module)
+        elif action == "set":
+            ai_manager.set_level(user_id, module, level)
+            new_level = level
+        else:
+            await query.answer("❌ Invalid action", show_alert=True)
+            return
+        
+        # Show feedback
+        await query.answer(f"✅ {module}: {new_level}")
+        
+        # Re-render screen
+        await self._show_ai_management(query)
