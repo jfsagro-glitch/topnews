@@ -712,7 +712,7 @@ class NewsBot:
             invite_code = self._pending_invites[user_id]
             recipient_input = text.strip()
             
-            logger.info(f"Processing invite recipient input: {recipient_input}")
+            logger.info(f"Processing invite recipient input: {recipient_input} from admin {user_id}")
             
             try:
                 # Try to parse as user ID or @username
@@ -725,11 +725,19 @@ class NewsBot:
                     )
                     return
                 else:
-                    recipient_id = int(recipient_input)
+                    try:
+                        recipient_id = int(recipient_input)
+                    except ValueError:
+                        await update.message.reply_text(
+                            "❌ Неверный формат user_id.\n\n"
+                            "Укажите числовой ID пользователя.\n"
+                            "Пример: 123456789"
+                        )
+                        return
                 
-                logger.info(f"Sending invite {invite_code} to user {recipient_id}")
+                logger.info(f"Parsed recipient_id: {recipient_id}, sending invite {invite_code}")
                 
-                # Send invite to recipient
+                # Get bot username for prod
                 try:
                     from config.railway_config import BOT_PROD_USERNAME, APP_ENV
                 except (ImportError, ValueError):
@@ -756,47 +764,58 @@ class NewsBot:
                     bot_info = await self.application.bot.get_me()
                     bot_username = bot_info.username
                 
+                logger.info(f"Using bot_username: {bot_username}")
+                
                 invite_link = f"https://t.me/{bot_username}?start={invite_code}"
                 
-                # Send invite to recipient
-                await self.application.bot.send_message(
-                    chat_id=recipient_id,
-                    text=(
-                        f"🎉 Вам отправлен инвайт в News Aggregator Bot!\n\n"
-                        f"📌 Код инвайта: `{invite_code}`\n\n"
-                        f"🔗 Перейдите по ссылке:\n"
-                        f"{invite_link}\n\n"
-                        f"После этого введите код инвайта в боте и получите доступ!"
-                    ),
-                    parse_mode='Markdown'
-                )
-                
-                logger.info(f"Invite sent successfully to {recipient_id}")
-                
-                # Confirm to admin
-                await update.message.reply_text(
-                    f"✅ Инвайт успешно отправлен пользователю {recipient_id}!\n\n"
-                    f"Код: `{invite_code}`\n\n"
-                    f"Пользователь получит сообщение с ссылкой для активации.",
-                    parse_mode='Markdown'
-                )
+                # Send invite to recipient with hyperlink
+                try:
+                    await self.application.bot.send_message(
+                        chat_id=recipient_id,
+                        text=(
+                            f"🎉 Вам отправлен инвайт в News Aggregator Bot!\n\n"
+                            f"📌 Код инвайта: <code>{invite_code}</code>\n\n"
+                            f"🔗 Перейдите по ссылке:\n"
+                            f'<a href="{invite_link}">Открыть бота с инвайтом</a>\n\n'
+                            f"После этого введите код инвайта в боте и получите доступ!"
+                        ),
+                        parse_mode='HTML'
+                    )
+                    
+                    logger.info(f"Invite message sent successfully to {recipient_id}")
+                    
+                    # Confirm to admin
+                    await update.message.reply_text(
+                        f"✅ Инвайт успешно отправлен пользователю {recipient_id}!\n\n"
+                        f"🔗 Ссылка: <a href=\"{invite_link}\">открыть</a>\n"
+                        f"📌 Код: <code>{invite_code}</code>\n\n"
+                        f"Пользователь получил сообщение с ссылкой.",
+                        parse_mode='HTML'
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"Error sending invite message to {recipient_id}: {e}")
+                    await update.message.reply_text(
+                        f"❌ Ошибка при отправке сообщения пользователю {recipient_id}:\n\n"
+                        f"{str(e)[:100]}\n\n"
+                        f"Проверьте что user_id правильный и пользователь не заблокировал бота."
+                    )
+                    # Clear pending invite anyway
+                    if user_id in self._pending_invites:
+                        del self._pending_invites[user_id]
+                    return
                 
                 # Clear pending invite
-                del self._pending_invites[user_id]
+                if user_id in self._pending_invites:
+                    del self._pending_invites[user_id]
                 
-            except ValueError:
-                await update.message.reply_text(
-                    "❌ Неверный формат user_id.\n\n"
-                    "Укажите числовой ID пользователя.\n"
-                    "Пример: 123456789"
-                )
-                return
             except Exception as e:
-                logger.error(f"Error sending invite: {e}")
+                logger.error(f"Error in invite handler: {e}", exc_info=True)
                 await update.message.reply_text(
-                    f"❌ Ошибка при отправке инвайта: {str(e)[:100]}"
+                    f"❌ Ошибка: {str(e)[:100]}"
                 )
-                del self._pending_invites[user_id]
+                if user_id in self._pending_invites:
+                    del self._pending_invites[user_id]
                 return
 
         # Custom export period input (hours)
