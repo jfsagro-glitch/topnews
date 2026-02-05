@@ -157,6 +157,17 @@ class NewsDatabase:
                 )
             ''')
 
+            # Table for feature flags (admin settings like AI levels)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS feature_flags (
+                    user_id TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, key)
+                )
+            ''')
+
             # Ensure new columns exist for older DBs
             self._ensure_columns(cursor)
 
@@ -931,12 +942,56 @@ class NewsDatabase:
                 # Нет отключенных -> все включены (оптимизация)
                 return None
             
-            # Вернуть список включенных
+            # Вернуть список включенных (по умолчанию все включены, кроме явно отключенных)
             cursor.execute(
-                'SELECT source_id FROM user_source_settings WHERE user_id = ? AND enabled = 1',
+                'SELECT source_id FROM user_source_settings WHERE user_id = ? AND enabled = 0',
                 (user_id,)
             )
-            return [row[0] for row in cursor.fetchall()]
+            disabled_ids = {row[0] for row in cursor.fetchall()}
+            
+            cursor.execute('SELECT id FROM sources')
+            all_ids = {row[0] for row in cursor.fetchall()}
+            
+            enabled_ids = list(all_ids - disabled_ids)
+            return enabled_ids
         except Exception as e:
             logger.error(f"Error getting enabled sources: {e}")
             return None
+
+    def get_feature_flag(self, user_id: str, key: str, default: str = None) -> Optional[str]:
+        """
+        Получить значение feature flag для пользователя.
+        Returns: значение (строка) или default если не установлен
+        """
+        try:
+            cursor = self._conn.cursor()
+            user_id = str(user_id)
+            cursor.execute(
+                'SELECT value FROM feature_flags WHERE user_id = ? AND key = ?',
+                (user_id, key)
+            )
+            row = cursor.fetchone()
+            return row[0] if row else default
+        except Exception as e:
+            logger.error(f"Error getting feature flag: {e}")
+            return default
+
+    def set_feature_flag(self, user_id: str, key: str, value: str) -> bool:
+        """
+        Установить значение feature flag для пользователя.
+        Returns: True если успешно, False если ошибка
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                user_id = str(user_id)
+                cursor.execute(
+                    'INSERT OR REPLACE INTO feature_flags (user_id, key, value, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
+                    (user_id, key, value)
+                )
+                self._conn.commit()
+                logger.debug(f"Set feature flag: {user_id}.{key} = {value}")
+                return True
+        except Exception as e:
+            logger.error(f"Error setting feature flag: {e}")
+            return False
