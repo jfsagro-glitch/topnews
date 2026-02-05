@@ -265,8 +265,12 @@ class SourceCollector:
                     # Classify by content
                     detected_category = self.classifier.classify(title, text, item_url)
                     
-                    # Optional AI category verification (if client provided)
-                    if self.ai_client and detected_category:
+                    # For trusted sources like Yahoo News/Reuters/etc, use source category directly (skip AI override)
+                    # For other sources, allow AI to optionally override
+                    skip_ai_verification = source_name in ['news.yahoo.com', 'rss.news.yahoo.com']
+                    
+                    # Optional AI category verification (if client provided and not skipped)
+                    if self.ai_client and detected_category and not skip_ai_verification:
                         ai_category = await self._verify_with_ai(title, text, detected_category)
                         if ai_category:
                             detected_category = ai_category
