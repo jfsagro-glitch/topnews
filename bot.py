@@ -52,6 +52,9 @@ class NewsBot:
         # SourceCollector with optional AI verification
         self.collector = SourceCollector(db=self.db, ai_client=self.deepseek_client, bot=self)
         
+        # Initialize sources from SOURCES_CONFIG
+        self._init_sources()
+        
         self.is_running = True
         self.is_paused = False
         self.collection_lock = asyncio.Lock()  # Prevent concurrent collection cycles
@@ -73,6 +76,40 @@ class NewsBot:
         self._instance_lock_path = None
         self._db_instance_id = f"{socket.gethostname()}:{os.getpid()}"
         self._shutdown_requested = False
+    
+    def _init_sources(self):
+        """Инициализировать список источников из ACTIVE_SOURCES_CONFIG"""
+        try:
+            sources_to_create = []
+            
+            # Собрать все источники из конфига
+            for category, cfg in ACTIVE_SOURCES_CONFIG.items():
+                if category == 'telegram':
+                    # Telegram каналы
+                    for src_url in cfg.get('sources', []):
+                        channel = src_url.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '').strip('/')
+                        if channel:
+                            sources_to_create.append({'code': channel, 'title': f"@{channel}"})
+                else:
+                    # Web источники (по домену)
+                    for src_url in cfg.get('sources', []):
+                        domain = src_url.replace('https://', '').replace('http://', '').split('/')[0]
+                        if domain and not domain.endswith('t.me'):
+                            sources_to_create.append({'code': domain, 'title': domain})
+            
+            # Убрать дубликаты
+            seen_codes = set()
+            unique_sources = []
+            for src in sources_to_create:
+                if src['code'] not in seen_codes:
+                    unique_sources.append(src)
+                    seen_codes.add(src['code'])
+            
+            # Создать или обновить в БД
+            self.db.get_or_create_sources(unique_sources)
+            logger.info(f"Initialized {len(unique_sources)} sources in database")
+        except Exception as e:
+            logger.error(f"Error initializing sources: {e}")
 
     def _acquire_instance_lock(self) -> bool:
         """Acquire a filesystem lock to prevent multiple bot instances."""
@@ -80,6 +117,14 @@ class NewsBot:
             lock_dir = tempfile.gettempdir()
             lock_path = os.path.join(lock_dir, "topnews_bot.lock")
             self._instance_lock_path = lock_path
+
+            # In sandbox, always clear stale lock to avoid restart loops
+            try:
+                from config.config import APP_ENV
+                if APP_ENV == "sandbox" and os.path.exists(lock_path):
+                    os.remove(lock_path)
+            except Exception:
+                pass
 
             # If stale lock older than 6 hours, remove it
             stale_seconds = 6 * 3600
@@ -146,13 +191,19 @@ class NewsBot:
 
     # Persistent reply keyboard for chats (anchored at bottom)
     REPLY_KEYBOARD = ReplyKeyboardMarkup(
-        [['🔄', '✉️', '🔍', '⏸️', '▶️']], resize_keyboard=True
+        [['🔄', '✉️', '⏸️', '▶️'], ['⚙️ Настройки']], resize_keyboard=True, one_time_keyboard=False
     )
     
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
+        try:
+            from config.railway_config import APP_ENV
+        except (ImportError, ValueError):
+            from config.config import APP_ENV
+        
+        env_marker = "\n🧪 SANDBOX" if APP_ENV == "sandbox" else ""
         await update.message.reply_text(
-            "👋 Добро пожаловать в News Aggregator Bot!\n\n"
+            "👋 Добро пожаловать в News Aggregator Bot!" + env_marker + "\n\n"
             "Используйте /help для списка команд",
             reply_markup=self.REPLY_KEYBOARD
         )
@@ -163,10 +214,12 @@ class NewsBot:
             "📚 Доступные команды:\n\n"
             "/sync - Принудительно запустить сбор новостей\n"
             "/status - Показать статус бота и статистику\n"
-            "/filter - Фильтровать новости по категориям\n"
             "/pause - Приостановить автоматический сбор\n"
             "/resume - Возобновить автоматический сбор\n"
             "/help - Показать эту справку\n\n"
+            "⚙️ Нажмите кнопку 'Настройки' внизу для доступа к:\n"
+            "  • Фильтр по категориям\n"
+            "  • Управление источниками новостей\n\n"
             "Бот автоматически проверяет новости каждые 2 минуты"
         )
         await update.message.reply_text(help_text, reply_markup=self.REPLY_KEYBOARD)
@@ -501,12 +554,24 @@ class NewsBot:
         elif text == '✉️':
             # Отправить в личку (Мои новости)
             await self.cmd_my_selection(update, context)
-        elif text == '🔍':
-            await self.cmd_filter(update, context)
         elif text == '⏸️':
             await self.cmd_pause(update, context)
         elif text == '▶️':
             await self.cmd_resume(update, context)
+        elif text == '⚙️ Настройки':
+            await self.cmd_settings(update, context)
+    
+    async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """⚙️ Меню настроек"""
+        keyboard = [
+            [InlineKeyboardButton("🧰 Фильтр", callback_data="settings:filter")],
+            [InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "⚙️ Настройки",
+            reply_markup=reply_markup
+        )
     
     async def cmd_filter(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /filter - выбор категорий для фильтрации"""
@@ -557,6 +622,86 @@ class NewsBot:
         """Обработчик нажатия на кнопку"""
         query = update.callback_query
         
+        # ==================== SETTINGS CALLBACKS ====================
+        if query.data == "settings:filter":
+            # Показать меню фильтра
+            await query.answer()
+            ai_status = "✅" if self.ai_verification_enabled else "❌"
+            keyboard = [
+                [
+                    InlineKeyboardButton("#Мир", callback_data="filter_world"),
+                    InlineKeyboardButton("#Россия", callback_data="filter_russia"),
+                ],
+                [
+                    InlineKeyboardButton("#Москва", callback_data="filter_moscow"),
+                    InlineKeyboardButton("#Подмосковье", callback_data="filter_moscow_region"),
+                    InlineKeyboardButton("Все новости", callback_data="filter_all"),
+                ],
+                [
+                    InlineKeyboardButton(f"AI {ai_status}", callback_data="toggle_ai"),
+                ],
+                [
+                    InlineKeyboardButton("⬅️ Назад", callback_data="settings:back"),
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            ai_status_text = "включена" if self.ai_verification_enabled else "отключена"
+            await query.edit_message_text(
+                text=(
+                    "🧰 Фильтр\n\n"
+                    "#Мир - Новости со всего мира\n"
+                    "#Россия - Новости России\n"
+                    "#Москва - Новости Москвы\n"
+                    "#Подмосковье - Новости Московской области\n"
+                    "Все новости - Показывать все\n\n"
+                    f"🤖 AI верификация: {ai_status_text}"
+                ),
+                reply_markup=reply_markup
+            )
+            return
+        
+        if query.data.startswith("settings:sources:"):
+            # Показать список источников
+            await query.answer()
+            page = int(query.data.split(":")[-1])
+            await self._show_sources_menu(query, page)
+            return
+        
+        if query.data.startswith("settings:src_toggle:"):
+            # Переключить источник
+            parts = query.data.split(":")
+            source_id = int(parts[2])
+            page = int(parts[3]) if len(parts) > 3 else 0
+            
+            user_id = query.from_user.id
+            new_state = self.db.toggle_user_source(user_id, source_id)
+            
+            await query.answer(f"{'✅ Включено' if new_state else '❌ Отключено'}", show_alert=False)
+            await self._show_sources_menu(query, page)
+            return
+        
+        if query.data.startswith("settings:src_page:"):
+            # Пагинация источников
+            page = int(query.data.split(":")[-1])
+            await query.answer()
+            await self._show_sources_menu(query, page)
+            return
+        
+        if query.data == "settings:back":
+            # Вернуться к меню настроек
+            await query.answer()
+            keyboard = [
+                [InlineKeyboardButton("🧰 Фильтр", callback_data="settings:filter")],
+                [InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                text="⚙️ Настройки",
+                reply_markup=reply_markup
+            )
+            return
+        
+        # ==================== OTHER CALLBACKS ====================
         if query.data == "show_status":
             # Показать статус бота
             await query.answer()
@@ -1050,6 +1195,12 @@ class NewsBot:
                 if published_count >= max_publications:
                     logger.info(f"Reached publication limit ({max_publications}), stopping")
                     break
+                
+                # Проверяем фильтр по источникам для пользователя (система admin_ids)
+                # TELEGRAM_CHANNEL_ID - основной канал, где видят все подписчики
+                # Но админы в ADMIN_IDS могут видеть разные выборки
+                # На данный момент - выдача всем одинаковая (глобальная)
+                
                 # Проверяем фильтр по категориям
                 if self.category_filter and news.get('category') != self.category_filter:
                     logger.debug(f"Skipping news (category filter): {news.get('title')[:50]}")
@@ -1197,9 +1348,27 @@ class NewsBot:
         # Запускаем приложение
         await self.application.initialize()
         await self.application.start()
-        await self.application.updater.start_polling()
-        
-        logger.info("Bot started successfully")
+
+        try:
+            from config.railway_config import TG_MODE, WEBHOOK_BASE_URL, WEBHOOK_PATH, WEBHOOK_SECRET, PORT
+        except (ImportError, ValueError):
+            from config.config import TG_MODE, WEBHOOK_BASE_URL, WEBHOOK_PATH, WEBHOOK_SECRET, PORT
+
+        if TG_MODE == "webhook":
+            if not WEBHOOK_BASE_URL:
+                raise ValueError("WEBHOOK_BASE_URL is required for TG_MODE=webhook")
+            webhook_url = WEBHOOK_BASE_URL.rstrip('/') + WEBHOOK_PATH
+            await self.application.updater.start_webhook(
+                listen="0.0.0.0",
+                port=PORT,
+                url_path=WEBHOOK_PATH.lstrip('/'),
+                webhook_url=webhook_url,
+                secret_token=WEBHOOK_SECRET,
+            )
+            logger.info(f"Bot started with webhook: {webhook_url}")
+        else:
+            await self.application.updater.start_polling()
+            logger.info("Bot started with polling")
         
         try:
             await asyncio.Event().wait()  # Ждем завершения
@@ -1438,3 +1607,87 @@ class NewsBot:
         except Exception as e:
             logger.error(f"Error generating Excel file: {e}")
             return None
+    
+    async def _show_sources_menu(self, query, page: int = 0):
+        """Показать меню источников с пагинацией"""
+        sources = self.db.list_sources()
+        user_id = str(query.from_user.id)
+        user_enabled = self.db.get_user_source_enabled_map(user_id)
+        
+        # Пагинация
+        PAGE_SIZE = 8
+        total_pages = (len(sources) + PAGE_SIZE - 1) // PAGE_SIZE
+        page = max(0, min(page, total_pages - 1))
+        
+        start = page * PAGE_SIZE
+        end = start + PAGE_SIZE
+        page_sources = sources[start:end]
+        
+        # Построить клавиатуру
+        keyboard = []
+        for src in page_sources:
+            source_id = src['id']
+            title = src['title']
+            # Если нет записи в user_source_settings -> считаем True
+            enabled = user_enabled.get(source_id, True)
+            icon = "✅" if enabled else "⬜️"
+            btn_text = f"{icon} {title}"
+            keyboard.append([
+                InlineKeyboardButton(btn_text, callback_data=f"settings:src_toggle:{source_id}:{page}")
+            ])
+        
+        # Пагинация кнопок
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f"settings:src_page:{page-1}"))
+        nav_buttons.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f"settings:src_page:{page+1}"))
+        
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+        
+        # Кнопка "Назад"
+        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="settings:back")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            text=f"📰 Источники новостей (страница {page+1}/{total_pages})\n\n✅ = включено\n⬜️ = отключено",
+            reply_markup=reply_markup
+        )
+    
+    def _filter_news_by_user_sources(self, news_items: list, user_id=None) -> list:
+        """
+        Отфильтровать новости по включённым для пользователя источникам.
+        Если user_id=None или у пользователя все источники включены - возвращаем все.
+        """
+        if not user_id:
+            return news_items
+        
+        enabled_source_ids = self.db.get_enabled_source_ids_for_user(user_id)
+        
+        # Если None -> все включены
+        if enabled_source_ids is None:
+            return news_items
+        
+        # Преобразовать source_ids в set для быстрого поиска
+        enabled_ids_set = set(enabled_source_ids)
+        
+        # Построить mapping source_code/title -> source_id
+        sources = self.db.list_sources()
+        code_to_id = {src['code']: src['id'] for src in sources}
+        
+        filtered = []
+        for news in news_items:
+            source = news.get('source', '')
+            # Попробовать найти source_id по code или title
+            source_id = code_to_id.get(source)
+            if source_id and source_id in enabled_ids_set:
+                filtered.append(news)
+            elif not source_id:
+                # Если источник не найден в БД - включаем его (по умолчанию)
+                filtered.append(news)
+        
+        return filtered
+

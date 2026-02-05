@@ -9,36 +9,102 @@ from dotenv import load_dotenv
 if os.path.exists('.env'):
     load_dotenv()
 
-# Telegram Bot API
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '')
-if not TELEGRAM_TOKEN:
-    raise ValueError("TELEGRAM_TOKEN not set. Please set it in Railway environment variables")
 
-TELEGRAM_CHANNEL_ID = int(os.getenv('TELEGRAM_CHANNEL_ID', '0'))
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def env_str(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    return value
+
+# App environment
+APP_ENV = env_str('APP_ENV', 'prod')
+if APP_ENV not in {'prod', 'sandbox'}:
+    raise ValueError(f"APP_ENV must be 'prod' or 'sandbox', got: {APP_ENV}")
+
+# Telegram Bot API
+BOT_TOKEN = env_str('BOT_TOKEN', None) or env_str('TELEGRAM_TOKEN', None)
+BOT_TOKEN_PROD = env_str('BOT_TOKEN_PROD', None)
+BOT_TOKEN_SANDBOX = env_str('BOT_TOKEN_SANDBOX', None)
+if not BOT_TOKEN:
+    if APP_ENV == 'sandbox' and BOT_TOKEN_SANDBOX:
+        BOT_TOKEN = BOT_TOKEN_SANDBOX
+    elif APP_ENV == 'prod' and BOT_TOKEN_PROD:
+        BOT_TOKEN = BOT_TOKEN_PROD
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN/TELEGRAM_TOKEN not set. Please set it in Railway environment variables")
+
+TELEGRAM_TOKEN = BOT_TOKEN
+
+TELEGRAM_CHANNEL_ID = env_int('TELEGRAM_CHANNEL_ID', 0)
 if not TELEGRAM_CHANNEL_ID:
     raise ValueError("TELEGRAM_CHANNEL_ID not set. Please set it in Railway environment variables")
 
 # Интервалы
-CHECK_INTERVAL_SECONDS = int(os.getenv('CHECK_INTERVAL_SECONDS', '120'))  # 2 минуты по умолчанию
-TIMEOUT_SECONDS = int(os.getenv('TIMEOUT_SECONDS', '30'))
+CHECK_INTERVAL_SECONDS = env_int('CHECK_INTERVAL_SECONDS', 120)  # 2 минуты по умолчанию
+TIMEOUT_SECONDS = env_int('TIMEOUT_SECONDS', 30)
 
 # Прокси (если нужен)
-USE_PROXY = os.getenv('USE_PROXY', 'False') == 'True'
-PROXY_URL = os.getenv('PROXY_URL', '')
+USE_PROXY = env_bool('USE_PROXY', False)
+PROXY_URL = env_str('PROXY_URL', '')
 
 # Учетные данные для закрытых источников
-CLOSED_SOURCE_LOGIN = os.getenv('CLOSED_SOURCE_LOGIN', '')
-CLOSED_SOURCE_PASSWORD = os.getenv('CLOSED_SOURCE_PASSWORD', '')
+CLOSED_SOURCE_LOGIN = env_str('CLOSED_SOURCE_LOGIN', '')
+CLOSED_SOURCE_PASSWORD = env_str('CLOSED_SOURCE_PASSWORD', '')
 
 # Database - используем переменную окружения для пути на Railway
-DATABASE_PATH = os.getenv('DATABASE_PATH', 'db/news.db')
+DATABASE_PATH = env_str('DATABASE_PATH', None)
+if not DATABASE_PATH:
+    DATABASE_PATH = 'db/news.db' if APP_ENV == 'prod' else 'db/news_sandbox.db'
+
+# Cache / media / Redis (environment-aware)
+CACHE_PREFIX = env_str('CACHE_PREFIX', None)
+REDIS_URL = env_str('REDIS_URL', None)
+REDIS_KEY_PREFIX = env_str('REDIS_KEY_PREFIX', None)
+MEDIA_CACHE_DIR = env_str('MEDIA_CACHE_DIR', None)
+
+if CACHE_PREFIX is None:
+    CACHE_PREFIX = f"{APP_ENV}:"
+if REDIS_KEY_PREFIX is None:
+    REDIS_KEY_PREFIX = f"{APP_ENV}:"
+if MEDIA_CACHE_DIR is None:
+    MEDIA_CACHE_DIR = os.path.join("content", "cache", APP_ENV)
+
+# Telegram mode
+TG_MODE = env_str('TG_MODE', 'polling')
+WEBHOOK_BASE_URL = env_str('WEBHOOK_BASE_URL', None)
+WEBHOOK_PATH = env_str('WEBHOOK_PATH', '/tg/webhook')
+WEBHOOK_SECRET = env_str('WEBHOOK_SECRET', None)
+PORT = env_int('PORT', 8080)
+
+# Side effects guard (sandbox default: True)
+DISABLE_PROD_SIDE_EFFECTS = env_bool(
+    'DISABLE_PROD_SIDE_EFFECTS',
+    True if APP_ENV == 'sandbox' else False,
+)
 
 # Логирование
-LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
-LOG_FILE = os.getenv('LOG_FILE', 'logs/bot.log')
+LOG_LEVEL = env_str('LOG_LEVEL', 'INFO')
+LOG_FILE = env_str('LOG_FILE', f"logs/bot_{APP_ENV}.log")
 
 # RSSHub (for Telegram channel RSS)
-RSSHUB_BASE_URL = os.getenv('RSSHUB_BASE_URL', 'https://rsshub-production-a367.up.railway.app')
+RSSHUB_BASE_URL = env_str('RSSHUB_BASE_URL', 'https://rsshub-production-a367.up.railway.app')
 
 # Категории
 CATEGORIES = {
