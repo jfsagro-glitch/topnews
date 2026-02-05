@@ -80,6 +80,9 @@ class NewsBot:
     def _init_sources(self):
         """Инициализировать список источников из ACTIVE_SOURCES_CONFIG"""
         try:
+            if not hasattr(self.db, "get_or_create_sources"):
+                logger.warning("Source initialization skipped: get_or_create_sources not available")
+                return
             sources_to_create = []
             
             # Собрать все источники из конфига
@@ -1331,6 +1334,13 @@ class NewsBot:
     async def start(self):
         """Запускает бота"""
         logger.info("Starting bot...")
+
+        try:
+            from config.config import APP_ENV
+            if APP_ENV == "sandbox":
+                self.db.reset_bot_lock()
+        except Exception:
+            pass
 
         if not self._acquire_instance_lock():
             return

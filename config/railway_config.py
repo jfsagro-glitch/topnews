@@ -39,14 +39,16 @@ if APP_ENV not in {'prod', 'sandbox'}:
     raise ValueError(f"APP_ENV must be 'prod' or 'sandbox', got: {APP_ENV}")
 
 # Telegram Bot API
-BOT_TOKEN = env_str('BOT_TOKEN', None) or env_str('TELEGRAM_TOKEN', None)
 BOT_TOKEN_PROD = env_str('BOT_TOKEN_PROD', None)
 BOT_TOKEN_SANDBOX = env_str('BOT_TOKEN_SANDBOX', None)
-if not BOT_TOKEN:
-    if APP_ENV == 'sandbox' and BOT_TOKEN_SANDBOX:
-        BOT_TOKEN = BOT_TOKEN_SANDBOX
-    elif APP_ENV == 'prod' and BOT_TOKEN_PROD:
-        BOT_TOKEN = BOT_TOKEN_PROD
+BOT_TOKEN = env_str('BOT_TOKEN', None) or env_str('TELEGRAM_TOKEN', None)
+
+# Prefer env-specific tokens to avoid accidental wrong token values
+if APP_ENV == 'sandbox' and BOT_TOKEN_SANDBOX:
+    BOT_TOKEN = BOT_TOKEN_SANDBOX
+elif APP_ENV == 'prod' and BOT_TOKEN_PROD:
+    BOT_TOKEN = BOT_TOKEN_PROD
+
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN/TELEGRAM_TOKEN not set. Please set it in Railway environment variables")
 

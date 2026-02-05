@@ -134,6 +134,29 @@ class NewsDatabase:
                 VALUES (1, 0, 0, 0.0)
             ''')
 
+            # Table for news sources
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS sources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT UNIQUE NOT NULL,
+                    title TEXT NOT NULL,
+                    enabled_global INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Table for per-user source settings
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_source_settings (
+                    user_id TEXT NOT NULL,
+                    source_id INTEGER NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, source_id),
+                    FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
+                )
+            ''')
+
             # Ensure new columns exist for older DBs
             self._ensure_columns(cursor)
 
@@ -636,6 +659,19 @@ class NewsDatabase:
             logger.error(f"Error acquiring bot lock: {e}")
             return False
 
+    def reset_bot_lock(self) -> None:
+        """Force clear bot lock (useful for sandbox restarts)."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    "DELETE FROM bot_lock WHERE name = ?",
+                    ("news_bot",)
+                )
+                self._conn.commit()
+        except Exception as e:
+            logger.debug(f"Error resetting bot lock: {e}")
+
     def release_bot_lock(self, instance_id: str) -> None:
         """Release bot instance lock if held by instance_id."""
         try:
@@ -793,3 +829,114 @@ class NewsDatabase:
         except Exception as e:
             logger.error(f"Error syncing AI usage: {e}")
             return False
+    # ==================== USER SOURCE SETTINGS ====================
+    
+    def get_or_create_sources(self, source_list: List[dict]) -> List[int]:
+        """
+        Убедиться, что все источники есть в таблице sources.
+        source_list: [{'code': 'ria', 'title': 'РИА Новости'}, ...]
+        Returns: список source_id
+        """
+        source_ids = []
+        with self._write_lock:
+            try:
+                cursor = self._conn.cursor()
+                for src in source_list:
+                    cursor.execute(
+                        'INSERT OR IGNORE INTO sources (code, title) VALUES (?, ?)',
+                        (src['code'], src['title'])
+                    )
+                    cursor.execute('SELECT id FROM sources WHERE code = ?', (src['code'],))
+                    row = cursor.fetchone()
+                    if row:
+                        source_ids.append(row[0])
+                self._conn.commit()
+            except Exception as e:
+                logger.error(f"Error ensuring sources: {e}")
+        return source_ids
+    
+    def list_sources(self) -> List[dict]:
+        """Получить список всех источников"""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute('SELECT id, code, title, enabled_global FROM sources ORDER BY title')
+            return [{'id': r[0], 'code': r[1], 'title': r[2], 'enabled': r[3]} for r in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error listing sources: {e}")
+            return []
+    
+    def get_user_source_enabled_map(self, user_id) -> dict:
+        """
+        Получить состояние (enabled/disabled) источников для пользователя.
+        Returns: {source_id: enabled_bool}
+        Если записи нет -> считаем True (по умолчанию включены)
+        """
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                'SELECT source_id, enabled FROM user_source_settings WHERE user_id = ?',
+                (str(user_id),)
+            )
+            return {row[0]: bool(row[1]) for row in cursor.fetchall()}
+        except Exception as e:
+            logger.error(f"Error getting user source map: {e}")
+            return {}
+    
+    def toggle_user_source(self, user_id, source_id: int) -> bool:
+        """Переключить состояние источника для пользователя (true <-> false)"""
+        with self._write_lock:
+            try:
+                cursor = self._conn.cursor()
+                user_id = str(user_id)
+                
+                # Получить текущее состояние (по умолчанию True)
+                cursor.execute(
+                    'SELECT enabled FROM user_source_settings WHERE user_id = ? AND source_id = ?',
+                    (user_id, source_id)
+                )
+                row = cursor.fetchone()
+                current_state = row[0] if row else 1  # Default True
+                new_state = 1 - current_state
+                
+                # UPSERT
+                cursor.execute(
+                    '''INSERT INTO user_source_settings (user_id, source_id, enabled)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(user_id, source_id) DO UPDATE SET enabled = ?, updated_at = CURRENT_TIMESTAMP''',
+                    (user_id, source_id, new_state, new_state)
+                )
+                self._conn.commit()
+                return bool(new_state)
+            except Exception as e:
+                logger.error(f"Error toggling user source: {e}")
+                return False
+    
+    def get_enabled_source_ids_for_user(self, user_id) -> Optional[list]:
+        """
+        Получить список включенных source_id для пользователя.
+        Returns: список ID, или None если все включены (не было отключений)
+        """
+        try:
+            cursor = self._conn.cursor()
+            user_id = str(user_id)
+            
+            # Проверить, есть ли вообще отключенные
+            cursor.execute(
+                'SELECT COUNT(*) FROM user_source_settings WHERE user_id = ? AND enabled = 0',
+                (user_id,)
+            )
+            disabled_count = cursor.fetchone()[0]
+            
+            if disabled_count == 0:
+                # Нет отключенных -> все включены (оптимизация)
+                return None
+            
+            # Вернуть список включенных
+            cursor.execute(
+                'SELECT source_id FROM user_source_settings WHERE user_id = ? AND enabled = 1',
+                (user_id,)
+            )
+            return [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting enabled sources: {e}")
+            return None
