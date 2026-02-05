@@ -1481,15 +1481,14 @@ class NewsBot:
                 try:
                     from config.config import AI_SUMMARY_MAX_REQUESTS_PER_MINUTE, APP_ENV
                     
-                    # Check AI summary level (sandbox only)
-                    if APP_ENV == 'sandbox':
-                        from core.services.access_control import AILevelManager
-                        ai_manager = AILevelManager(self.db)
-                        summary_level = ai_manager.get_level(str(user_id), 'summary')
-                        
-                        if summary_level == 0:
-                            await query.answer("⚠️ AI пересказ отключён администратором", show_alert=True)
-                            return
+                    # Check AI summary level (global setting)
+                    from core.services.access_control import AILevelManager
+                    ai_manager = AILevelManager(self.db)
+                    summary_level = ai_manager.get_level('global', 'summary')
+                    
+                    if summary_level == 0:
+                        await query.answer("⚠️ AI пересказ отключён администратором", show_alert=True)
+                        return
 
                     now = time.time()
                     timestamps = self.user_ai_requests.get(user_id, [])
@@ -1666,12 +1665,10 @@ class NewsBot:
             if url:
                 text = await self._fetch_full_article(url, text)
             
-            # Get AI level for summary (sandbox only, default to 3 for prod)
-            level = 3  # default
-            if APP_ENV == 'sandbox' and user_id:
-                from core.services.access_control import AILevelManager
-                ai_manager = AILevelManager(self.db)
-                level = ai_manager.get_level(str(user_id), 'summary')
+            # Get AI level for summary (global setting)
+            from core.services.access_control import AILevelManager
+            ai_manager = AILevelManager(self.db)
+            level = ai_manager.get_level('global', 'summary')
             
             summary, token_usage = await self.deepseek_client.summarize(title=title, text=text, level=level)
             if summary:
@@ -1813,17 +1810,55 @@ class NewsBot:
                     logger.debug(f"Skipping duplicate URL: {news.get('url')}")
                     continue
 
+                # Check if we need auto-summarization for lenta.ru and ria.ru (cleanup_level=5)
+                from core.services.access_control import AILevelManager
+                ai_manager = AILevelManager(self.db)
+                cleanup_level = ai_manager.get_level('global', 'cleanup')
+                
+                source = news.get('source', '').lower()
+                news_text = news.get('text', '')
+                
+                # Auto-summarize lenta.ru and ria.ru when cleanup_level=5
+                if cleanup_level == 5 and ('lenta.ru' in source or 'ria.ru' in source):
+                    logger.info(f"Auto-summarizing {source} (cleanup_level=5)")
+                    try:
+                        # Get or generate summary
+                        cached_summary = self.db.get_cached_summary(news_id)
+                        if not cached_summary:
+                            # Generate summary (1-2 sentences)
+                            full_text = news_text if news_text else news.get('title', '')
+                            summary_level = ai_manager.get_level('global', 'summary')
+                            
+                            from core.services.access_control import get_llm_profile
+                            profile = get_llm_profile(summary_level, 'summary')
+                            
+                            if not profile.get('disabled'):
+                                prompt = f"Перескажи эту новость в 1-2 предложениях очень кратко:\n\n{full_text[:2000]}"
+                                
+                                summary = await self.llm_client.summarize(
+                                    prompt,
+                                    max_tokens=profile.get('max_tokens', 150),
+                                    temperature=profile.get('temperature', 0.5)
+                                )
+                                
+                                if summary:
+                                    self.db.cache_summary(news_id, summary)
+                                    news_text = summary
+                                    logger.info(f"Generated auto-summary for {source}")
+                    except Exception as e:
+                        logger.error(f"Error auto-summarizing {source}: {e}")
+                
                 # Формируем сообщение
                 news_category = news.get('category', 'russia')
                 category_emoji = self._get_category_emoji(news_category)
                 
                 # Debug: логируем текст перед форматированием
-                text_preview = news.get('text', '')[:100] if news.get('text') else "(no text)"
+                text_preview = news_text[:100] if news_text else "(no text)"
                 logger.debug(f"Formatting message: title={news.get('title', '')[:40]}... text={text_preview}...")
                 
                 message = format_telegram_message(
                     title=news.get('title', 'No title'),
-                    text=news.get('text', ''),
+                    text=news_text,
                     source_name=news.get('source', 'Unknown'),
                     source_url=news.get('url', ''),
                     category=category_emoji
@@ -2302,10 +2337,10 @@ class NewsBot:
             # Get AI level manager
             ai_manager = AILevelManager(self.db)
             
-            # Get current levels
-            hashtags_level = ai_manager.get_level(user_id, 'hashtags')
-            cleanup_level = ai_manager.get_level(user_id, 'cleanup')
-            summary_level = ai_manager.get_level(user_id, 'summary')
+            # Get current levels (global settings)
+            hashtags_level = ai_manager.get_level('global', 'hashtags')
+            cleanup_level = ai_manager.get_level('global', 'cleanup')
+            summary_level = ai_manager.get_level('global', 'summary')
             
             # Build UI
             def level_text(level: int) -> str:
@@ -2355,14 +2390,17 @@ class NewsBot:
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             text = (
-                "🤖 Управление AI модулями\n\n"
+                "🤖 Управление AI модулями (ГЛОБАЛЬНЫЕ)\n\n"
                 "Уровни 0-5:\n"
                 "• 0 = выключено (no LLM calls)\n"
                 "• 1-2 = быстрый/экономный режим\n"
                 "• 3 = стандартный (по умолчанию)\n"
                 "• 4-5 = максимальное качество\n\n"
+                "⚡️ Очистка level=5: автоматический пересказ\n"
+                "   для lenta.ru и ria.ru (1-2 предложения)\n\n"
                 "Используйте − и + для настройки уровня,\n"
-                "или OFF для полного отключения."
+                "или OFF для полного отключения.\n\n"
+                "⚠️ Настройки применяются к ПРОДУ и ПЕСОЧНИЦЕ"
             )
             
             await query.edit_message_text(text=text, reply_markup=reply_markup)
@@ -2371,7 +2409,7 @@ class NewsBot:
             await query.answer("❌ Ошибка меню AI", show_alert=True)
     
     async def _handle_ai_level_change(self, query, module: str, action: str, level: int = None):
-        """Handle AI level change (inc/dec/set)"""
+        """Handle AI level change (inc/dec/set) - uses global settings"""
         try:
             from config.railway_config import APP_ENV
         except (ImportError, ValueError):
@@ -2389,13 +2427,13 @@ class NewsBot:
         # Get AI level manager
         ai_manager = AILevelManager(self.db)
         
-        # Perform action
+        # Perform action on GLOBAL settings (affects both prod and sandbox)
         if action == "inc":
-            new_level = ai_manager.inc_level(user_id, module)
+            new_level = ai_manager.inc_level('global', module)
         elif action == "dec":
-            new_level = ai_manager.dec_level(user_id, module)
+            new_level = ai_manager.dec_level('global', module)
         elif action == "set":
-            ai_manager.set_level(user_id, module, level)
+            ai_manager.set_level('global', module, level)
             new_level = level
         else:
             await query.answer("❌ Invalid action", show_alert=True)
