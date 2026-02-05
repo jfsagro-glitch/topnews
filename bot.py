@@ -1144,10 +1144,30 @@ class NewsBot:
             logger.error(f"DeepSeek error: {e}")
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
-    async def _send_to_admins(self, message: str, keyboard: InlineKeyboardMarkup, news_id: int):
-        """Отправляет новость всем админам в личные сообщения"""
+    async def _send_to_admins(self, message: str, keyboard: InlineKeyboardMarkup, news_id: int, news_data: dict = None):
+        """Отправляет новость всем админам в личные сообщения, учитывая их настройки источников"""
         for admin_id in ADMIN_IDS:
             try:
+                # Проверяем фильтр по источникам для этого админа
+                if news_data:
+                    # Получаем список включённых источников для админа
+                    enabled_source_ids = self.db.get_enabled_source_ids_for_user(str(admin_id))
+                    
+                    # Если админ имеет список включённых источников
+                    if enabled_source_ids is not None:
+                        # Построить mapping source_code -> source_id
+                        sources = self.db.list_sources()
+                        code_to_id = {src['code']: src['id'] for src in sources}
+                        
+                        # Проверяем, включен ли источник этой новости
+                        source = news_data.get('source', '')
+                        source_id = code_to_id.get(source)
+                        
+                        # Если источник не найден в БД или отключен - пропускаем
+                        if source_id and source_id not in enabled_source_ids:
+                            logger.debug(f"Skipping news for admin {admin_id}: source {source} is disabled")
+                            continue
+                
                 await self.application.bot.send_message(
                     chat_id=admin_id,
                     text=message,
@@ -1289,8 +1309,8 @@ class NewsBot:
                     published_count += 1
                     logger.info(f"Published: {news['title'][:50]}")
                     
-                    # Отправляем админам в личку с кнопкой "ИИ"
-                    await self._send_to_admins(message, keyboard, news_id)
+                    # Отправляем админам в личку с кнопкой "ИИ" и учётом их настроек источников
+                    await self._send_to_admins(message, keyboard, news_id, news)
 
                     # Задержка между публикациями (защита от Telegram rate limiting)
                     await asyncio.sleep(2.5)
