@@ -1190,21 +1190,29 @@ class NewsBot:
                     lines.append(f"{_status_icon(key)} {channel}: {channel_counts.get(key, 0)}")
                 channels_text = "\n📡 Каналы Telegram:\n" + "\n".join(lines) + "\n"
 
-            # All other sources (web sites and news aggregators)
-            all_sources = self.db.get_all_sources()
+            # Собираем ВСЕ веб-источники из всех категорий конфига
+            all_web_sources = set()
+            for category_key, category_config in ACTIVE_SOURCES_CONFIG.items():
+                if category_key != 'telegram':  # Пропускаем телеграм, его уже обработали
+                    for src in category_config.get('sources', []):
+                        # Извлекаем домен из URL
+                        from urllib.parse import urlparse
+                        parsed = urlparse(src)
+                        domain = parsed.netloc.lower() or parsed.path.lower()
+                        if domain and not any(x in domain for x in ['t.me', 'telegram']):
+                            all_web_sources.add(domain)
             
-            # Filter out telegram sources from web sources
-            web_sources = {}
-            for source, count in all_sources.items():
-                if not any(tg_key in source.lower() for tg_key in ['t.me', 'telegram']):
-                    web_sources[source] = count
+            # Получаем счетчики из БД
+            all_sources_counts = self.db.get_all_sources()
             
+            # Формируем полный список веб-источников
             sites_text = ""
-            if web_sources:
+            if all_web_sources:
                 lines = []
-                for key in sorted(web_sources.keys()):
-                    count = web_sources[key]
-                    lines.append(f"{_status_icon(key)} {key}: {count}")
+                for source in sorted(all_web_sources):
+                    count = all_sources_counts.get(source, 0)
+                    # Показываем все источники, даже если count=0
+                    lines.append(f"{_status_icon(source)} {source}: {count}")
                 sites_text = "\n🌐 Веб-источники:\n" + "\n".join(lines) + "\n"
             
             # Calculate cost
