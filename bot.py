@@ -1946,7 +1946,7 @@ class NewsBot:
             
             # Check admin
             is_admin = self._is_admin(int(user_id))
-            if not is_admin or APP_ENV != "sandbox":
+            if not is_admin:
                 await query.answer("❌ Доступ запрещён", show_alert=True)
                 return
             
@@ -2033,7 +2033,7 @@ class NewsBot:
         
         # Check admin
         is_admin = self._is_admin(int(user_id))
-        if not is_admin or APP_ENV != "sandbox":
+        if not is_admin:
             await query.answer("❌ Доступ запрещён", show_alert=True)
             return
         
