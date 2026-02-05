@@ -1121,42 +1121,96 @@ class NewsBot:
             return
         
         if query.data == "mgmt:users_list":
-            # Show detailed list of users and invites
+            # Show detailed list of users with block/unblock buttons
             approved_users = self.db.get_approved_users()
-            unused_invites = self.db.get_unused_invites()
-            used_invites = self.db.get_unused_invites()  # In reality we need to get all invites
             
-            # Build text list
-            text = "📋 Список пользователей и инвайтов\n\n"
+            if not approved_users:
+                await query.edit_message_text(
+                    text="✅ Список одобренных пользователей пуст",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:users")]])
+                )
+                return
             
-            if approved_users:
-                text += f"✅ Одобренные пользователи ({len(approved_users)}):\n"
-                for user_id, username, first_name, approved_at in approved_users[:10]:  # Show max 10
-                    name = first_name or username or user_id
-                    text += f"  • {name} (ID: {user_id})\n"
-                if len(approved_users) > 10:
-                    text += f"  ... и ещё {len(approved_users) - 10}\n"
-            else:
-                text += "✅ Одобренные: нет\n"
+            # Показываем по одному пользователю с кнопками действия
+            # (Telegram имеет ограничение на размер сообщения)
+            user_id, username, first_name, approved_at = approved_users[0]
+            name = first_name or username or user_id
             
-            text += "\n"
+            text = f"👤 Управление пользователями\n\n"
+            text += f"Пользователь: <b>{name}</b>\n"
+            text += f"ID: <code>{user_id}</code>\n"
+            text += f"Username: {f'@{username}' if username else 'нет'}\n"
+            text += f"Одобрен: {approved_at}\n\n"
+            text += f"Всего одобренных: {len(approved_users)}\n"
             
-            if unused_invites:
-                text += f"📨 Активные инвайты ({len(unused_invites)}):\n"
-                for code, created_by, created_at in unused_invites[:10]:
-                    text += f"  • {code}\n"
-                if len(unused_invites) > 10:
-                    text += f"  ... и ещё {len(unused_invites) - 10}\n"
-                for invite in pending_invites[-3:]:  # Show last 3
-                    if invite.get("used"):
-                        text += f"  • {invite.get('code', 'unknown')} (юзер: {invite.get('used_by', '?')})\n"
+            # Кнопки для управления
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔒 Заблокировать", callback_data=f"mgmt:block_user:{user_id}"),
+                    InlineKeyboardButton("➡️ Далее", callback_data=f"mgmt:users_list_page:1")
+                ],
+                [InlineKeyboardButton("⬅️ Назад к управлению", callback_data="mgmt:users")]
+            ]
             
-            if not approved_users and pending_count == 0 and used_count == 0:
-                text += "(пусто)"
-            
-            # Back button
-            keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:users")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='HTML')
+            return
+        
+        # Pagination for users list
+        if query.data.startswith("mgmt:users_list_page:"):
+            page = int(query.data.split(":")[2])
+            approved_users = self.db.get_approved_users()
+            
+            if page >= len(approved_users):
+                page = len(approved_users) - 1
+            
+            if page < 0 or not approved_users:
+                await query.answer("Нет пользователей", show_alert=True)
+                return
+            
+            user_id, username, first_name, approved_at = approved_users[page]
+            name = first_name or username or user_id
+            
+            text = f"👤 Управление пользователями\n\n"
+            text += f"Пользователь: <b>{name}</b>\n"
+            text += f"ID: <code>{user_id}</code>\n"
+            text += f"Username: {f'@{username}' if username else 'нет'}\n"
+            text += f"Одобрен: {approved_at}\n\n"
+            text += f"Пользователь {page + 1} из {len(approved_users)}\n"
+            
+            # Navigation and action buttons
+            keyboard = []
+            keyboard.append([
+                InlineKeyboardButton("🔒 Заблокировать", callback_data=f"mgmt:block_user:{user_id}")
+            ])
+            
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"mgmt:users_list_page:{page - 1}"))
+            if page < len(approved_users) - 1:
+                nav_buttons.append(InlineKeyboardButton("Далее ▶️", callback_data=f"mgmt:users_list_page:{page + 1}"))
+            
+            if nav_buttons:
+                keyboard.append(nav_buttons)
+            
+            keyboard.append([InlineKeyboardButton("⬅️ Назад к управлению", callback_data="mgmt:users")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='HTML')
+            return
+        
+        # Block user
+        if query.data.startswith("mgmt:block_user:"):
+            user_id = query.data.split(":")[2]
+            if self.db.block_user(user_id):
+                await query.answer(f"✅ Пользователь {user_id} заблокирован", show_alert=True)
+                await query.edit_message_text(
+                    text="✅ Пользователь успешно заблокирован",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:users")]])
+                )
+            else:
+                await query.answer("❌ Ошибка при блокировке", show_alert=True)
+            return
             
             await query.edit_message_text(text=text, reply_markup=reply_markup)
             return
@@ -2432,7 +2486,7 @@ class NewsBot:
         keyboard = []
 
         # Users section
-        keyboard.append([InlineKeyboardButton("👥 Одобренные пользователи", callback_data="noop")])
+        keyboard.append([InlineKeyboardButton("👥 Одобренные пользователи", callback_data="mgmt:users_list")])
         if approved_users:
             keyboard.append([InlineKeyboardButton(f"({len(approved_users)} чел.)", callback_data="noop")])
         else:

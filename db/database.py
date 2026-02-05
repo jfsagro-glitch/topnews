@@ -1256,6 +1256,43 @@ class NewsDatabase:
             logger.error(f"Error getting approved users: {e}")
             return []
 
+    def block_user(self, user_id: str) -> bool:
+        """
+        Заблокировать пользователя (удалить из approved_users).
+        Returns: True если успешно заблокирован
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute('DELETE FROM approved_users WHERE user_id = ?', (str(user_id),))
+                self._conn.commit()
+                deleted = cursor.rowcount > 0
+                if deleted:
+                    logger.info(f"User {user_id} blocked")
+                return deleted
+        except Exception as e:
+            logger.error(f"Error blocking user {user_id}: {e}")
+            return False
+
+    def unblock_user(self, user_id: str, username: str = None, first_name: str = None) -> bool:
+        """
+        Разблокировать пользователя (добавить в approved_users).
+        Returns: True если успешно разблокирован
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    'INSERT OR REPLACE INTO approved_users (user_id, username, first_name) VALUES (?, ?, ?)',
+                    (str(user_id), username or '', first_name or '')
+                )
+                self._conn.commit()
+                logger.info(f"User {user_id} unblocked")
+                return True
+        except Exception as e:
+            logger.error(f"Error unblocking user {user_id}: {e}")
+            return False
+
     def delete_invite(self, code: str) -> bool:
         """
         Удалить инвайт-код.
