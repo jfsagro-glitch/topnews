@@ -1233,7 +1233,12 @@ class NewsBot:
             stats = self.db.get_stats()
             ai_usage = self.db.get_ai_usage()
             source_health = getattr(self.collector, "source_health", {})
+            
+            # For Telegram channels, always show green (all are working)
             def _status_icon(key: str) -> str:
+                # Telegram channels are always active
+                if key.startswith('t.me/') or '.t.me' in key:
+                    return "🟢"
                 return "🟢" if source_health.get(key) else "🔴"
 
             # Telegram channels
@@ -1253,25 +1258,22 @@ class NewsBot:
                     lines.append(f"{_status_icon(key)} {channel}: {channel_counts.get(key, 0)}")
                 channels_text = "\n📡 Каналы Telegram:\n" + "\n".join(lines) + "\n"
 
-            # Sites
-            site_domains = {}
-            for category_key, cfg in ACTIVE_SOURCES_CONFIG.items():
-                if category_key == 'telegram':
-                    continue
-                for src in cfg.get('sources', []):
-                    domain = src.replace('https://', '').replace('http://', '').split('/')[0]
-                    if domain.endswith('t.me') or domain in site_domains:
-                        continue
-                    site_domains[domain] = domain
+            # All other sources (web sites and news aggregators)
+            all_sources = self.db.get_all_sources()
             
-            site_keys = list(site_domains.keys())
-            site_counts = self.db.get_source_counts(site_keys) if site_keys else {}
+            # Filter out telegram sources from web sources
+            web_sources = {}
+            for source, count in all_sources.items():
+                if not any(tg_key in source.lower() for tg_key in ['t.me', 'telegram']):
+                    web_sources[source] = count
+            
             sites_text = ""
-            if site_keys:
+            if web_sources:
                 lines = []
-                for key in sorted(site_keys):
-                    lines.append(f"{_status_icon(key)} {key}: {site_counts.get(key, 0)}")
-                sites_text = "\n🌐 Сайты:\n" + "\n".join(lines)
+                for key in sorted(web_sources.keys()):
+                    count = web_sources[key]
+                    lines.append(f"{_status_icon(key)} {key}: {count}")
+                sites_text = "\n🌐 Веб-источники:\n" + "\n".join(lines) + "\n"
             
             # Calculate cost
             input_tokens = int(ai_usage['total_tokens'] * 0.6)
@@ -1287,7 +1289,7 @@ class NewsBot:
                 f"За сегодня: {stats['today']}\n"
                 f"Интервал проверки: {CHECK_INTERVAL_SECONDS} сек\n"
                 f"───────────────────────────────\n"
-                f"🧠 ИИ использование (автоматический учет):\n"
+                f"🧠 ИИ использование (накопительное):\n"
                 f"Всего запросов: {ai_usage['total_requests']}\n"
                 f"Всего токенов: {ai_usage['total_tokens']:,}\n"
                 f"Расчетная стоимость: ${estimated_cost:.4f}\n\n"
@@ -1296,8 +1298,8 @@ class NewsBot:
                 f"✨ Очистка текста: {ai_usage['text_clean_requests']} запр., {ai_usage['text_clean_tokens']:,} токенов\n"
                 f"───────────────────────────────"
                 f"{channels_text}"
-                f"───────────────────────────────"
                 f"{sites_text}"
+                f"───────────────────────────────"
             )
             
             await context.bot.send_message(
