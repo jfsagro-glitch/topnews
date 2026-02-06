@@ -224,13 +224,41 @@ class NewsBot:
             except Exception:
                 pass
 
-            # If stale lock older than 6 hours, remove it
-            stale_seconds = 6 * 3600
+            # If lock exists, attempt to validate PID liveness
+            if os.path.exists(lock_path):
+                try:
+                    with open(lock_path, "r", encoding="utf-8") as fh:
+                        raw_pid = fh.read().strip()
+                    pid = int(raw_pid) if raw_pid.isdigit() else None
+                except Exception:
+                    pid = None
+
+                def _pid_is_running(check_pid: int | None) -> bool:
+                    if not check_pid or check_pid <= 0:
+                        return False
+                    try:
+                        os.kill(check_pid, 0)
+                    except Exception:
+                        return False
+                    return True
+
+                if pid and not _pid_is_running(pid):
+                    logger.warning("Stale instance lock with dead PID found. Removing.")
+                    try:
+                        os.remove(lock_path)
+                    except Exception:
+                        pass
+                elif pid and _pid_is_running(pid):
+                    logger.error("Another bot instance appears to be running. Exiting.")
+                    return False
+
+            # If stale lock older than 30 minutes, remove it as a fallback
+            stale_seconds = 30 * 60
             if os.path.exists(lock_path):
                 try:
                     mtime = os.path.getmtime(lock_path)
                     if time.time() - mtime > stale_seconds:
-                        logger.warning("Stale instance lock found. Removing.")
+                        logger.warning("Stale instance lock found (timeout). Removing.")
                         os.remove(lock_path)
                 except Exception:
                     pass

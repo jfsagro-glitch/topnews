@@ -78,6 +78,7 @@ class SourceCollector:
         # We'll dynamically build source list from `SOURCES_CONFIG` so all configured
         # sources are actually collected. Each entry will be classified as 'rss' or 'html'.
         self._configured_sources = []  # list of tuples (fetch_url, source_name, category, type)
+        _seen_entries = set()
         for category_key, cfg in SOURCES_CONFIG.items():
             for src in cfg.get('sources', []):
                 parsed = urlparse(src)
@@ -145,12 +146,21 @@ class SourceCollector:
                             entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type))
 
                 for entry in entries_to_add:
+                    if entry in _seen_entries:
+                        continue
+                    _seen_entries.add(entry)
                     self._configured_sources.append(entry)
                     self.source_health.setdefault(entry[1], False)
         
         # Log summary of configured sources
-        telegram_sources = [s[1] for s in self._configured_sources if 'telegram' in s[0].lower() or any(x in s[0] for x in ['t.me', 'telegram'])]
-        other_sources = [s[1] for s in self._configured_sources if s[1] not in telegram_sources]
+        telegram_sources = []
+        seen_telegram = set()
+        for s in self._configured_sources:
+            if 'telegram' in s[0].lower() or any(x in s[0] for x in ['t.me', 'telegram']):
+                if s[1] not in seen_telegram:
+                    telegram_sources.append(s[1])
+                    seen_telegram.add(s[1])
+        other_sources = [s[1] for s in self._configured_sources if s[1] not in seen_telegram]
         if telegram_sources:
             logger.info(f"📡 Configured Telegram channels for collection: {telegram_sources}")
         logger.info(f"Total configured sources: {len(self._configured_sources)} (Telegram: {len(telegram_sources)}, Others: {len(other_sources)})")
