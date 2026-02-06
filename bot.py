@@ -326,16 +326,24 @@ class NewsBot:
         if context.args and len(context.args) > 0:
             invite_code = context.args[0]
             
-            # Попытка использовать инвайт
+            # Если это подписанный инвайт, проверяем подпись в первую очередь
+            if '-' in invite_code and INVITE_SECRET:
+                if self.access_db.use_signed_invite(invite_code, str(user_id), username, first_name, INVITE_SECRET):
+                    await update.message.reply_text(
+                        "✅ Инвайт-код успешно активирован!\n\n"
+                        "Теперь у вас есть доступ к боту. Используйте /help для списка команд.",
+                        reply_markup=self.REPLY_KEYBOARD
+                    )
+                    return
+                else:
+                    await update.message.reply_text(
+                        "❌ Инвайт-код неверный или подпись не совпадает.\n\n"
+                        "Проверьте, что инвайт создан в песочнице после обновления и что INVITE_SECRET одинаковый в prod и sandbox."
+                    )
+                    return
+
+            # Попытка использовать обычный инвайт
             if self.access_db.use_invite(invite_code, str(user_id), username, first_name):
-                await update.message.reply_text(
-                    "✅ Инвайт-код успешно активирован!\n\n"
-                    "Теперь у вас есть доступ к боту. Используйте /help для списка команд.",
-                    reply_markup=self.REPLY_KEYBOARD
-                )
-                return
-            # Если кода нет в БД, пробуем подписанный инвайт
-            if self.access_db.use_signed_invite(invite_code, str(user_id), username, first_name, INVITE_SECRET):
                 await update.message.reply_text(
                     "✅ Инвайт-код успешно активирован!\n\n"
                     "Теперь у вас есть доступ к боту. Используйте /help для списка команд.",
