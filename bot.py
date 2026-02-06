@@ -1791,46 +1791,78 @@ class NewsBot:
             logger.error(f"DeepSeek error: {e}")
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
-    async def _send_to_admins(self, message: str, keyboard: InlineKeyboardMarkup, news_id: int, news_data: dict = None):
-        """Отправляет новость всем админам в личные сообщения, учитывая их настройки источников и паузу"""
-        for admin_id in ADMIN_IDS:
+    def _get_delivery_user_ids(self) -> list[int]:
+        """Get user IDs to receive news in DM (approved users in prod, admins in sandbox)."""
+        try:
+            from config.railway_config import APP_ENV
+        except (ImportError, ValueError):
+            from config.config import APP_ENV
+
+        user_ids: set[int] = set()
+
+        if APP_ENV == "prod":
+            approved_users = self.access_db.get_approved_users()
+            for user_id, _username, _first_name, _approved_at in approved_users:
+                try:
+                    user_ids.add(int(user_id))
+                except Exception:
+                    continue
+        else:
+            # Sandbox: send to admins only (no global user registry)
+            user_ids.update(ADMIN_IDS)
+
+        if not user_ids:
+            # Fallback to admins if approved list is empty
+            user_ids.update(ADMIN_IDS)
+
+        return sorted(user_ids)
+
+    async def _send_to_users(self, message: str, keyboard: InlineKeyboardMarkup, news_id: int, news_data: dict = None):
+        """Отправляет новость пользователям в личные сообщения, учитывая их настройки источников и паузу"""
+        recipients = self._get_delivery_user_ids()
+        if not recipients:
+            return
+
+        # Prepare mapping source_code -> source_id once
+        code_to_id = {}
+        if news_data:
+            sources = self.db.list_sources()
+            code_to_id = {src['code']: src['id'] for src in sources}
+
+        for user_id in recipients:
             try:
                 # Проверяем, не поставил ли пользователь на паузу
-                if self.db.is_user_paused(str(admin_id)):
-                    logger.debug(f"Skipping news for admin {admin_id}: user is paused")
+                if self.db.is_user_paused(str(user_id)):
+                    logger.debug(f"Skipping news for user {user_id}: user is paused")
                     continue
                 
-                # Проверяем фильтр по источникам для этого админа
+                # Проверяем фильтр по источникам для этого пользователя
                 if news_data:
-                    # Получаем список включённых источников для админа
-                    enabled_source_ids = self.db.get_enabled_source_ids_for_user(str(admin_id))
+                    # Получаем список включённых источников для пользователя
+                    enabled_source_ids = self.db.get_enabled_source_ids_for_user(str(user_id))
                     
-                    # Если админ имеет список включённых источников
+                    # Если пользователь имеет список включённых источников
                     if enabled_source_ids is not None:
-                        # Построить mapping source_code -> source_id
-                        sources = self.db.list_sources()
-                        code_to_id = {src['code']: src['id'] for src in sources}
-                        
                         # Проверяем, включен ли источник этой новости
                         source = news_data.get('source', '')
                         source_id = code_to_id.get(source)
                         
                         # Если источник не найден в БД или отключен - пропускаем
                         if source_id and source_id not in enabled_source_ids:
-                            logger.debug(f"Skipping news for admin {admin_id}: source {source} is disabled")
+                            logger.debug(f"Skipping news for user {user_id}: source {source} is disabled")
                             continue
                 
                 await self.application.bot.send_message(
-                    chat_id=admin_id,
+                    chat_id=user_id,
                     text=message,
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=keyboard,
                     disable_web_page_preview=True,
                     disable_notification=True  # Без звука, чтобы не спамить
                 )
-                logger.debug(f"Sent news to admin {admin_id}")
+                logger.debug(f"Sent news to user {user_id}")
             except Exception as e:
-                logger.warning(f"Failed to send to admin {admin_id}: {e}")
+                logger.warning(f"Failed to send to user {user_id}: {e}")
     
     async def collect_and_publish(self) -> int:
         """
@@ -2015,8 +2047,8 @@ class NewsBot:
                     # Сохраняем news_id как опубликованную (для корректной статистики)
                     published_count += 1
                     
-                    # Отправляем админам в личку с кнопкой "ИИ" и учётом их настроек источников
-                    await self._send_to_admins(message, keyboard, news_id, news)
+                    # Отправляем пользователям в личку с кнопкой "ИИ" и учётом их настроек источников
+                    await self._send_to_users(message, keyboard, news_id, news)
 
                     # Задержка между публикациями (защита от Telegram rate limiting)
                     await asyncio.sleep(0.5)  # Меньше задержка так как не отправляем в канал
