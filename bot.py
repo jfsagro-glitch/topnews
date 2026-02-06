@@ -246,14 +246,24 @@ class NewsBot:
             logger.error(f"Failed to acquire instance lock: {e}")
             return False
 
+    def _get_invite_secret(self) -> str | None:
+        """Read invite secret dynamically (supports env updates without code changes)."""
+        env_val = os.getenv('INVITE_SECRET')
+        if env_val and env_val.strip():
+            return env_val.strip()
+        if INVITE_SECRET and str(INVITE_SECRET).strip():
+            return str(INVITE_SECRET).strip()
+        return None
+
     def _generate_signed_invite_code(self, created_by: str) -> str | None:
         """Generate a signed invite code that can be verified without shared DB."""
-        if not INVITE_SECRET:
+        secret = self._get_invite_secret()
+        if not secret:
             logger.error("INVITE_SECRET not set; cannot generate signed invite")
             return None
         try:
             payload = secrets.token_urlsafe(8)
-            sig = hmac.new(INVITE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:10]
+            sig = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()[:10]
             return f"{payload}-{sig}"
         except Exception as e:
             logger.error(f"Error generating signed invite: {e}")
@@ -327,7 +337,8 @@ class NewsBot:
             invite_code = context.args[0]
             
             # Если это подписанный инвайт, проверяем подпись в первую очередь
-            if '-' in invite_code and not INVITE_SECRET:
+            secret = self._get_invite_secret()
+            if '-' in invite_code and not secret:
                 await update.message.reply_text(
                     "❌ Не задан INVITE_SECRET в проде.\n\n"
                     "Инвайт создан как подписанный, но секрет отсутствует.\n"
@@ -335,8 +346,8 @@ class NewsBot:
                 )
                 return
 
-            if '-' in invite_code and INVITE_SECRET:
-                if self.access_db.use_signed_invite(invite_code, str(user_id), username, first_name, INVITE_SECRET):
+            if '-' in invite_code and secret:
+                if self.access_db.use_signed_invite(invite_code, str(user_id), username, first_name, secret):
                     await update.message.reply_text(
                         "✅ Инвайт-код успешно активирован!\n\n"
                         "Теперь у вас есть доступ к боту. Используйте /help для списка команд.",
