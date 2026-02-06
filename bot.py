@@ -6,6 +6,9 @@ import time
 import os
 import tempfile
 import socket
+import hmac
+import hashlib
+import secrets
 from net.deepseek_client import DeepSeekClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -21,9 +24,9 @@ logger = logging.getLogger(__name__)
 
 # Import DATABASE_PATH/ACCESS_DB_PATH from railway_config if available, else from config
 try:
-    from config.railway_config import DATABASE_PATH, ACCESS_DB_PATH
+    from config.railway_config import DATABASE_PATH, ACCESS_DB_PATH, INVITE_SECRET
 except (ImportError, ValueError):
-    from config.config import DATABASE_PATH, ACCESS_DB_PATH
+    from config.config import DATABASE_PATH, ACCESS_DB_PATH, INVITE_SECRET
 
 try:
     from config.railway_config import SOURCES_CONFIG as ACTIVE_SOURCES_CONFIG
@@ -243,6 +246,19 @@ class NewsBot:
             logger.error(f"Failed to acquire instance lock: {e}")
             return False
 
+    def _generate_signed_invite_code(self, created_by: str) -> str | None:
+        """Generate a signed invite code that can be verified without shared DB."""
+        if not INVITE_SECRET:
+            logger.error("INVITE_SECRET not set; cannot generate signed invite")
+            return None
+        try:
+            payload = secrets.token_urlsafe(8)
+            sig = hmac.new(INVITE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:10]
+            return f"{payload}-{sig}"
+        except Exception as e:
+            logger.error(f"Error generating signed invite: {e}")
+            return None
+
     def _release_instance_lock(self):
         """Release filesystem instance lock."""
         try:
@@ -290,7 +306,7 @@ class NewsBot:
         [['🔄', '✉️', '⏸️', '▶️'], ['⚙️ Настройки']], resize_keyboard=True, one_time_keyboard=False
     )
     
-    # For admin users - includes Management button
+    # For sandbox admin users - includes Management button
     REPLY_KEYBOARD_ADMIN = ReplyKeyboardMarkup(
         [['🔄', '✉️', '⏸️', '▶️'], ['⚙️ Настройки', '🛠 Управление']], resize_keyboard=True, one_time_keyboard=False
     )
@@ -318,6 +334,14 @@ class NewsBot:
                     reply_markup=self.REPLY_KEYBOARD
                 )
                 return
+            # Если кода нет в БД, пробуем подписанный инвайт
+            if self.access_db.use_signed_invite(invite_code, str(user_id), username, first_name, INVITE_SECRET):
+                await update.message.reply_text(
+                    "✅ Инвайт-код успешно активирован!\n\n"
+                    "Теперь у вас есть доступ к боту. Используйте /help для списка команд.",
+                    reply_markup=self.REPLY_KEYBOARD
+                )
+                return
             else:
                 await update.message.reply_text(
                     "❌ Неверный или уже использованный инвайт-код.\n\n"
@@ -339,8 +363,8 @@ class NewsBot:
         is_admin = self._is_admin(user_id)
         env_marker = "\n🧪 SANDBOX" if APP_ENV == "sandbox" else ""
         
-        # Choose keyboard based on admin status
-        keyboard = self.REPLY_KEYBOARD_ADMIN if is_admin else self.REPLY_KEYBOARD
+        # Choose keyboard based on admin status and environment
+        keyboard = self.REPLY_KEYBOARD_ADMIN if (APP_ENV == "sandbox" and is_admin) else self.REPLY_KEYBOARD
         
         await update.message.reply_text(
             "👋 Добро пожаловать в News Aggregator Bot!" + env_marker + "\n\n"
@@ -558,10 +582,19 @@ class NewsBot:
         await update.message.reply_text("▶️ Новости возобновлены!\n\nТеперь вы снова получаете уведомления о новостях.")
     
     async def cmd_management(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """🛠 Management menu (admins only)"""
+        """🛠 Management menu (sandbox admin only)"""
+        try:
+            from config.railway_config import APP_ENV
+        except (ImportError, ValueError):
+            from config.config import APP_ENV
+        
         user_id = update.message.from_user.id
         
-        # Check admin
+        # Check if sandbox and admin
+        if APP_ENV != "sandbox":
+            await update.message.reply_text("❌ Management available only in sandbox")
+            return
+        
         is_admin = self._is_admin(user_id)
         if not is_admin:
             await update.message.reply_text("❌ Доступно только администраторам")
@@ -956,11 +989,30 @@ class NewsBot:
             await self._handle_ai_level_change(query, module, action="set", level=level)
             return
         
-        # ==================== MANAGEMENT CALLBACKS (ADMINS ONLY) ====================
+        # ==================== MANAGEMENT CALLBACKS (SANDBOX ADMIN ONLY) ====================
+        # Check if sandbox for all management operations
+        if query.data.startswith("mgmt:"):
+            try:
+                from config.railway_config import APP_ENV
+            except (ImportError, ValueError):
+                from config.config import APP_ENV
+            
+            # Management only in sandbox (but allow send_invite to check separately)
+            if APP_ENV != "sandbox" and not query.data.startswith("mgmt:send_invite:"):
+                await query.answer("❌ Управление доступно только в песочнице", show_alert=True)
+                return
         
         if query.data.startswith("mgmt:send_invite:"):
-            # Show share options for invite
+            # Show share options for invite (works in sandbox only)
             await query.answer()
+            try:
+                from config.railway_config import APP_ENV
+            except (ImportError, ValueError):
+                from config.config import APP_ENV
+            
+            if APP_ENV != "sandbox":
+                await query.edit_message_text("❌ Отправка инвайтов доступна только в песочнице")
+                return
             
             # Extract invite code from callback data
             invite_code = query.data.split(":", 2)[2]
@@ -1047,25 +1099,21 @@ class NewsBot:
             return
         
         if query.data == "mgmt:new_invite":
-            # Create new invite
-            try:
-                from config.railway_config import APP_ENV
-            except (ImportError, ValueError):
-                from config.config import APP_ENV
-            
-            # Prevent creating invites in sandbox (they won't work in prod bot)
-            if APP_ENV == "sandbox":
+            # Create new invite (sandbox only)
+            admin_id = str(query.from_user.id)
+            invite_code = self._generate_signed_invite_code(admin_id)
+            if invite_code:
+                # Store invite in sandbox DB for tracking
+                self.db.create_invite_with_code(invite_code, admin_id)
+            else:
                 await query.edit_message_text(
-                    "⚠️ Инвайты создаются в ПРОД-боте.\n\n"
-                    "Откройте прод-бот и создайте инвайт там.",
+                    "❌ Не задан INVITE_SECRET.\n\n"
+                    "Установите переменную окружения INVITE_SECRET одинаково в prod и sandbox.",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:users")]
                     ])
                 )
                 return
-            
-            admin_id = str(query.from_user.id)
-            invite_code = self.access_db.create_invite(admin_id)
             
             if invite_code:
                 # Get bot username for link
@@ -2468,7 +2516,7 @@ class NewsBot:
 
         # For prod, sandbox restriction should not apply (admins can manage both)
         # Get invites and approved users from DB
-        unused_invites = self.access_db.get_unused_invites()
+        unused_invites = self.db.get_unused_invites()
         approved_users = self.access_db.get_approved_users()
 
         # Build UI

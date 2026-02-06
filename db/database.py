@@ -1163,6 +1163,26 @@ class NewsDatabase:
             logger.error(f"Error creating invite: {e}")
             return None
 
+    def create_invite_with_code(self, code: str, created_by: str) -> bool:
+        """
+        Создать новый инвайт-код с заданным значением.
+        Returns: True если успешно, False при ошибке
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                created_by = str(created_by)
+                cursor.execute(
+                    'INSERT INTO invites (code, created_by) VALUES (?, ?)',
+                    (code, created_by)
+                )
+                self._conn.commit()
+                logger.info(f"Created invite code (custom): {code} by user {created_by}")
+                return True
+        except Exception as e:
+            logger.error(f"Error creating invite with code: {e}")
+            return False
+
     def use_invite(self, code: str, user_id: str, username: str = None, first_name: str = None) -> bool:
         """
         Использовать инвайт-код для доступа к боту.
@@ -1207,6 +1227,60 @@ class NewsDatabase:
                 return True
         except Exception as e:
             logger.error(f"Error using invite: {e}")
+            return False
+
+    def use_signed_invite(self, code: str, user_id: str, username: str = None, first_name: str = None, secret: str | None = None) -> bool:
+        """
+        Использовать подписанный инвайт-код (без необходимости общего хранилища).
+        Returns: True если успешно, False если код неверный/уже использован
+        """
+        if not secret:
+            return False
+        try:
+            import hmac
+            import hashlib
+
+            if '-' not in code:
+                return False
+
+            payload, sig = code.rsplit('-', 1)
+            expected = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()[:10]
+            if not hmac.compare_digest(sig, expected):
+                logger.warning(f"Signed invite invalid signature: {code}")
+                return False
+
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                user_id = str(user_id)
+
+                # If already used, reject
+                cursor.execute('SELECT used_by FROM invites WHERE code = ?', (code,))
+                row = cursor.fetchone()
+                if row and row[0]:
+                    logger.warning(f"Signed invite already used: {code} by {row[0]}")
+                    return False
+
+                # Insert invite if not exists and mark as used
+                cursor.execute(
+                    'INSERT OR IGNORE INTO invites (code, created_by) VALUES (?, ?)',
+                    (code, 'SIGNED')
+                )
+                cursor.execute(
+                    'UPDATE invites SET used_by = ?, used_at = CURRENT_TIMESTAMP WHERE code = ?',
+                    (user_id, code)
+                )
+
+                # Add user to approved_users
+                cursor.execute(
+                    'INSERT OR REPLACE INTO approved_users (user_id, username, first_name, invited_by) VALUES (?, ?, ?, ?)',
+                    (user_id, username, first_name, 'SIGNED')
+                )
+
+                self._conn.commit()
+                logger.info(f"User {user_id} approved via signed invite {code}")
+                return True
+        except Exception as e:
+            logger.error(f"Error using signed invite: {e}")
             return False
 
     def is_user_approved(self, user_id: str) -> bool:

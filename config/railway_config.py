@@ -75,6 +75,9 @@ else:
 # Access Control DB (shared for prod/sandbox access control)
 ACCESS_DB_PATH = env_str('ACCESS_DB_PATH', 'db/access.db')
 
+# Signed invite secret (must be same in prod and sandbox)
+INVITE_SECRET = env_str('INVITE_SECRET', None)
+
 # Интервалы
 CHECK_INTERVAL_SECONDS = env_int('CHECK_INTERVAL_SECONDS', 120)  # 2 минуты по умолчанию
 TIMEOUT_SECONDS = env_int('TIMEOUT_SECONDS', 30)
