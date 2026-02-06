@@ -284,7 +284,11 @@ class SourceCollector:
                         ai_category = await self._verify_with_ai(title, text, detected_category)
                         if ai_category:
                             detected_category = ai_category
-                    
+
+                    # Force Yahoo News to world hashtag
+                    if source_name in ['news.yahoo.com', 'rss.news.yahoo.com']:
+                        detected_category = 'world'
+
                     item['category'] = detected_category or category
                 return news
             except Exception as e:
@@ -338,7 +342,11 @@ class SourceCollector:
                         ai_category = await self._verify_with_ai(title, text, detected_category)
                         if ai_category:
                             detected_category = ai_category
-                    
+
+                    # Force Yahoo News to world hashtag
+                    if source_name in ['news.yahoo.com', 'rss.news.yahoo.com']:
+                        detected_category = 'world'
+
                     item['category'] = detected_category or category
                 return news
             except Exception as e:

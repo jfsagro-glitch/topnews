@@ -1913,6 +1913,11 @@ class NewsBot:
             
             # Публикуем каждую новость
             for news in news_items:
+                # Публикуем только новости за сегодня
+                if not self._is_today_news(news):
+                    logger.debug(f"Skipping non-today news: {news.get('title', '')[:50]}")
+                    continue
+
                 # Проверяем лимит публикаций
                 if published_count >= max_publications:
                     logger.info(f"Reached publication limit ({max_publications}), stopping")
@@ -2461,6 +2466,26 @@ class NewsBot:
                 filtered.append(news)
         
         return filtered
+
+    def _is_today_news(self, news: dict) -> bool:
+        """Return True if news published_at is today (local date)."""
+        from datetime import datetime
+
+        published_at = news.get('published_at') or news.get('published') or news.get('date')
+        if not published_at:
+            return False
+
+        try:
+            if isinstance(published_at, datetime):
+                pub_dt = published_at
+            else:
+                pub_str = str(published_at).strip()
+                if pub_str.endswith('Z'):
+                    pub_str = pub_str.replace('Z', '+00:00')
+                pub_dt = datetime.fromisoformat(pub_str)
+            return pub_dt.date() == datetime.now().date()
+        except Exception:
+            return False
 
     async def _show_ai_management(self, query):
         """Show AI levels management screen"""
