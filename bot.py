@@ -327,6 +327,14 @@ class NewsBot:
             invite_code = context.args[0]
             
             # Если это подписанный инвайт, проверяем подпись в первую очередь
+            if '-' in invite_code and not INVITE_SECRET:
+                await update.message.reply_text(
+                    "❌ Не задан INVITE_SECRET в проде.\n\n"
+                    "Инвайт создан как подписанный, но секрет отсутствует.\n"
+                    "Установите INVITE_SECRET одинаково в prod и sandbox и перезапустите бота."
+                )
+                return
+
             if '-' in invite_code and INVITE_SECRET:
                 if self.access_db.use_signed_invite(invite_code, str(user_id), username, first_name, INVITE_SECRET):
                     await update.message.reply_text(
