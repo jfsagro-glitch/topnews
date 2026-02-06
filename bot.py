@@ -336,7 +336,16 @@ class NewsBot:
         if context.args and len(context.args) > 0:
             invite_code = context.args[0]
             
-            # Если это подписанный инвайт, проверяем подпись в первую очередь
+            # Попытка использовать инвайт через access БД
+            if self.access_db.use_invite(invite_code, str(user_id), username, first_name):
+                await update.message.reply_text(
+                    "✅ Инвайт-код успешно активирован!\n\n"
+                    "Теперь у вас есть доступ к боту. Используйте /help для списка команд.",
+                    reply_markup=self.REPLY_KEYBOARD
+                )
+                return
+
+            # Если это подписанный инвайт, проверяем подпись
             secret = self._get_invite_secret()
             if '-' in invite_code and not secret:
                 await update.message.reply_text(
@@ -360,15 +369,6 @@ class NewsBot:
                         "Проверьте, что инвайт создан в песочнице после обновления и что INVITE_SECRET одинаковый в prod и sandbox."
                     )
                     return
-
-            # Попытка использовать обычный инвайт
-            if self.access_db.use_invite(invite_code, str(user_id), username, first_name):
-                await update.message.reply_text(
-                    "✅ Инвайт-код успешно активирован!\n\n"
-                    "Теперь у вас есть доступ к боту. Используйте /help для списка команд.",
-                    reply_markup=self.REPLY_KEYBOARD
-                )
-                return
             else:
                 await update.message.reply_text(
                     "❌ Неверный или уже использованный инвайт-код.\n\n"
@@ -1132,6 +1132,11 @@ class NewsBot:
             if invite_code:
                 # Store invite in sandbox DB for tracking
                 self.db.create_invite_with_code(invite_code, admin_id)
+                # Also store in access DB to allow validation without INVITE_SECRET when shared
+                try:
+                    self.access_db.create_invite_with_code(invite_code, admin_id)
+                except Exception:
+                    pass
             else:
                 await query.edit_message_text(
                     "❌ Не задан INVITE_SECRET.\n\n"
