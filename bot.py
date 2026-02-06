@@ -19,11 +19,11 @@ from config.config import TELEGRAM_TOKEN, TELEGRAM_CHANNEL_ID, CHECK_INTERVAL_SE
 
 logger = logging.getLogger(__name__)
 
-# Import DATABASE_PATH from railway_config if available, else from config
+# Import DATABASE_PATH/ACCESS_DB_PATH from railway_config if available, else from config
 try:
-    from config.railway_config import DATABASE_PATH
+    from config.railway_config import DATABASE_PATH, ACCESS_DB_PATH
 except (ImportError, ValueError):
-    from config.config import DATABASE_PATH
+    from config.config import DATABASE_PATH, ACCESS_DB_PATH
 
 try:
     from config.railway_config import SOURCES_CONFIG as ACTIVE_SOURCES_CONFIG
@@ -44,7 +44,8 @@ class NewsBot:
     
     def __init__(self):
         self.application = None
-        self.db = NewsDatabase(db_path=DATABASE_PATH)  # Use path from config
+        self.db = NewsDatabase(db_path=DATABASE_PATH)  # News DB (env-specific)
+        self.access_db = NewsDatabase(db_path=ACCESS_DB_PATH)  # Shared access control DB
         
         # DeepSeek client with cache and budget enabled
         self.deepseek_client = DeepSeekClient(db=self.db)
@@ -109,7 +110,7 @@ class NewsBot:
             return True
         
         # Prod requires approval via invite
-        return self.db.is_user_approved(str(user_id))
+        return self.access_db.is_user_approved(str(user_id))
 
     def _check_access(self, handler):
         """Decorator to check user access before executing handler"""
@@ -145,16 +146,16 @@ class NewsBot:
         """Initialize admin users with access to prod bot"""
         for admin_id in self.ADMIN_IDS:
             # Check if already approved
-            if not self.db.is_user_approved(str(admin_id)):
+            if not self.access_db.is_user_approved(str(admin_id)):
                 # Add admin with "SYSTEM" as invited_by
                 from datetime import datetime
-                cursor = self.db._conn.cursor()
-                with self.db._write_lock:
+                cursor = self.access_db._conn.cursor()
+                with self.access_db._write_lock:
                     cursor.execute(
                         'INSERT OR IGNORE INTO approved_users (user_id, username, first_name, invited_by, approved_at) VALUES (?, ?, ?, ?, ?)',
                         (str(admin_id), None, f"Admin {admin_id}", "SYSTEM", datetime.now().isoformat())
                     )
-                    self.db._conn.commit()
+                    self.access_db._conn.commit()
                 logger.info(f"Initialized admin access for user {admin_id}")
 
     def _get_sandbox_filter_user_id(self) -> int | None:
@@ -310,7 +311,7 @@ class NewsBot:
             invite_code = context.args[0]
             
             # Попытка использовать инвайт
-            if self.db.use_invite(invite_code, str(user_id), username, first_name):
+            if self.access_db.use_invite(invite_code, str(user_id), username, first_name):
                 await update.message.reply_text(
                     "✅ Инвайт-код успешно активирован!\n\n"
                     "Теперь у вас есть доступ к боту. Используйте /help для списка команд.",
@@ -1076,7 +1077,7 @@ class NewsBot:
         if query.data == "mgmt:new_invite":
             # Create new invite
             admin_id = str(query.from_user.id)
-            invite_code = self.db.create_invite(admin_id)
+            invite_code = self.access_db.create_invite(admin_id)
             
             if invite_code:
                 # Get bot username for link
@@ -1122,7 +1123,7 @@ class NewsBot:
         
         if query.data == "mgmt:users_list":
             # Show detailed list of users with block/unblock buttons
-            approved_users = self.db.get_approved_users()
+            approved_users = self.access_db.get_approved_users()
             
             if not approved_users:
                 await query.edit_message_text(
@@ -1159,7 +1160,7 @@ class NewsBot:
         # Pagination for users list
         if query.data.startswith("mgmt:users_list_page:"):
             page = int(query.data.split(":")[2])
-            approved_users = self.db.get_approved_users()
+            approved_users = self.access_db.get_approved_users()
             
             if page >= len(approved_users):
                 page = len(approved_users) - 1
@@ -1202,7 +1203,7 @@ class NewsBot:
         # Block user
         if query.data.startswith("mgmt:block_user:"):
             user_id = query.data.split(":")[2]
-            if self.db.block_user(user_id):
+            if self.access_db.block_user(user_id):
                 await query.answer(f"✅ Пользователь {user_id} заблокирован", show_alert=True)
                 await query.edit_message_text(
                     text="✅ Пользователь успешно заблокирован",
@@ -2479,8 +2480,8 @@ class NewsBot:
 
         # For prod, sandbox restriction should not apply (admins can manage both)
         # Get invites and approved users from DB
-        unused_invites = self.db.get_unused_invites()
-        approved_users = self.db.get_approved_users()
+        unused_invites = self.access_db.get_unused_invites()
+        approved_users = self.access_db.get_approved_users()
 
         # Build UI
         keyboard = []
