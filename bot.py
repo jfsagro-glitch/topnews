@@ -290,7 +290,7 @@ class NewsBot:
         [['🔄', '✉️', '⏸️', '▶️'], ['⚙️ Настройки']], resize_keyboard=True, one_time_keyboard=False
     )
     
-    # For sandbox admin users - includes Management button
+    # For admin users - includes Management button
     REPLY_KEYBOARD_ADMIN = ReplyKeyboardMarkup(
         [['🔄', '✉️', '⏸️', '▶️'], ['⚙️ Настройки', '🛠 Управление']], resize_keyboard=True, one_time_keyboard=False
     )
@@ -339,8 +339,8 @@ class NewsBot:
         is_admin = self._is_admin(user_id)
         env_marker = "\n🧪 SANDBOX" if APP_ENV == "sandbox" else ""
         
-        # Choose keyboard based on admin status and environment
-        keyboard = self.REPLY_KEYBOARD_ADMIN if (APP_ENV == "sandbox" and is_admin) else self.REPLY_KEYBOARD
+        # Choose keyboard based on admin status
+        keyboard = self.REPLY_KEYBOARD_ADMIN if is_admin else self.REPLY_KEYBOARD
         
         await update.message.reply_text(
             "👋 Добро пожаловать в News Aggregator Bot!" + env_marker + "\n\n"
@@ -558,19 +558,10 @@ class NewsBot:
         await update.message.reply_text("▶️ Новости возобновлены!\n\nТеперь вы снова получаете уведомления о новостях.")
     
     async def cmd_management(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """🛠 Management menu (sandbox admin only)"""
-        try:
-            from config.railway_config import APP_ENV
-        except (ImportError, ValueError):
-            from config.config import APP_ENV
-        
+        """🛠 Management menu (admins only)"""
         user_id = update.message.from_user.id
         
-        # Check if sandbox and admin
-        if APP_ENV != "sandbox":
-            await update.message.reply_text("❌ Management available only in sandbox")
-            return
-        
+        # Check admin
         is_admin = self._is_admin(user_id)
         if not is_admin:
             await update.message.reply_text("❌ Доступно только администраторам")
@@ -965,30 +956,11 @@ class NewsBot:
             await self._handle_ai_level_change(query, module, action="set", level=level)
             return
         
-        # ==================== MANAGEMENT CALLBACKS (SANDBOX ADMIN ONLY) ====================
-        # Check if sandbox for all management operations
-        if query.data.startswith("mgmt:"):
-            try:
-                from config.railway_config import APP_ENV
-            except (ImportError, ValueError):
-                from config.config import APP_ENV
-            
-            # Management only in sandbox (but allow send_invite to check separately)
-            if APP_ENV != "sandbox" and not query.data.startswith("mgmt:send_invite:"):
-                await query.answer("❌ Управление доступно только в песочнице", show_alert=True)
-                return
+        # ==================== MANAGEMENT CALLBACKS (ADMINS ONLY) ====================
         
         if query.data.startswith("mgmt:send_invite:"):
-            # Show share options for invite (works in sandbox only)
+            # Show share options for invite
             await query.answer()
-            try:
-                from config.railway_config import APP_ENV
-            except (ImportError, ValueError):
-                from config.config import APP_ENV
-            
-            if APP_ENV != "sandbox":
-                await query.edit_message_text("❌ Отправка инвайтов доступна только в песочнице")
-                return
             
             # Extract invite code from callback data
             invite_code = query.data.split(":", 2)[2]
@@ -1076,6 +1048,22 @@ class NewsBot:
         
         if query.data == "mgmt:new_invite":
             # Create new invite
+            try:
+                from config.railway_config import APP_ENV
+            except (ImportError, ValueError):
+                from config.config import APP_ENV
+            
+            # Prevent creating invites in sandbox (they won't work in prod bot)
+            if APP_ENV == "sandbox":
+                await query.edit_message_text(
+                    "⚠️ Инвайты создаются в ПРОД-боте.\n\n"
+                    "Откройте прод-бот и создайте инвайт там.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:users")]
+                    ])
+                )
+                return
+            
             admin_id = str(query.from_user.id)
             invite_code = self.access_db.create_invite(admin_id)
             
