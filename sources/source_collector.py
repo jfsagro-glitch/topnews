@@ -270,7 +270,7 @@ class SourceCollector:
                     # Also skip verification for Telegram channels (they're curated content)
                     skip_ai_verification = source_name in ['news.yahoo.com', 'rss.news.yahoo.com', 
                                                            'mash', 'bazabazon', 'shot_shot', 'mod_russia',
-                                                           'ruptlyalert', 'tass_agency', 'rian_ru']
+                                                           'ruptlyalert', 'tass_agency', 'rian_ru', 'frank_media']
                     
                     # Optional AI category verification (if client provided and not skipped)
                     if self.ai_client and detected_category and not skip_ai_verification:
@@ -325,7 +325,7 @@ class SourceCollector:
                     
                     # For trusted sources (Telegram channels, news agencies), skip AI verification
                     skip_ai_verification = source_name in ['mash', 'bazabazon', 'shot_shot', 'mod_russia',
-                                                           'ruptlyalert', 'tass_agency', 'rian_ru']
+                                                           'ruptlyalert', 'tass_agency', 'rian_ru', 'frank_media']
                     
                     # Optional AI category verification (if client provided and not skipped)
                     if self.ai_client and detected_category and not skip_ai_verification:

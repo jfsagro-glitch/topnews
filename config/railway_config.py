@@ -213,6 +213,7 @@ SOURCES_CONFIG = {
             'https://t.me/tass_agency',  # TASS официальное
             'https://t.me/rian_ru',  # РИА Новости
             'https://t.me/mod_russia',  # Минобороны России
+            'https://t.me/frank_media',  # Frank Media
             # X (Twitter) accounts - ВРЕМЕННО ОТКЛЮЧЕНЫ (RSSHub и Nitter недоступны)
             # 'https://x.com/kadmitriev',  # Дмитриев
             # 'https://x.com/MedvedevRussia',  # Медведев
