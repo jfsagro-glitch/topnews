@@ -1797,3 +1797,10 @@ class NewsDatabase:
         except Exception as e:
             logger.error(f"Error getting news after id: {e}")
             return []
+
+    def close(self) -> None:
+        """Close the database connection."""
+        try:
+            self._conn.close()
+        except Exception as e:
+            logger.debug(f"Error closing database: {e}")

@@ -24,7 +24,7 @@ from db.database import NewsDatabase
 # Try to import from railway_config first, then fallback to config
 try:
     from config.railway_config import SOURCES_CONFIG as ACTIVE_SOURCES_CONFIG
-except ImportError:
+except (ImportError, ValueError):
     from config.config import SOURCES_CONFIG as ACTIVE_SOURCES_CONFIG
 
 import logging
