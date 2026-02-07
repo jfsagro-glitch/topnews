@@ -1,0 +1,138 @@
+TopNews Bot - Full Functional Overview (code-based summary)
+
+1) High-level architecture
+- Entry point creates NewsBot, sets up Telegram handlers, and starts periodic collection.
+- Two SQLite databases are used:
+  - News DB: published_news, sources, user selections, LLM cache, stats.
+  - Access DB: invites and approved users for prod access control.
+- AI features are handled by DeepSeekClient with LLM cache and budget guard.
+
+2) Runtime modes (APP_ENV)
+- prod: access is restricted to approved users (invites). Uses BOT_TOKEN_PROD if set.
+- sandbox: access is open; management features are enabled; bot uses BOT_TOKEN_SANDBOX if set.
+
+3) Sources configuration
+- Sources are defined in config/railway_config.py (Railway) and config/config.py (local).
+- Categories: world, russia, moscow, moscow_region, telegram, additional.
+- Sources are normalized into DB table sources on startup.
+- Telegram channels are ingested via RSSHub (RSSHUB_BASE_URL).
+- Yahoo News uses official RSS overrides and is forced to category world.
+
+4) Collection pipeline (sources/source_collector.py)
+- Build a normalized list of sources with type rss/html.
+- Deduplicate sources and keep per-source health stats and counts.
+- Collect all sources concurrently with a semaphore limit of 6.
+- Cooldown is applied on error codes (403/404/429) or RSSHub 503.
+
+RSS path
+- RSSParser fetches feeds with conditional GET (ETag/Last-Modified).
+- Parses up to 10 entries per feed.
+- Extracts lead text from RSS entry, falls back to article preview if short.
+- published_at is parsed from feed entry (published_parsed/updated_parsed).
+
+HTML path
+- HTMLParser parses pages, finds article elements, extracts title/url/text.
+- Filters noise via regex and minimum length checks.
+- For HTML, published_at defaults to datetime.now().
+- For short text, fetches article preview.
+
+Post-parse processing
+- Optional AI text cleaning (HTML only, RSS skipped by default) when enabled.
+- Keyword category classification (ContentClassifier).
+- AI category verification is disabled in code.
+- Yahoo is forced to category world.
+
+5) Publish pipeline (bot.py)
+- collect_all returns list of items with title/url/text/source/category/published_at.
+- sandbox only: apply user source filters to the collected list.
+- For each item:
+  - Skip if not today (local date; published_at must match).
+  - Skip if category filter is active and not matching.
+  - Skip if duplicate in session or similar title in last 24 hours.
+  - Insert into published_news table; skip if URL already exists.
+  - Build Telegram message and attach buttons (AI, select).
+  - Channel publish is currently stubbed (not posting to channel).
+  - Send to users in DM.
+
+6) Delivery to users
+- In prod: send to all approved users from access DB.
+- In sandbox: send to admins only.
+- Per-user source filters are honored on delivery.
+- Per-user pause is honored.
+
+7) AI summary flow (button "AI")
+- AI summary is generated on demand for a specific news_id.
+- Summary is rate-limited per user (AI_SUMMARY_MAX_REQUESTS_PER_MINUTE).
+- Summary is disabled if AI summary level == 0.
+- Summary input uses lead_text OR text OR title (fallback).
+- The bot attempts to fetch full article if URL exists.
+- DeepSeekClient.summarize uses a fixed system prompt for radio-news style.
+- LLM cache is used (hash-based) with TTL.
+- Token usage and estimated cost are stored in ai_usage table.
+
+8) AI text cleanup flow
+- AI cleanup runs for HTML sources only.
+- Skip cleanup if AI is toggled off or cleanup level is 0 (sandbox).
+- Uses DeepSeekClient.extract_clean_text with cleanup profile.
+
+9) AI controls and profiles
+- AI levels are stored in feature_flags via AILevelManager.
+- Levels: 0-5 for hashtags, cleanup, summary.
+- get_llm_profile defines max_tokens, temperature, model per level.
+- Budget guard limits daily AI cost (DAILY_LLM_BUDGET_USD, default 1.0).
+
+10) Rate limits and safety
+- AI summaries: per-user per minute (AI_SUMMARY_MAX_REQUESTS_PER_MINUTE).
+- Collection: max_publications per cycle = 40.
+- Duplicate detection: session title set + DB similarity over last 24 hours.
+- Instance lock prevents multiple process instances.
+
+11) Data storage schema (db/database.py)
+- published_news: url, title, source, category, lead_text, ai_summary, timestamps.
+- rss_state, rss_cache: conditional GET support.
+- llm_cache: response cache with TTL.
+- ai_usage: usage totals and daily cost fields.
+- sources, user_source_settings: per-user source toggles.
+- user_news_selections: selected news for export.
+- invites, approved_users: access control.
+- user_preferences: pause.
+- system_settings: global collection stop.
+
+12) Export features
+- Export period (1-24 hours) to Excel.
+- Export user selections to DOCX.
+- Selected list can be cleared after export.
+
+13) Logging and monitoring
+- Logs include per-source collection counts and failures.
+- Status command reports AI totals, sources, and counts.
+
+14) Known quality constraints and likely sources of summary errors
+- AI summary input is lead_text/text; if the parser grabbed a noisy or wrong paragraph, the AI can summarize the wrong content.
+- HTML parser may extract unrelated sections if selectors are too broad.
+- RSS feeds can contain short or truncated entries; preview fetch may return wrong content if page structure is complex.
+- If published_at is missing or invalid, items are skipped (today-only filter).
+
+15) Key files for analysis
+- bot.py: orchestration, delivery, AI button logic, filters, exports.
+- sources/source_collector.py: source assembly, collection, AI cleanup, categories.
+- parsers/rss_parser.py: RSS parsing and fallback fetch.
+- parsers/html_parser.py: HTML parsing and noise filtering.
+- utils/content_classifier.py: keyword category logic.
+- utils/lead_extractor.py: lead extraction heuristics.
+- utils/text_cleaner.py: HTML cleaning and noise patterns.
+- net/deepseek_client.py: LLM calls, prompt, cache, budget.
+- net/llm_cache.py: caching and budget guard.
+- db/database.py: schema and persistence.
+- config/config.py and config/railway_config.py: environment settings.
+
+16) Settings and limits recap (defaults)
+- CHECK_INTERVAL_SECONDS: 120s
+- AI summary rate limit: 3 per user per minute
+- AI summary timeout: 10s
+- LLM cache TTL: 72h (default for cache manager)
+- Budget guard: DAILY_LLM_BUDGET_USD (env, default 1.0)
+- publish cap: 40 per cycle
+- collect concurrency: 6
+
+End of summary.

@@ -45,6 +45,17 @@ class NewsDatabase:
                     source TEXT NOT NULL,
                     category TEXT NOT NULL,
                     lead_text TEXT,
+                    raw_text TEXT,
+                    clean_text TEXT,
+                    checksum TEXT,
+                    language TEXT,
+                    domain TEXT,
+                    extraction_method TEXT,
+                    published_date TEXT,
+                    published_time TEXT,
+                    quality_score REAL,
+                    hashtags_ru TEXT,
+                    hashtags_en TEXT,
                     telegram_message_id INTEGER,
                     ai_summary TEXT,
                     ai_summary_created_at TIMESTAMP,
@@ -206,7 +217,35 @@ class NewsDatabase:
                 CREATE TABLE IF NOT EXISTS user_preferences (
                     user_id TEXT PRIMARY KEY,
                     is_paused INTEGER DEFAULT 0,
+                    paused_at TIMESTAMP NULL,
+                    resume_at TIMESTAMP NULL,
+                    last_delivered_news_id INTEGER NULL,
+                    pause_version INTEGER NOT NULL DEFAULT 0,
+                    translate_enabled INTEGER DEFAULT 0,
+                    translate_lang TEXT DEFAULT 'ru',
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Table for delivery log to ensure idempotent per-user delivery
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS delivery_log (
+                    user_id TEXT NOT NULL,
+                    news_id INTEGER NOT NULL,
+                    delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, news_id)
+                )
+            ''')
+
+            # Table for cached translations (by news_id + checksum + target language)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS translation_cache_v2 (
+                    news_id INTEGER NOT NULL,
+                    checksum TEXT NOT NULL,
+                    target_lang TEXT NOT NULL,
+                    translated_text TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (news_id, checksum, target_lang)
                 )
             ''')
 
@@ -250,6 +289,17 @@ class NewsDatabase:
                 source TEXT NOT NULL,
                 category TEXT NOT NULL,
                 lead_text TEXT,
+                raw_text TEXT,
+                clean_text TEXT,
+                checksum TEXT,
+                language TEXT,
+                domain TEXT,
+                extraction_method TEXT,
+                published_date TEXT,
+                published_time TEXT,
+                quality_score REAL,
+                hashtags_ru TEXT,
+                hashtags_en TEXT,
                 telegram_message_id INTEGER,
                 ai_summary TEXT,
                 ai_summary_created_at TIMESTAMP,
@@ -290,6 +340,17 @@ class NewsDatabase:
             existing = {row[1] for row in cursor.fetchall()}
             required = {
                 'lead_text': 'TEXT',
+                'raw_text': 'TEXT',
+                'clean_text': 'TEXT',
+                'checksum': 'TEXT',
+                'language': 'TEXT',
+                'domain': 'TEXT',
+                'extraction_method': 'TEXT',
+                'published_date': 'TEXT',
+                'published_time': 'TEXT',
+                'quality_score': 'REAL',
+                'hashtags_ru': 'TEXT',
+                'hashtags_en': 'TEXT',
                 'telegram_message_id': 'INTEGER',
                 'ai_summary': 'TEXT',
                 'ai_summary_created_at': 'TIMESTAMP'
@@ -299,8 +360,44 @@ class NewsDatabase:
                     cursor.execute(f"ALTER TABLE published_news ADD COLUMN {column} {col_type}")
         except Exception as e:
             logger.debug(f"Error ensuring columns: {e}")
+
+        try:
+            cursor.execute("PRAGMA table_info(user_preferences)")
+            existing = {row[1] for row in cursor.fetchall()}
+            required = {
+                'paused_at': 'TIMESTAMP',
+                'resume_at': 'TIMESTAMP',
+                'last_delivered_news_id': 'INTEGER',
+                'pause_version': 'INTEGER DEFAULT 0',
+                'translate_enabled': 'INTEGER DEFAULT 0',
+                'translate_lang': "TEXT DEFAULT 'ru'",
+            }
+            for column, col_type in required.items():
+                if column not in existing:
+                    cursor.execute(f"ALTER TABLE user_preferences ADD COLUMN {column} {col_type}")
+        except Exception as e:
+            logger.debug(f"Error ensuring user_preferences columns: {e}")
     
-    def add_news(self, url: str, title: str, source: str, category: str, lead_text: str = "") -> int | None:
+    def add_news(
+        self,
+        url: str,
+        title: str,
+        source: str,
+        category: str,
+        lead_text: str = "",
+        raw_text: str | None = None,
+        clean_text: str | None = None,
+        checksum: str | None = None,
+        language: str | None = None,
+        domain: str | None = None,
+        extraction_method: str | None = None,
+        published_at: str | None = None,
+        published_date: str | None = None,
+        published_time: str | None = None,
+        quality_score: float | None = None,
+        hashtags_ru: str | None = None,
+        hashtags_en: str | None = None,
+    ) -> int | None:
         """
         Добавляет новость в БД.
         Возвращает news_id если добавлена, иначе None.
@@ -312,9 +409,19 @@ class NewsDatabase:
                 with self._write_lock:
                     cursor = self._conn.cursor()
                     cursor.execute('''
-                        INSERT INTO published_news (url, title, source, category, lead_text)
-                        VALUES (?, ?, ?, ?, ?)
-                    ''', (url, title, source, category, lead_text))
+                        INSERT INTO published_news (
+                            url, title, source, category, lead_text,
+                            raw_text, clean_text, checksum, language, domain,
+                            extraction_method, published_at, published_date,
+                            published_time, quality_score, hashtags_ru, hashtags_en
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        url, title, source, category, lead_text,
+                        raw_text, clean_text, checksum, language, domain,
+                        extraction_method, published_at, published_date,
+                        published_time, quality_score, hashtags_ru, hashtags_en
+                    ))
                     self._conn.commit()
                     logger.debug(f"News added: {url}")
                     return cursor.lastrowid
@@ -444,7 +551,9 @@ class NewsDatabase:
             cursor = self._conn.cursor()
             cursor.execute(
                 '''
-                    SELECT id, url, title, source, category, lead_text, ai_summary, published_at
+                      SELECT id, url, title, source, category, lead_text, clean_text,
+                          ai_summary, published_at, published_date, published_time, language,
+                          hashtags_ru, hashtags_en
                     FROM published_news
                     WHERE datetime(published_at) >= datetime(?)
                       AND datetime(published_at) <= datetime(?)
@@ -462,8 +571,14 @@ class NewsDatabase:
                     'source': row[3],
                     'category': row[4],
                     'lead_text': row[5] or "",
-                    'ai_summary': row[6],
-                    'published_at': row[7]
+                    'clean_text': row[6] or "",
+                    'ai_summary': row[7],
+                    'published_at': row[8],
+                    'published_date': row[9],
+                    'published_time': row[10],
+                    'language': row[11],
+                    'hashtags_ru': row[12] or "",
+                    'hashtags_en': row[13] or "",
                 })
             return results
         except Exception as e:
@@ -545,7 +660,11 @@ class NewsDatabase:
         try:
             cursor = self._conn.cursor()
             cursor.execute('''
-                SELECT id, url, title, source, category, lead_text, ai_summary, ai_summary_created_at
+                SELECT id, url, title, source, category, lead_text, clean_text, raw_text,
+                       checksum, language, domain, extraction_method,
+                       ai_summary, ai_summary_created_at, published_at,
+                       published_date, published_time, quality_score,
+                       hashtags_ru, hashtags_en
                 FROM published_news WHERE id = ?
             ''', (news_id,))
             row = cursor.fetchone()
@@ -558,8 +677,20 @@ class NewsDatabase:
                 'source': row[3],
                 'category': row[4],
                 'lead_text': row[5] or "",
-                'ai_summary': row[6],
-                'ai_summary_created_at': row[7]
+                'clean_text': row[6] or "",
+                'raw_text': row[7] or "",
+                'checksum': row[8],
+                'language': row[9],
+                'domain': row[10],
+                'extraction_method': row[11],
+                'ai_summary': row[12],
+                'ai_summary_created_at': row[13],
+                'published_at': row[14],
+                'published_date': row[15],
+                'published_time': row[16],
+                'quality_score': row[17],
+                'hashtags_ru': row[18] or "",
+                'hashtags_en': row[19] or "",
             }
         except Exception as e:
             logger.error(f"Error getting news by id: {e}")
@@ -1382,26 +1513,80 @@ class NewsDatabase:
         except Exception as e:
             logger.error(f"Error deleting invite: {e}")
             return False
+
+    def get_translation_cache(self, news_id: int, checksum: str, target_lang: str) -> str | None:
+        """Get cached translation by news_id, checksum, and target language."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                '''SELECT translated_text FROM translation_cache_v2
+                   WHERE news_id = ? AND checksum = ? AND target_lang = ?''',
+                (int(news_id), checksum, target_lang)
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            logger.error(f"Error getting translation cache: {e}")
+            return None
+
+    def set_translation_cache(self, news_id: int, checksum: str, target_lang: str, translated_text: str) -> bool:
+        """Store translation in cache by news_id, checksum, and target language."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    '''INSERT OR REPLACE INTO translation_cache_v2
+                       (news_id, checksum, target_lang, translated_text)
+                       VALUES (?, ?, ?, ?)''',
+                    (int(news_id), checksum, target_lang, translated_text)
+                )
+                self._conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error setting translation cache: {e}")
+            return False
+
+    def set_user_translation(self, user_id: str, enabled: bool, target_lang: str = 'ru') -> bool:
+        """Set translation preference for a user."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    '''INSERT INTO user_preferences (user_id, translate_enabled, translate_lang, updated_at)
+                       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                       ON CONFLICT(user_id) DO UPDATE SET
+                         translate_enabled = excluded.translate_enabled,
+                         translate_lang = excluded.translate_lang,
+                         updated_at = CURRENT_TIMESTAMP''',
+                    (str(user_id), 1 if enabled else 0, target_lang)
+                )
+                self._conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error setting user translation: {e}")
+            return False
+
+    def get_user_translation(self, user_id: str) -> tuple[bool, str]:
+        """Return (translate_enabled, translate_lang) for user."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                'SELECT translate_enabled, translate_lang FROM user_preferences WHERE user_id = ?',
+                (str(user_id),)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return False, 'ru'
+            return bool(row[0]), (row[1] or 'ru')
+        except Exception as e:
+            logger.error(f"Error getting user translation: {e}")
+            return False, 'ru'
     def set_user_paused(self, user_id: str, is_paused: bool) -> bool:
         """
         Установить состояние паузы для пользователя.
         Returns: True если успешно, False если ошибка
         """
-        try:
-            with self._write_lock:
-                cursor = self._conn.cursor()
-                user_id = str(user_id)
-                paused_int = 1 if is_paused else 0
-                cursor.execute(
-                    'INSERT OR REPLACE INTO user_preferences (user_id, is_paused, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)',
-                    (user_id, paused_int)
-                )
-                self._conn.commit()
-                logger.debug(f"Set user {user_id} paused={is_paused}")
-                return True
-        except Exception as e:
-            logger.error(f"Error setting user paused: {e}")
-            return False
+        return self.set_pause_state(user_id, is_paused)
 
     def is_user_paused(self, user_id: str) -> bool:
         """
@@ -1451,3 +1636,164 @@ class NewsDatabase:
         except Exception as e:
             logger.error(f"Error checking collection stopped: {e}")
             return False
+
+    def get_delivery_state(self, user_id: str) -> dict:
+        """Get delivery state for a user from DB."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                '''SELECT is_paused, paused_at, resume_at, last_delivered_news_id, pause_version
+                   FROM user_preferences WHERE user_id = ?''',
+                (str(user_id),)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return {
+                    'is_paused': False,
+                    'paused_at': None,
+                    'resume_at': None,
+                    'last_delivered_news_id': None,
+                    'pause_version': 0,
+                }
+            return {
+                'is_paused': bool(row[0]),
+                'paused_at': row[1],
+                'resume_at': row[2],
+                'last_delivered_news_id': row[3],
+                'pause_version': row[4] or 0,
+            }
+        except Exception as e:
+            logger.error(f"Error getting delivery state: {e}")
+            return {
+                'is_paused': False,
+                'paused_at': None,
+                'resume_at': None,
+                'last_delivered_news_id': None,
+                'pause_version': 0,
+            }
+
+    def set_pause_state(self, user_id: str, is_paused: bool) -> bool:
+        """Set pause/resume state with pause_version increment."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                user_id = str(user_id)
+                if is_paused:
+                    cursor.execute(
+                        '''INSERT INTO user_preferences (user_id, is_paused, paused_at, pause_version, updated_at)
+                           VALUES (?, 1, CURRENT_TIMESTAMP, 1, CURRENT_TIMESTAMP)
+                           ON CONFLICT(user_id) DO UPDATE SET
+                             is_paused = 1,
+                             paused_at = CURRENT_TIMESTAMP,
+                             pause_version = pause_version + 1,
+                             updated_at = CURRENT_TIMESTAMP''',
+                        (user_id,)
+                    )
+                else:
+                    cursor.execute(
+                        '''INSERT INTO user_preferences (user_id, is_paused, resume_at, pause_version, updated_at)
+                           VALUES (?, 0, CURRENT_TIMESTAMP, 1, CURRENT_TIMESTAMP)
+                           ON CONFLICT(user_id) DO UPDATE SET
+                             is_paused = 0,
+                             resume_at = CURRENT_TIMESTAMP,
+                             pause_version = pause_version + 1,
+                             updated_at = CURRENT_TIMESTAMP''',
+                        (user_id,)
+                    )
+                self._conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error setting pause state: {e}")
+            return False
+
+    def update_last_delivered(self, user_id: str, news_id: int) -> bool:
+        """Update last delivered news id for a user."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    '''INSERT INTO user_preferences (user_id, last_delivered_news_id, updated_at)
+                       VALUES (?, ?, CURRENT_TIMESTAMP)
+                       ON CONFLICT(user_id) DO UPDATE SET
+                         last_delivered_news_id = ?,
+                         updated_at = CURRENT_TIMESTAMP''',
+                    (str(user_id), news_id, news_id)
+                )
+                self._conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating last delivered: {e}")
+            return False
+
+    def try_log_delivery(self, user_id: str, news_id: int) -> bool:
+        """Insert delivery log row. Returns True if inserted, False if duplicate."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    'INSERT OR IGNORE INTO delivery_log (user_id, news_id) VALUES (?, ?)',
+                    (str(user_id), int(news_id))
+                )
+                self._conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error logging delivery: {e}")
+            return False
+
+    def remove_delivery_log(self, user_id: str, news_id: int) -> bool:
+        """Remove delivery log row (e.g., on send failure)."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    'DELETE FROM delivery_log WHERE user_id = ? AND news_id = ?',
+                    (str(user_id), int(news_id))
+                )
+                self._conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error removing delivery log: {e}")
+            return False
+
+    def get_news_after_id(self, last_id: int | None, limit: int = 50) -> List[dict]:
+        """Get news items with id > last_id ordered by id ascending."""
+        try:
+            cursor = self._conn.cursor()
+            if last_id is None:
+                cursor.execute(
+                    '''SELECT id, url, title, source, category, lead_text, clean_text,
+                              ai_summary, published_at, published_date, published_time,
+                              hashtags_ru, hashtags_en
+                       FROM published_news ORDER BY id ASC LIMIT ?''',
+                    (limit,)
+                )
+            else:
+                cursor.execute(
+                    '''SELECT id, url, title, source, category, lead_text, clean_text,
+                              ai_summary, published_at, published_date, published_time,
+                              hashtags_ru, hashtags_en
+                       FROM published_news WHERE id > ? ORDER BY id ASC LIMIT ?''',
+                    (int(last_id), limit)
+                )
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                results.append({
+                    'id': row[0],
+                    'url': row[1],
+                    'title': row[2],
+                    'source': row[3],
+                    'category': row[4],
+                    'lead_text': row[5] or "",
+                    'clean_text': row[6] or "",
+                    'ai_summary': row[7],
+                    'published_at': row[8],
+                    'published_date': row[9],
+                    'published_time': row[10],
+                    'hashtags_ru': row[11] or "",
+                    'hashtags_en': row[12] or "",
+                })
+            return results
+        except Exception as e:
+            logger.error(f"Error getting news after id: {e}")
+            return []

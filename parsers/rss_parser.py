@@ -110,8 +110,8 @@ class RSSParser:
         
         return news_items
     
-    def _parse_date(self, entry) -> str:
-        """Парсит дату из записи"""
+    def _parse_date(self, entry) -> str | None:
+        """Парсит дату из записи. Возвращает None если даты нет."""
         try:
             if hasattr(entry, 'published_parsed') and entry.published_parsed:
                 return datetime(*entry.published_parsed[:6]).isoformat()
@@ -119,8 +119,27 @@ class RSSParser:
                 return datetime(*entry.updated_parsed[:6]).isoformat()
         except Exception as e:
             logger.debug(f"Error parsing date: {e}")
-        
-        return datetime.now().isoformat()
+
+        # Fallback to published/updated string fields
+        for key in ('published', 'updated'):
+            raw = entry.get(key) if isinstance(entry, dict) else getattr(entry, key, None)
+            if not raw:
+                continue
+            try:
+                from email.utils import parsedate_to_datetime
+
+                dt = parsedate_to_datetime(str(raw))
+                if dt:
+                    return dt.replace(tzinfo=None).isoformat()
+            except Exception:
+                pass
+            try:
+                text = str(raw).strip().replace('Z', '+00:00')
+                return datetime.fromisoformat(text).replace(tzinfo=None).isoformat()
+            except Exception:
+                continue
+
+        return None
 
     async def _fetch_article_preview(self, url: str) -> str:
         """Пробует получить первые предложения со страницы статьи"""

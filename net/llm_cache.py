@@ -73,12 +73,18 @@ class LLMCacheManager:
         # Normalize inputs
         title_norm = (title or '').strip().lower()
         text_norm = (text or '').strip().lower()
-        
+
+        # Allow checksum-based caching (preferred for large texts)
+        checksum = kwargs.pop('checksum', None)
+
         # Include kwargs in key for tasks that depend on them
         kwargs_str = json.dumps(sorted(kwargs.items()), ensure_ascii=False)
-        
+
         # Generate hash
-        content = f"{task_type}|{title_norm}|{text_norm}|{kwargs_str}"
+        if checksum:
+            content = f"{task_type}|{checksum}|{kwargs_str}"
+        else:
+            content = f"{task_type}|{title_norm}|{text_norm}|{kwargs_str}"
         return hashlib.md5(content.encode('utf-8')).hexdigest()
     
     def get(self, cache_key: str) -> Optional[Dict[str, Any]]:

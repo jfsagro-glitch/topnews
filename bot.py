@@ -627,14 +627,17 @@ class NewsBot:
     async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /pause - приостановить новости для пользователя"""
         user_id = update.message.from_user.id
-        self.db.set_user_paused(str(user_id), True)
+        self.db.set_pause_state(str(user_id), True)
+        logger.info(f"USER_PAUSE_SET user_id={user_id}")
         await update.message.reply_text("⏸️ Новости приостановлены для вас\n\nСбор продолжается, но вы не получаете уведомления.\nНажмите ▶️ для возобновления.")
     
     async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /resume - возобновить новости для пользователя"""
         user_id = update.message.from_user.id
-        self.db.set_user_paused(str(user_id), False)
+        self.db.set_pause_state(str(user_id), False)
+        logger.info(f"USER_RESUME_SET user_id={user_id}")
         await update.message.reply_text("▶️ Новости возобновлены!\n\nТеперь вы снова получаете уведомления о новостях.")
+        await self._deliver_pending_for_user(user_id)
     
     async def cmd_management(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """🛠 Management menu (sandbox admin only)"""
@@ -827,11 +830,15 @@ class NewsBot:
         """⚙️ Меню настроек"""
         user_id = update.message.from_user.id
         is_admin = self._is_admin(user_id)
+
+        translate_enabled, target_lang = self.db.get_user_translation(str(user_id))
+        translate_status = "Вкл" if translate_enabled else "Выкл"
         
         keyboard = [
             [InlineKeyboardButton("🧰 Фильтр", callback_data="settings:filter")],
             [InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")],
             [InlineKeyboardButton("🤖 AI переключатели", callback_data="ai:management")],
+            [InlineKeyboardButton(f"🌐 Перевод ({target_lang.upper()}): {translate_status}", callback_data="settings:translate_toggle")],
             [InlineKeyboardButton("📥 Экспорт новостей", callback_data="export_menu")],
             [InlineKeyboardButton("📊 Статус бота", callback_data="show_status")],
         ]
@@ -1006,14 +1013,33 @@ class NewsBot:
         if query.data == "settings:back":
             # Вернуться к меню настроек
             await query.answer()
+            translate_enabled, target_lang = self.db.get_user_translation(str(query.from_user.id))
+            translate_status = "Вкл" if translate_enabled else "Выкл"
             keyboard = [
                 [InlineKeyboardButton("🧰 Фильтр", callback_data="settings:filter")],
                 [InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")],
+                [InlineKeyboardButton(f"🌐 Перевод ({target_lang.upper()}): {translate_status}", callback_data="settings:translate_toggle")],
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
                 text="⚙️ Настройки",
                 reply_markup=reply_markup
+            )
+            return
+
+        if query.data == "settings:translate_toggle":
+            await query.answer()
+            user_id = str(query.from_user.id)
+            enabled, target_lang = self.db.get_user_translation(user_id)
+            new_enabled = not enabled
+            self.db.set_user_translation(user_id, new_enabled, target_lang)
+
+            status_text = "Включен" if new_enabled else "Выключен"
+            await query.edit_message_text(
+                text=f"🌐 Перевод ({target_lang.upper()}) {status_text}\n\nПеревод применяется к англоязычным новостям.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="settings:back")]
+                ])
             )
             return
         
@@ -1635,12 +1661,22 @@ class NewsBot:
                         )
                         return
 
-                    lead_text = news.get('lead_text') or news.get('text', '') or news.get('title', '')
+                    lead_text = (
+                        news.get('clean_text')
+                        or news.get('lead_text')
+                        or news.get('text', '')
+                        or news.get('title', '')
+                    )
                     from config.config import DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD, DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD
 
-                    news_url = news.get('url', '')
-                    logger.debug(f"Calling DeepSeek: lead_text_len={len(lead_text)}, title='{news.get('title', '')[:30]}', url={bool(news_url)}")
-                    summary, token_usage = await self._summarize_with_deepseek(lead_text, news.get('title', ''), url=news_url, user_id=user_id)
+                    checksum = news.get('checksum')
+                    logger.debug(f"Calling DeepSeek: lead_text_len={len(lead_text)}, title='{news.get('title', '')[:30]}', checksum={bool(checksum)}")
+                    summary, token_usage = await self._summarize_with_deepseek(
+                        lead_text,
+                        news.get('title', ''),
+                        checksum=checksum,
+                        user_id=user_id
+                    )
                     logger.debug(f"DeepSeek response: summary={bool(summary)}, tokens={token_usage.get('total_tokens', 0)}")
 
                     if summary:
@@ -1728,44 +1764,13 @@ class NewsBot:
 
             await query.answer("❌ Неизвестная команда", show_alert=False)
     
-    async def _fetch_full_article(self, url: str, fallback_text: str) -> str:
-        """
-        Try to fetch full article text from URL.
-        Falls back to provided text if fetch fails.
-        
-        Args:
-            url: URL to fetch
-            fallback_text: Fallback text if fetch fails
-            
-        Returns:
-            Full article text or fallback text
-        """
-        try:
-            import httpx
-            from utils.article_extractor import extract_article_text
-            
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-                
-                extracted = await extract_article_text(response.text, max_length=5000)
-                if extracted and len(extracted) > len(fallback_text):
-                    logger.debug(f"Fetched full article: {len(extracted)} chars")
-                    return extracted
-                    
-        except Exception as e:
-            logger.debug(f"Could not fetch full article from {url}: {e}")
-        
-        return fallback_text
-
-    async def _summarize_with_deepseek(self, text: str, title: str, url: str = None, user_id: int = None) -> tuple[str | None, dict]:
+    async def _summarize_with_deepseek(self, text: str, title: str, checksum: str | None = None, user_id: int = None) -> tuple[str | None, dict]:
         """
         Call DeepSeek API to summarize news.
         
         Args:
             text: Article text to summarize
             title: Article title
-            url: Optional URL to fetch full article from
             user_id: User ID to get AI level preference (sandbox only)
             
         Returns:
@@ -1774,16 +1779,17 @@ class NewsBot:
         try:
             from config.config import APP_ENV
             
-            # Try to fetch full article if URL provided
-            if url:
-                text = await self._fetch_full_article(url, text)
-            
             # Get AI level for summary (global setting)
             from core.services.access_control import AILevelManager
             ai_manager = AILevelManager(self.db)
             level = ai_manager.get_level('global', 'summary')
             
-            summary, token_usage = await self.deepseek_client.summarize(title=title, text=text, level=level)
+            summary, token_usage = await self.deepseek_client.summarize(
+                title=title,
+                text=text,
+                level=level,
+                checksum=checksum
+            )
             if summary:
                 logger.debug(f"DeepSeek summary created (level={level}): {summary[:50]}...")
             return summary, token_usage
@@ -1830,39 +1836,152 @@ class NewsBot:
             code_to_id = {src['code']: src['id'] for src in sources}
 
         for user_id in recipients:
-            try:
-                # Проверяем, не поставил ли пользователь на паузу
-                if self.db.is_user_paused(str(user_id)):
-                    logger.debug(f"Skipping news for user {user_id}: user is paused")
-                    continue
-                
-                # Проверяем фильтр по источникам для этого пользователя
-                if news_data:
-                    # Получаем список включённых источников для пользователя
-                    enabled_source_ids = self.db.get_enabled_source_ids_for_user(str(user_id))
-                    
-                    # Если пользователь имеет список включённых источников
-                    if enabled_source_ids is not None:
-                        # Проверяем, включен ли источник этой новости
-                        source = news_data.get('source', '')
-                        source_id = code_to_id.get(source)
-                        
-                        # Если источник не найден в БД или отключен - пропускаем
-                        if source_id and source_id not in enabled_source_ids:
-                            logger.debug(f"Skipping news for user {user_id}: source {source} is disabled")
-                            continue
-                
-                await self.application.bot.send_message(
-                    chat_id=user_id,
-                    text=message,
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=keyboard,
-                    disable_web_page_preview=True,
-                    disable_notification=True  # Без звука, чтобы не спамить
+            await self._deliver_to_user(user_id, keyboard, news_id, news_data, message)
+
+    async def _deliver_to_user(
+        self,
+        user_id: int,
+        keyboard: InlineKeyboardMarkup,
+        news_id: int,
+        news_data: dict | None,
+        fallback_message: str | None = None,
+    ) -> bool:
+        """Final delivery gate with pause/version checks and idempotency."""
+        try:
+            user_id_str = str(user_id)
+            state_snapshot = self.db.get_delivery_state(user_id_str)
+            pause_version_snapshot = state_snapshot.get('pause_version', 0)
+
+            if state_snapshot.get('is_paused'):
+                logger.info(f"DELIVERY_SKIP_PAUSED user_id={user_id}")
+                return False
+
+            last_delivered = state_snapshot.get('last_delivered_news_id')
+            if last_delivered and news_id <= int(last_delivered):
+                logger.info(f"DELIVERY_DUPLICATE_SKIPPED user_id={user_id} news_id={news_id}")
+                return False
+
+            if news_data:
+                enabled_source_ids = self.db.get_enabled_source_ids_for_user(user_id_str)
+                if enabled_source_ids is not None:
+                    source = news_data.get('source', '')
+                    source_id = None
+                    if source:
+                        source_id = None
+                        if hasattr(self, '_source_code_to_id_cache') and self._source_code_to_id_cache:
+                            source_id = self._source_code_to_id_cache.get(source)
+                        else:
+                            sources = self.db.list_sources()
+                            self._source_code_to_id_cache = {src['code']: src['id'] for src in sources}
+                            source_id = self._source_code_to_id_cache.get(source)
+                    if source_id and source_id not in enabled_source_ids:
+                        logger.info(f"DELIVERY_SKIP_SOURCE_DISABLED user_id={user_id} source={source}")
+                        return False
+
+            # Last gate: re-check pause/version
+            state_current = self.db.get_delivery_state(user_id_str)
+            if state_current.get('is_paused'):
+                logger.info(f"DELIVERY_SKIP_PAUSED user_id={user_id}")
+                return False
+            if state_current.get('pause_version', 0) != pause_version_snapshot:
+                logger.info(f"DELIVERY_SKIP_VERSION_MISMATCH user_id={user_id}")
+                return False
+
+            if not self.db.try_log_delivery(user_id_str, news_id):
+                logger.info(f"DELIVERY_DUPLICATE_SKIPPED user_id={user_id} news_id={news_id}")
+                return False
+
+            message_to_send = fallback_message or ''
+            if news_data:
+                base_text = (
+                    news_data.get('clean_text')
+                    or news_data.get('text', '')
+                    or news_data.get('lead_text', '')
                 )
-                logger.debug(f"Sent news to user {user_id}")
-            except Exception as e:
-                logger.warning(f"Failed to send to user {user_id}: {e}")
+                title = news_data.get('title', 'No title')
+                source_name = news_data.get('source', 'Unknown')
+                source_url = news_data.get('url', '')
+                translate_enabled, target_lang = self.db.get_user_translation(user_id_str)
+                translated_text = None
+                if translate_enabled and news_data.get('language') == 'en' and base_text:
+                    checksum = news_data.get('checksum') or ''
+                    if checksum:
+                        translated_text = self.db.get_translation_cache(news_id, checksum, target_lang)
+                    if not translated_text:
+                        translated_text, token_usage = await self.deepseek_client.translate_text(
+                            base_text,
+                            target_lang=target_lang,
+                            checksum=checksum or None
+                        )
+                        if translated_text and checksum:
+                            self.db.set_translation_cache(news_id, checksum, target_lang, translated_text)
+                        if token_usage and token_usage.get('total_tokens', 0) > 0:
+                            cost_usd = token_usage.get('cost_usd', 0.0) or 0.0
+                            self.db.add_ai_usage(token_usage['total_tokens'], cost_usd, 'translate')
+
+                language = news_data.get('language') or 'ru'
+                tag_language = 'ru' if (translate_enabled and language == 'en') else ('en' if language == 'en' else 'ru')
+                base_tag = self._get_category_tag(news_data.get('category', 'russia'), tag_language)
+                extra_tags = news_data.get('hashtags_ru') if tag_language == 'ru' else news_data.get('hashtags_en')
+                extra_tags = extra_tags or ''
+                if base_tag and base_tag in extra_tags:
+                    extra_tags = extra_tags.replace(base_tag, '').strip()
+
+                message_to_send = format_telegram_message(
+                    title=title,
+                    text=translated_text or base_text,
+                    source_name=source_name,
+                    source_url=source_url,
+                    category=self._get_category_line(
+                        news_data.get('category', 'russia'),
+                        language=tag_language,
+                        extra_tags=extra_tags
+                    )
+                )
+
+            await self.application.bot.send_message(
+                chat_id=user_id,
+                text=message_to_send,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+                disable_notification=True
+            )
+            self.db.update_last_delivered(user_id_str, news_id)
+            logger.info(f"DELIVERY_SENT_OK user_id={user_id} news_id={news_id}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to send to user {user_id}: {e}")
+            self.db.remove_delivery_log(str(user_id), news_id)
+            return False
+
+    async def _deliver_pending_for_user(self, user_id: int, limit: int = 50):
+        """Deliver pending news to user after resume."""
+        try:
+            state = self.db.get_delivery_state(str(user_id))
+            last_id = state.get('last_delivered_news_id')
+            pending = self.db.get_news_after_id(last_id, limit=limit)
+            if not pending:
+                return
+
+            for item in pending:
+                if not self._is_today_news(item):
+                    continue
+                news_id = item.get('id')
+                if not news_id:
+                    continue
+
+                full = self.db.get_news_by_id(int(news_id)) or item
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("🤖 ИИ", callback_data=f"ai:{news_id}"),
+                        InlineKeyboardButton("📌 Выбрать", callback_data=f"select:{news_id}")
+                    ]
+                ])
+
+                await self._deliver_to_user(user_id, keyboard, int(news_id), full, None)
+        except Exception as e:
+            logger.error(f"Error delivering pending for user {user_id}: {e}")
     
     async def collect_and_publish(self) -> int:
         """
@@ -1948,12 +2067,31 @@ class NewsBot:
                     continue
                 
                 # Попытка атомарно зарегистрировать новость в БД
+                hashtags_ru = ""
+                hashtags_en = ""
+                try:
+                    hashtags_ru, hashtags_en = await self._generate_hashtags_snapshot(news)
+                except Exception as e:
+                    logger.debug(f"Hashtags generation skipped: {e}")
+
                 news_id = self.db.add_news(
                     url=news['url'],
                     title=news.get('title', ''),
                     source=news.get('source', ''),
                     category=news.get('category', ''),
-                    lead_text=news.get('text', '') or ''
+                    lead_text=news.get('lead_text', '') or news.get('text', '') or '',
+                    raw_text=news.get('raw_text'),
+                    clean_text=news.get('clean_text') or news.get('text', ''),
+                    checksum=news.get('checksum'),
+                    language=news.get('language'),
+                    domain=news.get('domain'),
+                    extraction_method=news.get('extraction_method'),
+                    published_at=news.get('published_at'),
+                    published_date=news.get('published_date'),
+                    published_time=news.get('published_time'),
+                    quality_score=news.get('quality_score'),
+                    hashtags_ru=hashtags_ru,
+                    hashtags_en=hashtags_en,
                 )
 
                 if not news_id:
@@ -1966,7 +2104,7 @@ class NewsBot:
                 cleanup_level = ai_manager.get_level('global', 'cleanup')
                 
                 source = news.get('source', '').lower()
-                news_text = news.get('text', '')
+                news_text = news.get('clean_text') or news.get('text', '')
                 
                 # Debug logging for auto-summarization trigger
                 is_lenta_or_ria = 'lenta.ru' in source or 'ria.ru' in source
@@ -1985,29 +2123,21 @@ class NewsBot:
                             # Generate summary (1-2 sentences)
                             full_text = news_text if news_text else news.get('title', '')
                             summary_level = ai_manager.get_level('global', 'summary')
-                            
-                            from core.services.access_control import get_llm_profile
-                            profile = get_llm_profile(summary_level, 'summary')
-                            
-                            logger.debug(f"Summary profile for level {summary_level}: {profile}")
-                            
-                            if not profile.get('disabled'):
-                                prompt = f"Перескажи эту новость в 1-2 предложениях очень кратко:\n\n{full_text[:2000]}"
-                                
-                                summary = await self.llm_client.summarize(
-                                    prompt,
-                                    max_tokens=profile.get('max_tokens', 150),
-                                    temperature=profile.get('temperature', 0.5)
-                                )
-                                
-                                if summary:
-                                    self.db.cache_summary(news_id, summary)
-                                    news_text = summary
-                                    logger.info(f"Generated auto-summary for {source}: {summary[:50]}...")
-                                else:
-                                    logger.warning(f"Summarization returned empty result for {source}")
+                            checksum = news.get('checksum')
+
+                            summary, _usage = await self.deepseek_client.summarize(
+                                title=news.get('title', ''),
+                                text=full_text[:2000],
+                                level=summary_level,
+                                checksum=checksum
+                            )
+
+                            if summary:
+                                self.db.save_summary(news_id, summary)
+                                news_text = summary
+                                logger.info(f"Generated auto-summary for {source}: {summary[:50]}...")
                             else:
-                                logger.debug(f"Summary is disabled (level={summary_level})")
+                                logger.warning(f"Summarization returned empty result for {source}")
                     except Exception as e:
                         logger.error(f"Error auto-summarizing {source}: {e}", exc_info=True)
                 
@@ -2030,11 +2160,18 @@ class NewsBot:
                 # Сохраняем в кэш для ИИ кнопки
                 self.news_cache[news_id] = {
                     'title': news.get('title', 'No title'),
-                    'text': news.get('text', ''),
-                    'lead_text': news.get('text', ''),
+                    'text': news_text,
+                    'lead_text': news_text,
                     'url': news.get('url', ''),
                     'source': news.get('source', 'Unknown'),
-                    'category': news_category
+                    'category': news_category,
+                    'clean_text': news.get('clean_text') or news_text,
+                    'checksum': news.get('checksum'),
+                    'language': news.get('language'),
+                    'published_date': news.get('published_date'),
+                    'published_time': news.get('published_time'),
+                    'hashtags_ru': hashtags_ru,
+                    'hashtags_en': hashtags_en,
                 }
 
                 # Создаем кнопки: ИИ пересказ и Выбрать
@@ -2077,6 +2214,87 @@ class NewsBot:
         """Возвращает категорию с эмодзи и хештегом"""
         from config.config import CATEGORIES
         return CATEGORIES.get(category, 'Новости')
+
+    def _get_category_tag(self, category: str, language: str = 'ru') -> str:
+        """Return category hashtag string for RU/EN."""
+        if language == 'en':
+            mapping = {
+                'world': '#World',
+                'russia': '#Russia',
+                'moscow': '#Moscow',
+                'moscow_region': '#MoscowRegion',
+            }
+            return mapping.get(category, '#News')
+        mapping = {
+            'world': '#Мир',
+            'russia': '#Россия',
+            'moscow': '#Москва',
+            'moscow_region': '#Подмосковье',
+        }
+        return mapping.get(category, '#Новости')
+
+    def _get_category_line(self, category: str, language: str = 'ru', extra_tags: str = '') -> str:
+        """Return category line with emoji and optional extra hashtags."""
+        emoji_map = {
+            'world': '🌍',
+            'russia': '🇷🇺',
+            'moscow': '🏛️',
+            'moscow_region': '🏘️',
+        }
+        emoji = emoji_map.get(category, '🗞')
+        base_tag = self._get_category_tag(category, language)
+        tags = f"{base_tag} {extra_tags}".strip() if extra_tags else base_tag
+        return f"{emoji} {tags}".strip()
+
+    async def _generate_hashtags_snapshot(self, news: dict) -> tuple[str, str]:
+        """Generate and return (hashtags_ru, hashtags_en) strings."""
+        title = news.get('title', '')
+        text = news.get('clean_text') or news.get('text', '') or ''
+        language = news.get('language') or 'ru'
+        checksum = news.get('checksum')
+
+        # Default fallback tags
+        fallback_ru = self._get_category_tag(news.get('category', 'russia'), 'ru')
+        fallback_en = self._get_category_tag(news.get('category', 'world'), 'en')
+
+        from core.services.access_control import AILevelManager
+        ai_manager = AILevelManager(self.db)
+        level = ai_manager.get_level('global', 'hashtags')
+        if level == 0:
+            return fallback_ru, fallback_en
+
+        tags_ru = []
+        tags_en = []
+
+        try:
+            if language == 'en':
+                tags_en, usage = await self.deepseek_client.generate_hashtags(
+                    title=title,
+                    text=text,
+                    language='en',
+                    level=level,
+                    checksum=checksum
+                )
+                if usage and usage.get('total_tokens', 0) > 0:
+                    cost_usd = usage.get('cost_usd', 0.0) or 0.0
+                    self.db.add_ai_usage(usage['total_tokens'], cost_usd, 'hashtags')
+            else:
+                tags_ru, usage = await self.deepseek_client.generate_hashtags(
+                    title=title,
+                    text=text,
+                    language='ru',
+                    level=level,
+                    checksum=checksum
+                )
+                if usage and usage.get('total_tokens', 0) > 0:
+                    cost_usd = usage.get('cost_usd', 0.0) or 0.0
+                    self.db.add_ai_usage(usage['total_tokens'], cost_usd, 'hashtags')
+        except Exception as e:
+            logger.debug(f"Hashtag generation failed: {e}")
+
+        hashtags_ru = " ".join(tags_ru) if tags_ru else fallback_ru
+        hashtags_en = " ".join(tags_en) if tags_en else fallback_en
+        return hashtags_ru, hashtags_en
     
     async def run_periodic_collection(self):
         """Запускает периодический сбор новостей"""
@@ -2265,7 +2483,7 @@ class NewsBot:
                 
                 # 4. Text (AI summary if exists, otherwise original text)
                 summary = self.db.get_cached_summary(news_id)
-                text = summary if summary else news.get('text', news.get('lead_text', 'Текст недоступен'))
+                text = summary if summary else news.get('clean_text') or news.get('text') or news.get('lead_text', 'Текст недоступен')
                 text = text.strip()
                 
                 # Clean text: remove emoji and extra formatting
@@ -2333,53 +2551,9 @@ class NewsBot:
     def _generate_excel_file_for_period(self, news_items: list) -> str | None:
         """Generate Excel file for news items list."""
         try:
-            from openpyxl import Workbook
-            from openpyxl.utils import get_column_letter
-            import tempfile
+            from utils.excel_export import generate_excel_file_for_period
 
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "News"
-
-            headers = [
-                "Время новости",
-                "Источник",
-                "Ссылка",
-                "Заголовок",
-                "Содержание новости",
-                "Хештэг"
-            ]
-            ws.append(headers)
-
-            category_map = {
-                'world': '#Мир',
-                'russia': '#Россия',
-                'moscow': '#Москва',
-                'moscow_region': '#Подмосковье',
-            }
-
-            for news in news_items:
-                content = news.get('ai_summary') or news.get('lead_text') or ""
-                content = str(content).strip()
-                tag = category_map.get(news.get('category', 'russia'), '#Россия')
-                ws.append([
-                    news.get('published_at', ''),
-                    news.get('source', ''),
-                    news.get('url', ''),
-                    news.get('title', ''),
-                    content,
-                    tag
-                ])
-
-            # Set column widths for readability
-            col_widths = [20, 25, 50, 60, 80, 15]
-            for i, width in enumerate(col_widths, start=1):
-                ws.column_dimensions[get_column_letter(i)].width = width
-
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
-            wb.save(temp_file.name)
-            temp_file.close()
-            return temp_file.name
+            return generate_excel_file_for_period(news_items)
         except Exception as e:
             logger.error(f"Error generating Excel file: {e}")
             return None
@@ -2470,6 +2644,10 @@ class NewsBot:
     def _is_today_news(self, news: dict) -> bool:
         """Return True if news published_at is today (local date)."""
         from datetime import datetime
+
+        published_date = news.get('published_date')
+        if published_date:
+            return str(published_date) == datetime.now().date().isoformat()
 
         published_at = news.get('published_at') or news.get('published') or news.get('date')
         if not published_at:

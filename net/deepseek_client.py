@@ -106,6 +106,47 @@ def _build_text_extraction_messages(title: str, raw_text: str) -> list[dict]:
     ]
 
 
+def _build_hashtags_messages(title: str, text: str, language: str) -> list[dict]:
+    system_prompt = (
+        "Ты генерируешь хештеги для новости. "
+        "Верни СТРОГО JSON массив строк. "
+        "Без комментариев и без текста вне JSON. "
+        "Хештеги должны быть короткими и релевантными. "
+        "Язык хештегов: {lang}."
+    )
+    user_content = f"Заголовок: {title}\n\nТекст: {text[:2000]}"
+    return [
+        {"role": "system", "content": system_prompt.format(lang=language)},
+        {"role": "user", "content": user_content},
+    ]
+
+
+def _parse_hashtags_json(raw: str) -> list[str]:
+    import json
+
+    if not raw:
+        return []
+    raw = raw.strip()
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    tags = []
+    for item in data:
+        if not isinstance(item, str):
+            continue
+        tag = item.strip()
+        if not tag:
+            continue
+        if not tag.startswith("#"):
+            tag = "#" + tag
+        if tag not in tags:
+            tags.append(tag)
+    return tags
+
+
 class DeepSeekClient:
     def __init__(self, api_key: str = None, endpoint: str = DEEPSEEK_API_ENDPOINT, db=None):
         self.api_key = api_key if api_key and api_key.strip() else None
@@ -132,7 +173,7 @@ class DeepSeekClient:
             f"Cache: {self.cache is not None}, Budget guard: {self.budget is not None}"
         )
 
-    async def summarize(self, title: str, text: str, level: int = 3) -> tuple[Optional[str], dict]:
+    async def summarize(self, title: str, text: str, level: int = 3, checksum: str | None = None) -> tuple[Optional[str], dict]:
         request_id = str(uuid.uuid4())[:8]
         
         # Check if AI level is 0 (disabled) - only in sandbox
@@ -158,7 +199,7 @@ class DeepSeekClient:
         
         # Check cache
         if self.cache:
-            cache_key = self.cache.generate_cache_key('summarize', title, text, level=level)
+            cache_key = self.cache.generate_cache_key('summarize', title, text, level=level, checksum=checksum)
             cached = self.cache.get(cache_key)
             if cached:
                 logger.info(f"[{request_id}] ✅ Cache HIT for summarize")
@@ -236,8 +277,8 @@ class DeepSeekClient:
                     # Store in cache
                     result_text = truncate_text(summary.strip(), max_length=800)
                     if self.cache:
-                        cache_key = self.cache.generate_cache_key('summarize', title, text, level=level)
-                        self.cache.set(cache_key, 'summarize', result_text, input_tokens, output_tokens, cost_usd)
+                        cache_key = self.cache.generate_cache_key('summarize', title, text, level=level, checksum=checksum)
+                        self.cache.set(cache_key, 'summarize', result_text, input_tokens, output_tokens, ttl_hours=72)
                     
                     # Return summary and token usage dict
                     token_usage = {
@@ -270,6 +311,192 @@ class DeepSeekClient:
             backoff *= 2
 
         return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+    async def translate_text(self, text: str, target_lang: str = 'ru', checksum: str | None = None) -> tuple[Optional[str], dict]:
+        """Translate text to target language using DeepSeek."""
+        token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+        if not text:
+            return None, token_usage
+
+        # Check budget limit
+        if self.budget and not self.budget.can_make_request():
+            return None, token_usage
+
+        if self.cache:
+            cache_key = self.cache.generate_cache_key('translate', '', text, target_lang=target_lang, checksum=checksum)
+            cached = self.cache.get(cache_key)
+            if cached:
+                return cached['response'], {
+                    "input_tokens": cached['input_tokens'],
+                    "output_tokens": cached['output_tokens'],
+                    "total_tokens": cached['input_tokens'] + cached['output_tokens'],
+                    "cache_hit": True,
+                }
+
+        env_key = os.getenv('DEEPSEEK_API_KEY')
+        api_key = (env_key or self.api_key or '').strip()
+        if not api_key:
+            return None, token_usage
+
+        system_prompt = (
+            "Переведи текст на целевой язык. "
+            "Сохраняй факты, имена и числа. "
+            "Не добавляй пояснений и комментариев."
+        )
+        payload = {
+            "model": "deepseek-chat",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Язык: {target_lang}\n\n{text}"},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 800,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=AI_SUMMARY_TIMEOUT) as client:
+                response = await client.post(
+                    self.endpoint,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json=payload,
+                )
+            if response.status_code == 200:
+                data = response.json()
+                translated = data["choices"][0]["message"]["content"].strip()
+                usage = data.get("usage", {})
+                input_tokens = int(usage.get("prompt_tokens", 0) or 0)
+                output_tokens = int(usage.get("completion_tokens", 0) or 0)
+                total_tokens = int(usage.get("total_tokens", 0) or 0)
+                if total_tokens == 0:
+                    total_tokens = _estimate_tokens(text)
+                    input_tokens = total_tokens
+                    output_tokens = 0
+
+                cost_usd = (input_tokens * DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD / 1000 +
+                            output_tokens * DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD / 1000)
+                if self.budget:
+                    self.budget.add_cost(cost_usd)
+
+                if self.cache:
+                    cache_key = self.cache.generate_cache_key('translate', '', text, target_lang=target_lang, checksum=checksum)
+                    self.cache.set(cache_key, 'translate', translated, input_tokens, output_tokens, ttl_hours=72)
+
+                return translated, {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": total_tokens,
+                    "cache_hit": False,
+                    "cost_usd": cost_usd,
+                }
+
+        except Exception as e:
+            logger.debug(f"Translate failed: {e}")
+
+        return None, token_usage
+
+    async def generate_hashtags(
+        self,
+        title: str,
+        text: str,
+        language: str = 'ru',
+        level: int = 3,
+        checksum: str | None = None,
+    ) -> tuple[list[str], dict]:
+        """Generate hashtags as JSON array for the given language."""
+        token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+        if not text or not title:
+            return [], token_usage
+
+        if self.budget and not self.budget.can_make_request():
+            return [], token_usage
+
+        if self.cache:
+            cache_key = self.cache.generate_cache_key(
+                'hashtags',
+                title,
+                text,
+                language=language,
+                level=level,
+                checksum=checksum
+            )
+            cached = self.cache.get(cache_key)
+            if cached:
+                return cached['response'], {
+                    "input_tokens": cached['input_tokens'],
+                    "output_tokens": cached['output_tokens'],
+                    "total_tokens": cached['input_tokens'] + cached['output_tokens'],
+                    "cache_hit": True,
+                }
+
+        env_key = os.getenv('DEEPSEEK_API_KEY')
+        api_key = (env_key or self.api_key or '').strip()
+        if not api_key:
+            return [], token_usage
+
+        from core.services.access_control import get_llm_profile
+        profile = get_llm_profile(level, 'hashtags')
+        if profile.get('disabled'):
+            return [], token_usage
+
+        payload = {
+            "model": profile.get('model', 'deepseek-chat'),
+            "messages": _build_hashtags_messages(title, text, language),
+            "temperature": profile.get('temperature', 0.3),
+            "max_tokens": profile.get('max_tokens', 200),
+        }
+        if 'top_p' in profile:
+            payload['top_p'] = profile['top_p']
+
+        try:
+            async with httpx.AsyncClient(timeout=AI_SUMMARY_TIMEOUT) as client:
+                response = await client.post(
+                    self.endpoint,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json=payload,
+                )
+            if response.status_code == 200:
+                data = response.json()
+                raw = data["choices"][0]["message"]["content"]
+                tags = _parse_hashtags_json(raw)
+
+                usage = data.get("usage", {})
+                input_tokens = int(usage.get("prompt_tokens", 0) or 0)
+                output_tokens = int(usage.get("completion_tokens", 0) or 0)
+                total_tokens = int(usage.get("total_tokens", 0) or 0)
+                if total_tokens == 0:
+                    total_tokens = _estimate_tokens(text)
+                    input_tokens = total_tokens
+                    output_tokens = 0
+
+                cost_usd = (input_tokens * DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD / 1000 +
+                            output_tokens * DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD / 1000)
+                if self.budget:
+                    self.budget.add_cost(cost_usd)
+
+                if self.cache:
+                    cache_key = self.cache.generate_cache_key(
+                        'hashtags',
+                        title,
+                        text,
+                        language=language,
+                        level=level,
+                        checksum=checksum
+                    )
+                    self.cache.set(cache_key, 'hashtags', tags, input_tokens, output_tokens, ttl_hours=72)
+
+                return tags, {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": total_tokens,
+                    "cache_hit": False,
+                    "cost_usd": cost_usd,
+                }
+        except Exception as e:
+            logger.debug(f"Hashtags failed: {e}")
+
+        return [], token_usage
 
     async def verify_category(self, title: str, text: str, current_category: str) -> tuple[Optional[str], dict]:
         """

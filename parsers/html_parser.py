@@ -181,7 +181,7 @@ class HTMLParser:
                 'url': url,
                 'text': text[:800],
                 'source': source_name,
-                'published_at': datetime.now().isoformat(),
+                'published_at': None,
             }
         
         except Exception as e:

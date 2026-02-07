@@ -5,6 +5,7 @@ import logging
 import asyncio
 import time
 from typing import List, Dict, Optional
+from datetime import datetime
 try:
     from config.railway_config import SOURCES_CONFIG, RSSHUB_BASE_URL
 except (ImportError, ValueError):
@@ -13,6 +14,10 @@ from parsers.rss_parser import RSSParser
 from parsers.html_parser import HTMLParser
 from urllib.parse import urlparse
 from utils.content_classifier import ContentClassifier
+from utils.content_quality import content_quality_score, compute_checksum, detect_language, is_low_quality
+from utils.date_parser import parse_published_at, split_date_time
+from utils.article_extractor import extract_article_text
+from utils.site_extractors import extract_lenta, extract_ria
 
 logger = logging.getLogger(__name__)
 
@@ -146,9 +151,10 @@ class SourceCollector:
                             entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type))
 
                 for entry in entries_to_add:
-                    if entry in _seen_entries:
+                    entry_key = (entry[0], entry[1])
+                    if entry_key in _seen_entries:
                         continue
-                    _seen_entries.add(entry)
+                    _seen_entries.add(entry_key)
                     self._configured_sources.append(entry)
                     self.source_health.setdefault(entry[1], False)
         
@@ -173,6 +179,38 @@ class SourceCollector:
         """Set cooldown for URL (default 10 minutes)"""
         self._cooldown_until[url] = time.time() + seconds
         logger.warning(f"Cooldown set for {url} for {seconds}s")
+
+    def _coerce_datetime(self, value) -> datetime | None:
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            return value
+        try:
+            text = str(value).strip()
+            if text.endswith('Z'):
+                text = text.replace('Z', '+00:00')
+            return datetime.fromisoformat(text)
+        except Exception:
+            return None
+
+    async def _fetch_article_html(self, url: str) -> str | None:
+        try:
+            from net.http_client import get_http_client
+            http_client = await get_http_client()
+            response = await http_client.get(url, retries=2, timeout=15)
+            return response.text
+        except Exception as e:
+            logger.debug(f"Failed to fetch article HTML: {type(e).__name__}: {str(e)[:80]}")
+            try:
+                import httpx
+
+                async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                    response = await client.get(url)
+                    if response.status_code == 200:
+                        return response.text
+            except Exception as fallback_err:
+                logger.debug(f"Fallback HTML fetch failed: {type(fallback_err).__name__}: {str(fallback_err)[:80]}")
+            return None
     
     async def collect_all(self) -> List[Dict]:
         """
@@ -237,43 +275,70 @@ class SourceCollector:
                     return []
                 
                 news = await self.rss_parser.parse(url, source_name)
+                filtered_news = []
                 for item in news:
                     title = item.get('title', '')
                     text = item.get('text', '') or item.get('lead_text', '')
                     item_url = item.get('url', '')
-                    
-                    # CRITICAL: If text is missing or too short, fetch from page directly
-                    if not text or len(text.strip()) < 80:
+                    published_at = self._coerce_datetime(item.get('published_at'))
+
+                    html = None
+                    is_lenta = 'lenta.ru' in source_name
+                    is_ria = 'ria.ru' in source_name
+
+                    if not published_at or is_lenta or is_ria or not text or len(text.strip()) < 120:
                         if item_url:
-                            logger.debug(f"Text too short ({len(text) if text else 0} chars) for {source_name} item: {title[:50]}, fetching from page...")
-                            try:
-                                from net.http_client import get_http_client
-                                from utils.lead_extractor import extract_lead_from_html
-                                
-                                http_client = await get_http_client()
-                                response = await http_client.get(item_url, retries=2, timeout=15)
-                                fetched_text = extract_lead_from_html(response.text, max_len=800)
-                                
-                                if fetched_text and len(fetched_text.strip()) > 50:
-                                    logger.info(f"✓ Successfully fetched {len(fetched_text)} chars from {source_name}: {title[:40]}...")
-                                    text = fetched_text
-                                    item['text'] = text
-                                else:
-                                    logger.debug(f"Fetched text too short or empty for {title[:40]}: {len(fetched_text) if fetched_text else 0} chars")
-                            except asyncio.TimeoutError:
-                                logger.warning(f"Timeout fetching article from {source_name}: {title[:40]}")
-                            except Exception as fetch_err:
-                                logger.debug(f"Error fetching article text from {source_name}: {type(fetch_err).__name__}: {str(fetch_err)[:100]}")
+                            html = await self._fetch_article_html(item_url)
+
+                    if html and not published_at:
+                        published_at = parse_published_at(html, item_url)
+
+                    if not published_at:
+                        logger.debug(f"Skipping item without published_at: {title[:50]}")
+                        continue
+
+                    raw_text = text or ""
+                    extraction_method = 'rss'
+                    if html:
+                        extracted = None
+                        if is_lenta:
+                            extracted = extract_lenta(html)
+                            extraction_method = 'site:lenta'
+                        elif is_ria:
+                            extracted = extract_ria(html)
+                            extraction_method = 'site:ria'
+                        if not extracted:
+                            extracted = await extract_article_text(html, max_length=5000)
+                            if extracted:
+                                extraction_method = 'trafilatura'
+                        if extracted:
+                            raw_text = extracted
                     
-                    # AI text cleaning (MANDATORY to remove any navigation/metadata garbage)
-                    if self.ai_client and text:
-                        clean_text = await self._clean_text_with_ai(title, text, source_type='rss')
-                        if clean_text:
-                            item['text'] = clean_text
-                            text = clean_text
+                    # AI text cleaning (optional for RSS)
+                    clean_text = raw_text
+                    if self.ai_client and raw_text:
+                        ai_clean = await self._clean_text_with_ai(title, raw_text, source_type='rss')
+                        if ai_clean:
+                            clean_text = ai_clean
+                            extraction_method = f"{extraction_method}+ai"
+
+                    score, _meta = content_quality_score(clean_text, title)
+                    min_score = 0.65 if (is_lenta or is_ria) else 0.55
+                    min_len = 400 if (is_lenta or is_ria) else 120
+                    if not clean_text or len(clean_text.strip()) < min_len or is_low_quality(score, threshold=min_score):
+                        logger.debug(f"Skipping low quality RSS item: {title[:50]}")
+                        continue
+
+                    lang = detect_language(clean_text, title)
+                    checksum = compute_checksum(clean_text)
+                    pub_iso = published_at.isoformat() if published_at else None
+                    pub_date = None
+                    pub_time = None
+                    if published_at:
+                        pub_date, pub_time = split_date_time(published_at)
                     
                     # Classify by content
-                    detected_category = self.classifier.classify(title, text, item_url)
+                    detected_category = self.classifier.classify(title, clean_text, item_url)
                     
                     # For trusted sources like Yahoo News/Reuters/etc, use source category directly (skip AI override)
                     # For other sources, allow AI to optionally override
@@ -281,7 +346,7 @@ class SourceCollector:
                     
                     # Optional AI category verification (if client provided and not skipped)
                     if self.ai_client and detected_category and not skip_ai_verification:
-                        ai_category = await self._verify_with_ai(title, text, detected_category)
+                        ai_category = await self._verify_with_ai(title, clean_text, detected_category)
                         if ai_category:
                             detected_category = ai_category
 
@@ -290,7 +355,20 @@ class SourceCollector:
                         detected_category = 'world'
 
                     item['category'] = detected_category or category
-                return news
+                    item['raw_text'] = raw_text
+                    item['clean_text'] = clean_text
+                    item['checksum'] = checksum
+                    item['language'] = lang
+                    item['published_at'] = pub_iso
+                    item['published_date'] = pub_date
+                    item['published_time'] = pub_time
+                    item['extraction_method'] = extraction_method
+                    item['quality_score'] = score
+                    if item_url:
+                        item['domain'] = urlparse(item_url).netloc.lower()
+                    item['text'] = clean_text
+                    filtered_news.append(item)
+                return filtered_news
             except Exception as e:
                 # Check if it's an HTTP error worth cooldown
                 error_str = str(e)
@@ -319,27 +397,76 @@ class SourceCollector:
             
             try:
                 news = await self.html_parser.parse(url, source_name)
+                filtered_news = []
                 for item in news:
                     title = item.get('title', '')
                     text = item.get('text', '') or item.get('lead_text', '')
                     item_url = item.get('url', '')
+
+                    published_at = self._coerce_datetime(item.get('published_at'))
+                    html = None
+                    is_lenta = 'lenta.ru' in source_name
+                    is_ria = 'ria.ru' in source_name
+
+                    if item_url:
+                        html = await self._fetch_article_html(item_url)
+
+                    if html and not published_at:
+                        published_at = parse_published_at(html, item_url)
+
+                    if not published_at:
+                        logger.debug(f"Skipping item without published_at: {title[:50]}")
+                        continue
+
+                    raw_text = text or ""
+                    extraction_method = 'html'
+                    if html:
+                        extracted = None
+                        if is_lenta:
+                            extracted = extract_lenta(html)
+                            extraction_method = 'site:lenta'
+                        elif is_ria:
+                            extracted = extract_ria(html)
+                            extraction_method = 'site:ria'
+                        if not extracted:
+                            extracted = await extract_article_text(html, max_length=5000)
+                            if extracted:
+                                extraction_method = 'trafilatura'
+                        if extracted:
+                            raw_text = extracted
                     
                     # AI text cleaning (MANDATORY for HTML sources to remove navigation garbage)
-                    if self.ai_client and text:
-                        clean_text = await self._clean_text_with_ai(title, text, source_type='html')
-                        if clean_text:
-                            item['text'] = clean_text
-                            text = clean_text
+                    clean_text = raw_text
+                    if self.ai_client and raw_text:
+                        ai_clean = await self._clean_text_with_ai(title, raw_text, source_type='html')
+                        if ai_clean:
+                            clean_text = ai_clean
+                            extraction_method = f"{extraction_method}+ai"
+
+                    score, _meta = content_quality_score(clean_text, title)
+                    min_score = 0.65 if (is_lenta or is_ria) else 0.55
+                    min_len = 400 if (is_lenta or is_ria) else 120
+                    if not clean_text or len(clean_text.strip()) < min_len or is_low_quality(score, threshold=min_score):
+                        logger.debug(f"Skipping low quality HTML item: {title[:50]}")
+                        continue
+
+                    lang = detect_language(clean_text, title)
+                    checksum = compute_checksum(clean_text)
+                    pub_iso = published_at.isoformat() if published_at else None
+                    pub_date = None
+                    pub_time = None
+                    if published_at:
+                        pub_date, pub_time = split_date_time(published_at)
                     
                     # Classify by content
-                    detected_category = self.classifier.classify(title, text, item_url)
+                    detected_category = self.classifier.classify(title, clean_text, item_url)
                     
                     # For trusted sources (Telegram channels, news agencies), skip AI verification
                     skip_ai_verification = source_name in ['news.yahoo.com', 'rss.news.yahoo.com']
                     
                     # Optional AI category verification (if client provided and not skipped)
                     if self.ai_client and detected_category and not skip_ai_verification:
-                        ai_category = await self._verify_with_ai(title, text, detected_category)
+                        ai_category = await self._verify_with_ai(title, clean_text, detected_category)
                         if ai_category:
                             detected_category = ai_category
 
@@ -348,7 +475,20 @@ class SourceCollector:
                         detected_category = 'world'
 
                     item['category'] = detected_category or category
-                return news
+                    item['raw_text'] = raw_text
+                    item['clean_text'] = clean_text
+                    item['checksum'] = checksum
+                    item['language'] = lang
+                    item['published_at'] = pub_iso
+                    item['published_date'] = pub_date
+                    item['published_time'] = pub_time
+                    item['extraction_method'] = extraction_method
+                    item['quality_score'] = score
+                    if item_url:
+                        item['domain'] = urlparse(item_url).netloc.lower()
+                    item['text'] = clean_text
+                    filtered_news.append(item)
+                return filtered_news
             except Exception as e:
                 # Try to extract HTTP status code
                 status_code = None
