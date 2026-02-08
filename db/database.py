@@ -168,6 +168,7 @@ class NewsDatabase:
                     user_id TEXT NOT NULL,
                     source_id INTEGER NOT NULL,
                     enabled INTEGER NOT NULL DEFAULT 1,
+                    env TEXT DEFAULT 'prod',
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (user_id, source_id),
                     FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
@@ -215,6 +216,7 @@ class NewsDatabase:
                 CREATE TABLE IF NOT EXISTS user_news_selections (
                     user_id TEXT NOT NULL,
                     news_id INTEGER NOT NULL,
+                    env TEXT DEFAULT 'prod',
                     selected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (user_id, news_id),
                     FOREIGN KEY (news_id) REFERENCES published_news(id) ON DELETE CASCADE
@@ -226,6 +228,7 @@ class NewsDatabase:
                 CREATE TABLE IF NOT EXISTS invites (
                     code TEXT PRIMARY KEY,
                     created_by TEXT NOT NULL,
+                    invite_label TEXT,
                     used_by TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     used_at TIMESTAMP
@@ -239,6 +242,7 @@ class NewsDatabase:
                     username TEXT,
                     first_name TEXT,
                     invited_by TEXT,
+                    invite_label TEXT,
                     approved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -247,6 +251,7 @@ class NewsDatabase:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_preferences (
                     user_id TEXT PRIMARY KEY,
+                    env TEXT DEFAULT 'prod',
                     is_paused INTEGER DEFAULT 0,
                     paused_at TIMESTAMP NULL,
                     resume_at TIMESTAMP NULL,
@@ -254,6 +259,7 @@ class NewsDatabase:
                     pause_version INTEGER NOT NULL DEFAULT 0,
                     translate_enabled INTEGER DEFAULT 0,
                     translate_lang TEXT DEFAULT 'ru',
+                    category_filter TEXT,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -285,6 +291,15 @@ class NewsDatabase:
                 CREATE TABLE IF NOT EXISTS system_settings (
                     setting_key TEXT PRIMARY KEY,
                     setting_value TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Table for bot settings (global admin-controlled)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS bot_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -416,12 +431,46 @@ class NewsDatabase:
                 'pause_version': 'INTEGER DEFAULT 0',
                 'translate_enabled': 'INTEGER DEFAULT 0',
                 'translate_lang': "TEXT DEFAULT 'ru'",
+                'env': "TEXT DEFAULT 'prod'",
+                'category_filter': 'TEXT',
             }
             for column, col_type in required.items():
                 if column not in existing:
                     cursor.execute(f"ALTER TABLE user_preferences ADD COLUMN {column} {col_type}")
         except Exception as e:
             logger.debug(f"Error ensuring user_preferences columns: {e}")
+
+        try:
+            cursor.execute("PRAGMA table_info(user_source_settings)")
+            existing = {row[1] for row in cursor.fetchall()}
+            if 'env' not in existing:
+                cursor.execute("ALTER TABLE user_source_settings ADD COLUMN env TEXT DEFAULT 'prod'")
+        except Exception as e:
+            logger.debug(f"Error ensuring user_source_settings columns: {e}")
+
+        try:
+            cursor.execute("PRAGMA table_info(user_news_selections)")
+            existing = {row[1] for row in cursor.fetchall()}
+            if 'env' not in existing:
+                cursor.execute("ALTER TABLE user_news_selections ADD COLUMN env TEXT DEFAULT 'prod'")
+        except Exception as e:
+            logger.debug(f"Error ensuring user_news_selections columns: {e}")
+
+        try:
+            cursor.execute("PRAGMA table_info(invites)")
+            existing = {row[1] for row in cursor.fetchall()}
+            if 'invite_label' not in existing:
+                cursor.execute("ALTER TABLE invites ADD COLUMN invite_label TEXT")
+        except Exception as e:
+            logger.debug(f"Error ensuring invites columns: {e}")
+
+        try:
+            cursor.execute("PRAGMA table_info(approved_users)")
+            existing = {row[1] for row in cursor.fetchall()}
+            if 'invite_label' not in existing:
+                cursor.execute("ALTER TABLE approved_users ADD COLUMN invite_label TEXT")
+        except Exception as e:
+            logger.debug(f"Error ensuring approved_users columns: {e}")
 
     def _ensure_indexes(self, cursor):
         """Ensure indexes exist after columns are added."""
@@ -793,7 +842,8 @@ class NewsDatabase:
                 SELECT source,
                        SUM(CASE WHEN event_type = 'success' THEN 1 ELSE 0 END) AS success_count,
                        SUM(CASE WHEN event_type = 'error' THEN 1 ELSE 0 END) AS error_count,
-                       SUM(CASE WHEN event_type = 'drop_old' THEN 1 ELSE 0 END) AS drop_old_count
+                       SUM(CASE WHEN event_type = 'drop_old' THEN 1 ELSE 0 END) AS drop_old_count,
+                       SUM(CASE WHEN event_type = 'drop_date' THEN 1 ELSE 0 END) AS drop_date_count
                 FROM source_events
                 WHERE created_at >= datetime('now', ?)
                   AND source IN ({placeholders})
@@ -802,17 +852,47 @@ class NewsDatabase:
                 (window, *sources)
             )
             rows = cursor.fetchall()
-            counts = {src: {'success_count': 0, 'error_count': 0, 'drop_old_count': 0} for src in sources}
-            for source, success_count, error_count, drop_old_count in rows:
+            counts = {src: {'success_count': 0, 'error_count': 0, 'drop_old_count': 0, 'drop_date_count': 0} for src in sources}
+            for source, success_count, error_count, drop_old_count, drop_date_count in rows:
                 counts[source] = {
                     'success_count': success_count or 0,
                     'error_count': error_count or 0,
                     'drop_old_count': drop_old_count or 0,
+                    'drop_date_count': drop_date_count or 0,
                 }
             return counts
         except Exception as e:
             logger.debug(f"Error getting source event counts: {e}")
-            return {src: {'success_count': 0, 'error_count': 0, 'drop_old_count': 0} for src in sources}
+            return {src: {'success_count': 0, 'error_count': 0, 'drop_old_count': 0, 'drop_date_count': 0} for src in sources}
+
+    def get_source_last_drop_codes(self, sources: List[str], window_hours: int = 24) -> dict:
+        if not sources:
+            return {}
+        try:
+            cursor = self._conn.cursor()
+            placeholders = ','.join(['?'] * len(sources))
+            window = f"-{window_hours} hours"
+            cursor.execute(
+                f'''
+                SELECT e.source, e.error_code
+                FROM source_events e
+                JOIN (
+                    SELECT source, MAX(created_at) AS max_created
+                    FROM source_events
+                    WHERE created_at >= datetime('now', ?)
+                      AND event_type = 'drop_date'
+                      AND source IN ({placeholders})
+                    GROUP BY source
+                ) m
+                ON e.source = m.source AND e.created_at = m.max_created
+                WHERE e.event_type = 'drop_date'
+                ''',
+                (window, *sources)
+            )
+            return {row[0]: row[1] for row in cursor.fetchall()}
+        except Exception as e:
+            logger.debug(f"Error getting drop-date codes: {e}")
+            return {}
 
     def get_source_health_snapshot(self, sources: List[str]) -> dict:
         if not sources:
@@ -1223,6 +1303,33 @@ class NewsDatabase:
         except Exception as e:
             logger.error(f"Error syncing AI usage: {e}")
             return False
+
+    # ==================== BOT SETTINGS (GLOBAL) ====================
+
+    def get_bot_setting(self, key: str, default: str | None = None) -> str | None:
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute('SELECT value FROM bot_settings WHERE key = ?', (key,))
+            row = cursor.fetchone()
+            return row[0] if row else default
+        except Exception as e:
+            logger.error(f"Error getting bot setting {key}: {e}")
+            return default
+
+    def set_bot_setting(self, key: str, value: str | None) -> bool:
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    '''INSERT OR REPLACE INTO bot_settings (key, value, updated_at)
+                       VALUES (?, ?, CURRENT_TIMESTAMP)''',
+                    (key, value)
+                )
+                self._conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error setting bot setting {key}: {e}")
+            return False
     # ==================== USER SOURCE SETTINGS ====================
     
     def get_or_create_sources(self, source_list: List[dict]) -> List[int]:
@@ -1259,7 +1366,7 @@ class NewsDatabase:
             logger.error(f"Error listing sources: {e}")
             return []
     
-    def get_user_source_enabled_map(self, user_id) -> dict:
+    def get_user_source_enabled_map(self, user_id, env: str = 'prod') -> dict:
         """
         Получить состояние (enabled/disabled) источников для пользователя.
         Returns: {source_id: enabled_bool}
@@ -1268,15 +1375,16 @@ class NewsDatabase:
         try:
             cursor = self._conn.cursor()
             cursor.execute(
-                'SELECT source_id, enabled FROM user_source_settings WHERE user_id = ?',
-                (str(user_id),)
+                '''SELECT source_id, enabled FROM user_source_settings
+                   WHERE user_id = ? AND (env = ? OR env IS NULL)''',
+                (str(user_id), env)
             )
             return {row[0]: bool(row[1]) for row in cursor.fetchall()}
         except Exception as e:
             logger.error(f"Error getting user source map: {e}")
             return {}
     
-    def toggle_user_source(self, user_id, source_id: int) -> bool:
+    def toggle_user_source(self, user_id, source_id: int, env: str = 'prod') -> bool:
         """Переключить состояние источника для пользователя (true <-> false)"""
         with self._write_lock:
             try:
@@ -1285,8 +1393,8 @@ class NewsDatabase:
                 
                 # Получить текущее состояние (по умолчанию True)
                 cursor.execute(
-                    'SELECT enabled FROM user_source_settings WHERE user_id = ? AND source_id = ?',
-                    (user_id, source_id)
+                    'SELECT enabled FROM user_source_settings WHERE user_id = ? AND source_id = ? AND (env = ? OR env IS NULL)',
+                    (user_id, source_id, env)
                 )
                 row = cursor.fetchone()
                 current_state = row[0] if row else 1  # Default True
@@ -1294,10 +1402,10 @@ class NewsDatabase:
                 
                 # UPSERT
                 cursor.execute(
-                    '''INSERT INTO user_source_settings (user_id, source_id, enabled)
-                       VALUES (?, ?, ?)
+                          '''INSERT INTO user_source_settings (user_id, source_id, enabled, env)
+                              VALUES (?, ?, ?, ?)
                        ON CONFLICT(user_id, source_id) DO UPDATE SET enabled = ?, updated_at = CURRENT_TIMESTAMP''',
-                    (user_id, source_id, new_state, new_state)
+                          (user_id, source_id, new_state, env, new_state)
                 )
                 self._conn.commit()
                 return bool(new_state)
@@ -1305,7 +1413,7 @@ class NewsDatabase:
                 logger.error(f"Error toggling user source: {e}")
                 return False
     
-    def get_enabled_source_ids_for_user(self, user_id) -> Optional[list]:
+    def get_enabled_source_ids_for_user(self, user_id, env: str = 'prod') -> Optional[list]:
         """
         Получить список включенных source_id для пользователя.
         Returns: список ID, или None если все включены (не было отключений)
@@ -1316,8 +1424,8 @@ class NewsDatabase:
             
             # Проверить, есть ли вообще отключенные
             cursor.execute(
-                'SELECT COUNT(*) FROM user_source_settings WHERE user_id = ? AND enabled = 0',
-                (user_id,)
+                'SELECT COUNT(*) FROM user_source_settings WHERE user_id = ? AND enabled = 0 AND (env = ? OR env IS NULL)',
+                (user_id, env)
             )
             disabled_count = cursor.fetchone()[0]
             
@@ -1327,8 +1435,8 @@ class NewsDatabase:
             
             # Вернуть список включенных (по умолчанию все включены, кроме явно отключенных)
             cursor.execute(
-                'SELECT source_id FROM user_source_settings WHERE user_id = ? AND enabled = 0',
-                (user_id,)
+                'SELECT source_id FROM user_source_settings WHERE user_id = ? AND enabled = 0 AND (env = ? OR env IS NULL)',
+                (user_id, env)
             )
             disabled_ids = {row[0] for row in cursor.fetchall()}
             
@@ -1378,7 +1486,7 @@ class NewsDatabase:
         except Exception as e:
             logger.error(f"Error setting feature flag: {e}")
             return False
-    def add_user_selection(self, user_id: str, news_id: int) -> bool:
+    def add_user_selection(self, user_id: str, news_id: int, env: str = 'prod') -> bool:
         """
         Добавить новость в выбранные пользователем.
         Returns: True если успешно, False если ошибка
@@ -1388,8 +1496,8 @@ class NewsDatabase:
                 cursor = self._conn.cursor()
                 user_id = str(user_id)
                 cursor.execute(
-                    'INSERT OR IGNORE INTO user_news_selections (user_id, news_id, selected_at) VALUES (?, ?, CURRENT_TIMESTAMP)',
-                    (user_id, news_id)
+                    'INSERT OR IGNORE INTO user_news_selections (user_id, news_id, env, selected_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
+                    (user_id, news_id, env)
                 )
                 self._conn.commit()
                 logger.debug(f"Added selection: user={user_id}, news_id={news_id}")
@@ -1398,7 +1506,7 @@ class NewsDatabase:
             logger.error(f"Error adding selection: {e}")
             return False
 
-    def remove_user_selection(self, user_id: str, news_id: int) -> bool:
+    def remove_user_selection(self, user_id: str, news_id: int, env: str = 'prod') -> bool:
         """
         Удалить новость из выбранных пользователем.
         Returns: True если успешно, False если ошибка
@@ -1408,8 +1516,8 @@ class NewsDatabase:
                 cursor = self._conn.cursor()
                 user_id = str(user_id)
                 cursor.execute(
-                    'DELETE FROM user_news_selections WHERE user_id = ? AND news_id = ?',
-                    (user_id, news_id)
+                    'DELETE FROM user_news_selections WHERE user_id = ? AND news_id = ? AND (env = ? OR env IS NULL)',
+                    (user_id, news_id, env)
                 )
                 self._conn.commit()
                 logger.debug(f"Removed selection: user={user_id}, news_id={news_id}")
@@ -1418,7 +1526,7 @@ class NewsDatabase:
             logger.error(f"Error removing selection: {e}")
             return False
 
-    def get_user_selections(self, user_id: str) -> List[int]:
+    def get_user_selections(self, user_id: str, env: str = 'prod') -> List[int]:
         """
         Получить список ID новостей, выбранных пользователем.
         Returns: список news_id
@@ -1427,15 +1535,17 @@ class NewsDatabase:
             cursor = self._conn.cursor()
             user_id = str(user_id)
             cursor.execute(
-                'SELECT news_id FROM user_news_selections WHERE user_id = ? ORDER BY selected_at DESC',
-                (user_id,)
+                    '''SELECT news_id FROM user_news_selections
+                       WHERE user_id = ? AND (env = ? OR env IS NULL)
+                       ORDER BY selected_at DESC''',
+                    (user_id, env)
             )
             return [row[0] for row in cursor.fetchall()]
         except Exception as e:
             logger.error(f"Error getting user selections: {e}")
             return []
 
-    def clear_user_selections(self, user_id: str) -> bool:
+    def clear_user_selections(self, user_id: str, env: str = 'prod') -> bool:
         """
         Очистить все выбранные новости пользователя.
         Returns: True если успешно, False если ошибка
@@ -1445,8 +1555,8 @@ class NewsDatabase:
                 cursor = self._conn.cursor()
                 user_id = str(user_id)
                 cursor.execute(
-                    'DELETE FROM user_news_selections WHERE user_id = ?',
-                    (user_id,)
+                    'DELETE FROM user_news_selections WHERE user_id = ? AND (env = ? OR env IS NULL)',
+                    (user_id, env)
                 )
                 self._conn.commit()
                 logger.debug(f"Cleared selections for user={user_id}")
@@ -1455,7 +1565,7 @@ class NewsDatabase:
             logger.error(f"Error clearing selections: {e}")
             return False
 
-    def is_news_selected(self, user_id: str, news_id: int) -> bool:
+    def is_news_selected(self, user_id: str, news_id: int, env: str = 'prod') -> bool:
         """
         Проверить, выбрана ли новость пользователем.
         Returns: True если выбрана, False если нет
@@ -1464,15 +1574,15 @@ class NewsDatabase:
             cursor = self._conn.cursor()
             user_id = str(user_id)
             cursor.execute(
-                'SELECT 1 FROM user_news_selections WHERE user_id = ? AND news_id = ? LIMIT 1',
-                (user_id, news_id)
+                    'SELECT 1 FROM user_news_selections WHERE user_id = ? AND news_id = ? AND (env = ? OR env IS NULL) LIMIT 1',
+                    (user_id, news_id, env)
             )
             return cursor.fetchone() is not None
         except Exception as e:
             logger.error(f"Error checking selection: {e}")
             return False
 
-    def create_invite(self, created_by: str) -> Optional[str]:
+    def create_invite(self, created_by: str, invite_label: str | None = None) -> Optional[str]:
         """
         Создать новый инвайт-код.
         Returns: код инвайта или None при ошибке
@@ -1484,9 +1594,10 @@ class NewsDatabase:
             with self._write_lock:
                 cursor = self._conn.cursor()
                 created_by = str(created_by)
+                cleaned_label = invite_label.strip() if invite_label else None
                 cursor.execute(
-                    'INSERT INTO invites (code, created_by) VALUES (?, ?)',
-                    (code, created_by)
+                    'INSERT INTO invites (code, created_by, invite_label) VALUES (?, ?, ?)',
+                    (code, created_by, cleaned_label)
                 )
                 self._conn.commit()
                 logger.info(f"Created invite code: {code} by user {created_by}")
@@ -1495,7 +1606,7 @@ class NewsDatabase:
             logger.error(f"Error creating invite: {e}")
             return None
 
-    def create_invite_with_code(self, code: str, created_by: str) -> bool:
+    def create_invite_with_code(self, code: str, created_by: str, invite_label: str | None = None) -> bool:
         """
         Создать новый инвайт-код с заданным значением.
         Returns: True если успешно, False при ошибке
@@ -1504,9 +1615,10 @@ class NewsDatabase:
             with self._write_lock:
                 cursor = self._conn.cursor()
                 created_by = str(created_by)
+                cleaned_label = invite_label.strip() if invite_label else None
                 cursor.execute(
-                    'INSERT INTO invites (code, created_by) VALUES (?, ?)',
-                    (code, created_by)
+                    'INSERT INTO invites (code, created_by, invite_label) VALUES (?, ?, ?)',
+                    (code, created_by, cleaned_label)
                 )
                 self._conn.commit()
                 logger.info(f"Created invite code (custom): {code} by user {created_by}")
@@ -1527,7 +1639,7 @@ class NewsDatabase:
                 
                 # Проверить, что код существует и не использован
                 cursor.execute(
-                    'SELECT created_by, used_by FROM invites WHERE code = ?',
+                    'SELECT created_by, used_by, invite_label FROM invites WHERE code = ?',
                     (code,)
                 )
                 row = cursor.fetchone()
@@ -1536,7 +1648,7 @@ class NewsDatabase:
                     logger.warning(f"Invite code not found: {code}")
                     return False
                 
-                created_by, used_by = row
+                created_by, used_by, invite_label = row
                 
                 if used_by:
                     logger.warning(f"Invite code already used: {code} by {used_by}")
@@ -1550,8 +1662,8 @@ class NewsDatabase:
                 
                 # Добавить пользователя в approved_users
                 cursor.execute(
-                    'INSERT OR REPLACE INTO approved_users (user_id, username, first_name, invited_by) VALUES (?, ?, ?, ?)',
-                    (user_id, username, first_name, created_by)
+                    'INSERT OR REPLACE INTO approved_users (user_id, username, first_name, invited_by, invite_label) VALUES (?, ?, ?, ?, ?)',
+                    (user_id, username, first_name, created_by, invite_label)
                 )
                 
                 self._conn.commit()
@@ -1586,8 +1698,9 @@ class NewsDatabase:
                 user_id = str(user_id)
 
                 # If already used, reject
-                cursor.execute('SELECT used_by FROM invites WHERE code = ?', (code,))
+                cursor.execute('SELECT used_by, invite_label FROM invites WHERE code = ?', (code,))
                 row = cursor.fetchone()
+                invite_label = row[1] if row else None
                 if row and row[0]:
                     logger.warning(f"Signed invite already used: {code} by {row[0]}")
                     return False
@@ -1604,8 +1717,8 @@ class NewsDatabase:
 
                 # Add user to approved_users
                 cursor.execute(
-                    'INSERT OR REPLACE INTO approved_users (user_id, username, first_name, invited_by) VALUES (?, ?, ?, ?)',
-                    (user_id, username, first_name, 'SIGNED')
+                    'INSERT OR REPLACE INTO approved_users (user_id, username, first_name, invited_by, invite_label) VALUES (?, ?, ?, ?, ?)',
+                    (user_id, username, first_name, 'SIGNED', invite_label)
                 )
 
                 self._conn.commit()
@@ -1632,7 +1745,7 @@ class NewsDatabase:
             logger.error(f"Error checking user approval: {e}")
             return False
 
-    def get_unused_invites(self) -> List[Tuple[str, str, str]]:
+    def get_unused_invites(self) -> List[Tuple[str, str, str, str]]:
         """
         Получить список неиспользованных инвайтов.
         Returns: список (code, created_by, created_at)
@@ -1640,14 +1753,14 @@ class NewsDatabase:
         try:
             cursor = self._conn.cursor()
             cursor.execute(
-                'SELECT code, created_by, created_at FROM invites WHERE used_by IS NULL ORDER BY created_at DESC'
+                'SELECT code, created_by, created_at, invite_label FROM invites WHERE used_by IS NULL ORDER BY created_at DESC'
             )
             return cursor.fetchall()
         except Exception as e:
             logger.error(f"Error getting unused invites: {e}")
             return []
 
-    def get_approved_users(self) -> List[Tuple[str, str, str, str]]:
+    def get_approved_users(self) -> List[Tuple[str, str, str, str, str, str]]:
         """
         Получить список одобренных пользователей.
         Returns: список (user_id, username, first_name, approved_at)
@@ -1655,7 +1768,7 @@ class NewsDatabase:
         try:
             cursor = self._conn.cursor()
             cursor.execute(
-                'SELECT user_id, username, first_name, approved_at FROM approved_users ORDER BY approved_at DESC'
+                'SELECT user_id, username, first_name, approved_at, invited_by, invite_label FROM approved_users ORDER BY approved_at DESC'
             )
             return cursor.fetchall()
         except Exception as e:
@@ -1715,6 +1828,17 @@ class NewsDatabase:
             logger.error(f"Error deleting invite: {e}")
             return False
 
+    def get_invite_label(self, code: str) -> str | None:
+        """Получить имя/метку инвайта по коду."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute('SELECT invite_label FROM invites WHERE code = ?', (code,))
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
+        except Exception as e:
+            logger.error(f"Error getting invite label: {e}")
+            return None
+
     def get_translation_cache(self, news_id: int, checksum: str, target_lang: str) -> str | None:
         """Get cached translation by news_id, checksum, and target language."""
         try:
@@ -1747,19 +1871,20 @@ class NewsDatabase:
             logger.error(f"Error setting translation cache: {e}")
             return False
 
-    def set_user_translation(self, user_id: str, enabled: bool, target_lang: str = 'ru') -> bool:
+    def set_user_translation(self, user_id: str, enabled: bool, target_lang: str = 'ru', env: str = 'prod') -> bool:
         """Set translation preference for a user."""
         try:
             with self._write_lock:
                 cursor = self._conn.cursor()
                 cursor.execute(
-                    '''INSERT INTO user_preferences (user_id, translate_enabled, translate_lang, updated_at)
-                       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    '''INSERT INTO user_preferences (user_id, env, translate_enabled, translate_lang, updated_at)
+                       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
                        ON CONFLICT(user_id) DO UPDATE SET
                          translate_enabled = excluded.translate_enabled,
                          translate_lang = excluded.translate_lang,
+                         env = excluded.env,
                          updated_at = CURRENT_TIMESTAMP''',
-                    (str(user_id), 1 if enabled else 0, target_lang)
+                    (str(user_id), env, 1 if enabled else 0, target_lang)
                 )
                 self._conn.commit()
             return True
@@ -1767,13 +1892,15 @@ class NewsDatabase:
             logger.error(f"Error setting user translation: {e}")
             return False
 
-    def get_user_translation(self, user_id: str) -> tuple[bool, str]:
+    def get_user_translation(self, user_id: str, env: str = 'prod') -> tuple[bool, str]:
         """Return (translate_enabled, translate_lang) for user."""
         try:
             cursor = self._conn.cursor()
             cursor.execute(
-                'SELECT translate_enabled, translate_lang FROM user_preferences WHERE user_id = ?',
-                (str(user_id),)
+                '''SELECT translate_enabled, translate_lang
+                   FROM user_preferences
+                   WHERE user_id = ? AND (env = ? OR env IS NULL)''',
+                (str(user_id), env)
             )
             row = cursor.fetchone()
             if not row:
@@ -1782,14 +1909,50 @@ class NewsDatabase:
         except Exception as e:
             logger.error(f"Error getting user translation: {e}")
             return False, 'ru'
-    def set_user_paused(self, user_id: str, is_paused: bool) -> bool:
+
+    def set_user_category_filter(self, user_id: str, category: str | None, env: str = 'prod') -> bool:
+        """Set per-user category filter (prod only)."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    '''INSERT INTO user_preferences (user_id, env, category_filter, updated_at)
+                       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                       ON CONFLICT(user_id) DO UPDATE SET
+                         category_filter = excluded.category_filter,
+                         env = excluded.env,
+                         updated_at = CURRENT_TIMESTAMP''',
+                    (str(user_id), env, category)
+                )
+                self._conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error setting user category filter: {e}")
+            return False
+
+    def get_user_category_filter(self, user_id: str, env: str = 'prod') -> str | None:
+        """Get per-user category filter (prod only)."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                '''SELECT category_filter
+                   FROM user_preferences
+                   WHERE user_id = ? AND (env = ? OR env IS NULL)''',
+                (str(user_id), env)
+            )
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
+        except Exception as e:
+            logger.error(f"Error getting user category filter: {e}")
+            return None
+    def set_user_paused(self, user_id: str, is_paused: bool, env: str = 'prod') -> bool:
         """
         Установить состояние паузы для пользователя.
         Returns: True если успешно, False если ошибка
         """
-        return self.set_pause_state(user_id, is_paused)
+        return self.set_pause_state(user_id, is_paused, env=env)
 
-    def is_user_paused(self, user_id: str) -> bool:
+    def is_user_paused(self, user_id: str, env: str = 'prod') -> bool:
         """
         Проверить, приостановлены ли новости для пользователя.
         Returns: True если приостановлены, False если нет
@@ -1798,8 +1961,8 @@ class NewsDatabase:
             cursor = self._conn.cursor()
             user_id = str(user_id)
             cursor.execute(
-                'SELECT is_paused FROM user_preferences WHERE user_id = ?',
-                (user_id,)
+                'SELECT is_paused FROM user_preferences WHERE user_id = ? AND (env = ? OR env IS NULL)',
+                (user_id, env)
             )
             row = cursor.fetchone()
             return row[0] == 1 if row else False
@@ -1813,6 +1976,11 @@ class NewsDatabase:
         try:
             with self._lock:
                 cursor = self._conn.cursor()
+                cursor.execute(
+                    '''INSERT OR REPLACE INTO bot_settings (key, value, updated_at)
+                       VALUES ('collection_stopped', ?, CURRENT_TIMESTAMP)''',
+                    ('1' if stopped else '0',)
+                )
                 cursor.execute('''
                     INSERT OR REPLACE INTO system_settings (setting_key, setting_value, updated_at)
                     VALUES ('collection_stopped', ?, CURRENT_TIMESTAMP)
@@ -1829,6 +1997,13 @@ class NewsDatabase:
         try:
             cursor = self._conn.cursor()
             cursor.execute(
+                'SELECT value FROM bot_settings WHERE key = ?',
+                ('collection_stopped',)
+            )
+            row = cursor.fetchone()
+            if row is not None:
+                return row[0] == '1'
+            cursor.execute(
                 'SELECT setting_value FROM system_settings WHERE setting_key = ?',
                 ('collection_stopped',)
             )
@@ -1838,14 +2013,14 @@ class NewsDatabase:
             logger.error(f"Error checking collection stopped: {e}")
             return False
 
-    def get_delivery_state(self, user_id: str) -> dict:
+    def get_delivery_state(self, user_id: str, env: str = 'prod') -> dict:
         """Get delivery state for a user from DB."""
         try:
             cursor = self._conn.cursor()
             cursor.execute(
                 '''SELECT is_paused, paused_at, resume_at, last_delivered_news_id, pause_version
-                   FROM user_preferences WHERE user_id = ?''',
-                (str(user_id),)
+                   FROM user_preferences WHERE user_id = ? AND (env = ? OR env IS NULL)''',
+                (str(user_id), env)
             )
             row = cursor.fetchone()
             if not row:
@@ -1873,7 +2048,7 @@ class NewsDatabase:
                 'pause_version': 0,
             }
 
-    def set_pause_state(self, user_id: str, is_paused: bool) -> bool:
+    def set_pause_state(self, user_id: str, is_paused: bool, env: str = 'prod') -> bool:
         """Set pause/resume state with pause_version increment."""
         try:
             with self._write_lock:
@@ -1881,25 +2056,27 @@ class NewsDatabase:
                 user_id = str(user_id)
                 if is_paused:
                     cursor.execute(
-                        '''INSERT INTO user_preferences (user_id, is_paused, paused_at, pause_version, updated_at)
-                           VALUES (?, 1, CURRENT_TIMESTAMP, 1, CURRENT_TIMESTAMP)
+                                                '''INSERT INTO user_preferences (user_id, env, is_paused, paused_at, pause_version, updated_at)
+                                                     VALUES (?, ?, 1, CURRENT_TIMESTAMP, 1, CURRENT_TIMESTAMP)
                            ON CONFLICT(user_id) DO UPDATE SET
                              is_paused = 1,
                              paused_at = CURRENT_TIMESTAMP,
+                                                         env = excluded.env,
                              pause_version = pause_version + 1,
                              updated_at = CURRENT_TIMESTAMP''',
-                        (user_id,)
+                                                (user_id, env)
                     )
                 else:
                     cursor.execute(
-                        '''INSERT INTO user_preferences (user_id, is_paused, resume_at, pause_version, updated_at)
-                           VALUES (?, 0, CURRENT_TIMESTAMP, 1, CURRENT_TIMESTAMP)
+                                                '''INSERT INTO user_preferences (user_id, env, is_paused, resume_at, pause_version, updated_at)
+                                                     VALUES (?, ?, 0, CURRENT_TIMESTAMP, 1, CURRENT_TIMESTAMP)
                            ON CONFLICT(user_id) DO UPDATE SET
                              is_paused = 0,
                              resume_at = CURRENT_TIMESTAMP,
+                                                         env = excluded.env,
                              pause_version = pause_version + 1,
                              updated_at = CURRENT_TIMESTAMP''',
-                        (user_id,)
+                                                (user_id, env)
                     )
                 self._conn.commit()
             return True
@@ -1907,18 +2084,19 @@ class NewsDatabase:
             logger.error(f"Error setting pause state: {e}")
             return False
 
-    def update_last_delivered(self, user_id: str, news_id: int) -> bool:
+    def update_last_delivered(self, user_id: str, news_id: int, env: str = 'prod') -> bool:
         """Update last delivered news id for a user."""
         try:
             with self._write_lock:
                 cursor = self._conn.cursor()
                 cursor.execute(
-                    '''INSERT INTO user_preferences (user_id, last_delivered_news_id, updated_at)
-                       VALUES (?, ?, CURRENT_TIMESTAMP)
+                                        '''INSERT INTO user_preferences (user_id, env, last_delivered_news_id, updated_at)
+                                             VALUES (?, ?, ?, CURRENT_TIMESTAMP)
                        ON CONFLICT(user_id) DO UPDATE SET
                          last_delivered_news_id = ?,
+                                                 env = excluded.env,
                          updated_at = CURRENT_TIMESTAMP''',
-                    (str(user_id), news_id, news_id)
+                                        (str(user_id), env, news_id, news_id)
                 )
                 self._conn.commit()
             return True

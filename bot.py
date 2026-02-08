@@ -21,6 +21,7 @@ from telegram.constants import ParseMode
 from telegram.error import Conflict
 import asyncio
 from config.config import TELEGRAM_TOKEN, TELEGRAM_CHANNEL_ID, CHECK_INTERVAL_SECONDS, ADMIN_IDS
+from utils.env import get_app_env
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +46,6 @@ from core.services.access_control import AILevelManager, get_llm_profile
 
 class NewsBot:
     """Основной класс Telegram бота"""
-    
-    # Администраторы с полным доступом к обоим ботам
-    ADMIN_IDS = [408817675, 464108692, 1592307306]
     
     def __init__(self):
         self.application = None
@@ -74,8 +72,8 @@ class NewsBot:
         # Cache for recently published news (for AI button)
         self.news_cache = {}  # news_id -> {'title', 'text', 'source', 'url'}
         
-        # Global category filter (None = show all)
-        self.category_filter = None  # 'world', 'russia', 'moscow_region', or None
+        # Admin ids (from environment or config fallback)
+        self.admin_ids = self._load_admin_ids()
         
         # Rate limiting for AI summarize requests (per user per minute)
         self.user_ai_requests = {}  # {user_id: [timestamp1, timestamp2, ...]}
@@ -91,8 +89,7 @@ class NewsBot:
 
     def _is_admin(self, user_id: int) -> bool:
         """Check if user is admin (hardcoded ADMIN_IDS or config ADMIN_USER_IDS)."""
-        # Hardcoded admins
-        admin_ids = set(self.ADMIN_IDS)
+        admin_ids = set(self.admin_ids)
         
         # Add admins from config
         try:
@@ -106,18 +103,15 @@ class NewsBot:
 
     def _has_access(self, user_id: int) -> bool:
         """Check if user has access to bot (admin or approved via invite)."""
-        try:
-            from config.railway_config import APP_ENV
-        except (ImportError, ValueError):
-            from config.config import APP_ENV
+        app_env = get_app_env()
         
         # Admins always have access
         if self._is_admin(user_id):
             return True
         
         # Sandbox is open to all
-        if APP_ENV == "sandbox":
-            return True
+        if app_env == "sandbox":
+            return self._is_admin(user_id)
         
         # Prod requires approval via invite
         return self.access_db.is_user_approved(str(user_id))
@@ -126,6 +120,12 @@ class NewsBot:
         """Decorator to check user access before executing handler"""
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_id = update.effective_user.id
+
+            # Sandbox is admin-only
+            if get_app_env() == "sandbox" and not self._is_admin(user_id):
+                if update.message:
+                    await update.message.reply_text("⛔ Access denied")
+                return
             
             # /start can always be called (handles invite codes and access messages)
             if handler.__name__ == 'cmd_start':
@@ -152,9 +152,40 @@ class NewsBot:
         
         return wrapper
 
+    def _load_admin_ids(self) -> list[int]:
+        raw_list = os.getenv("ADMIN_TELEGRAM_IDS", "") or ""
+        raw_single = os.getenv("ADMIN_TELEGRAM_ID", "") or ""
+        values = []
+        for item in raw_list.split(","):
+            item = item.strip()
+            if item.isdigit():
+                values.append(int(item))
+        if raw_single.strip().isdigit():
+            values.append(int(raw_single.strip()))
+        if values:
+            return sorted(set(values))
+        return list(ADMIN_IDS)
+
+    async def _sandbox_admin_guard(self, update: Update | None = None, query=None) -> bool:
+        """Block non-admin access in sandbox for any command/callback."""
+        if get_app_env() != "sandbox":
+            return True
+        user_id = None
+        if query is not None:
+            user_id = query.from_user.id
+        elif update is not None and update.effective_user:
+            user_id = update.effective_user.id
+        if user_id is not None and self._is_admin(user_id):
+            return True
+        if query is not None:
+            await query.answer("⛔ Access denied", show_alert=True)
+        elif update is not None and update.message:
+            await update.message.reply_text("⛔ Access denied")
+        return False
+
     def _init_admins_access(self):
         """Initialize admin users with access to prod bot"""
-        for admin_id in self.ADMIN_IDS:
+        for admin_id in self.admin_ids:
             # Check if already approved
             if not self.access_db.is_user_approved(str(admin_id)):
                 # Add admin with "SYSTEM" as invited_by
@@ -170,15 +201,7 @@ class NewsBot:
 
     def _get_sandbox_filter_user_id(self) -> int | None:
         """Pick a user id whose source settings control sandbox filtering."""
-        try:
-            from config.railway_config import ADMIN_USER_IDS
-        except (ImportError, ValueError):
-            from config.config import ADMIN_USER_IDS
-        if ADMIN_USER_IDS:
-            return ADMIN_USER_IDS[0]
-        if ADMIN_IDS:
-            return ADMIN_IDS[0]
-        return None
+        return self.admin_ids[0] if self.admin_ids else None
     
     def _init_sources(self):
         """Инициализировать список источников из ACTIVE_SOURCES_CONFIG"""
@@ -463,7 +486,7 @@ class NewsBot:
     
     async def cmd_debug_sources(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /debug_sources - показать все источники в БД"""
-        if update.message.from_user.id not in ADMIN_IDS:
+        if not self._is_admin(update.message.from_user.id):
             await update.message.reply_text("❌ Доступно только администраторам")
             return
         
@@ -482,8 +505,11 @@ class NewsBot:
     
     async def cmd_my_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /my_selection - показать выбранные новости и экспортировать"""
+        if get_app_env() == "sandbox":
+            await update.message.reply_text("⛔ Access denied")
+            return
         user_id = update.message.from_user.id
-        selected = self.db.get_user_selections(user_id)
+        selected = self.db.get_user_selections(user_id, env="prod")
         
         if not selected:
             await update.message.reply_text("📭 У вас нет выбранных новостей.\n\nВыберите новости, нажав 📌 под новостью в канале.")
@@ -535,6 +561,7 @@ class NewsBot:
             return "", ""
 
         counts = self.db.get_source_event_counts(sources, window_hours=window_hours)
+        drop_codes = self.db.get_source_last_drop_codes(sources, window_hours=window_hours)
         health = self.db.get_source_health_snapshot(sources)
         error_rate_threshold = 0.5
 
@@ -545,6 +572,7 @@ class NewsBot:
                 success = info.get('success_count', 0)
                 error = info.get('error_count', 0)
                 drop_old = info.get('drop_old_count', 0)
+                drop_date = info.get('drop_date_count', 0)
                 total = success + error
                 error_rate = (error / total) if total > 0 else 0.0
 
@@ -553,13 +581,18 @@ class NewsBot:
                     icon = "🟢"
                     status = f"{success} новости (24ч)"
                 else:
-                    icon = "🔴"
                     if error > 0:
+                        icon = "🔴"
                         status = health.get(source, {}).get('last_error_code') or "FETCH_ERROR"
                     elif drop_old > 0:
-                        status = "DROP_OLD_NEWS"
+                        icon = "🟡"
+                        status = "OLD_PUBLISHED_AT"
+                    elif drop_date > 0:
+                        icon = "🟡"
+                        status = drop_codes.get(source) or "NO_PUBLISHED_DATE"
                     else:
-                        status = "NO_VALID_NEWS"
+                        icon = "🟡"
+                        status = "FETCH_OK_NO_MATCH"
 
                 source_type = type_map.get(source, 'rss')
                 label = label_map.get(source, source)
@@ -651,15 +684,21 @@ class NewsBot:
     
     async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /pause - приостановить новости для пользователя"""
+        if get_app_env() == "sandbox":
+            await update.message.reply_text("⛔ Access denied")
+            return
         user_id = update.message.from_user.id
-        self.db.set_pause_state(str(user_id), True)
+        self.db.set_pause_state(str(user_id), True, env="prod")
         logger.info(f"USER_PAUSE_SET user_id={user_id}")
         await update.message.reply_text("⏸️ Новости приостановлены для вас\n\nСбор продолжается, но вы не получаете уведомления.\nНажмите ▶️ для возобновления.")
     
     async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /resume - возобновить новости для пользователя"""
+        if get_app_env() == "sandbox":
+            await update.message.reply_text("⛔ Access denied")
+            return
         user_id = update.message.from_user.id
-        self.db.set_pause_state(str(user_id), False)
+        self.db.set_pause_state(str(user_id), False, env="prod")
         logger.info(f"USER_RESUME_SET user_id={user_id}")
         await update.message.reply_text("▶️ Новости возобновлены!\n\nТеперь вы снова получаете уведомления о новостях.")
         await self._deliver_pending_for_user(user_id)
@@ -808,6 +847,8 @@ class NewsBot:
     
     async def handle_emoji_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик эмодзи-кнопок"""
+        if not await self._sandbox_admin_guard(update=update):
+            return
         text = update.message.text
         user_id = update.message.from_user.id
 
@@ -834,6 +875,18 @@ class NewsBot:
             context.user_data["awaiting_export_hours"] = False
             await self._export_news_period(update.effective_user.id, context, hours=hours)
             return
+
+        if context.user_data.get("awaiting_invite_label"):
+            raw_label = (text or "").strip()
+            context.user_data["awaiting_invite_label"] = False
+            label = None if raw_label.lower() in ("пропустить", "skip", "-") else raw_label
+            await self._finalize_invite_creation(
+                admin_id=str(user_id),
+                label=label,
+                context=context,
+                update=update,
+            )
+            return
         
         if text == '🔄':
             await self.cmd_sync(update, context)
@@ -855,19 +908,20 @@ class NewsBot:
         """⚙️ Меню настроек"""
         user_id = update.message.from_user.id
         is_admin = self._is_admin(user_id)
+        app_env = get_app_env()
 
-        translate_enabled, target_lang = self.db.get_user_translation(str(user_id))
-        translate_status = "Вкл" if translate_enabled else "Выкл"
-        
-        keyboard = [
-            [InlineKeyboardButton("🧰 Фильтр", callback_data="settings:filter")],
-            [InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")],
-            [InlineKeyboardButton("🤖 AI переключатели", callback_data="ai:management")],
-            [InlineKeyboardButton(f"🌐 Перевод ({target_lang.upper()}): {translate_status}", callback_data="settings:translate_toggle")],
-            [InlineKeyboardButton("📥 Экспорт новостей", callback_data="export_menu")],
-            [InlineKeyboardButton("📊 Статус бота", callback_data="show_status")],
-        ]
-        
+        keyboard = []
+        keyboard.append([InlineKeyboardButton("🧰 Фильтр", callback_data="settings:filter")])
+        keyboard.append([InlineKeyboardButton("🤖 AI переключатели", callback_data="ai:management")])
+        keyboard.append([InlineKeyboardButton("📊 Статус бота", callback_data="show_status")])
+
+        if app_env == "prod":
+            translate_enabled, target_lang = self.db.get_user_translation(str(user_id), env="prod")
+            translate_status = "Вкл" if translate_enabled else "Выкл"
+            keyboard.insert(1, [InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")])
+            keyboard.insert(3, [InlineKeyboardButton(f"🌐 Перевод ({target_lang.upper()}): {translate_status}", callback_data="settings:translate_toggle")])
+            keyboard.insert(4, [InlineKeyboardButton("📥 Экспорт новостей", callback_data="export_menu")])
+
         # Add global collection control buttons for admins
         if is_admin:
             is_stopped = self.db.is_collection_stopped()
@@ -875,21 +929,20 @@ class NewsBot:
                 keyboard.append([InlineKeyboardButton("🔄 Восстановить сбор", callback_data="collection:restore")])
             else:
                 keyboard.append([InlineKeyboardButton("🛑 Остановить сбор", callback_data="collection:stop")])
-        
+
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            "⚙️ Настройки",
-            reply_markup=reply_markup
-        )
+        await update.message.reply_text("⚙️ Настройки", reply_markup=reply_markup)
     
     async def cmd_filter(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /filter - выбор категорий для фильтрации"""
         # Создаем inline кнопки для выбора категорий
         ai_status = "✅" if self.ai_verification_enabled else "❌"
+        app_env = get_app_env()
         
-        # Get user selection count
-        user_id = update.message.from_user.id
-        selection_count = len(self.db.get_user_selections(user_id))
+        selection_count = 0
+        if app_env == "prod":
+            user_id = update.message.from_user.id
+            selection_count = len(self.db.get_user_selections(user_id, env="prod"))
         
         keyboard = [
             [
@@ -904,16 +957,11 @@ class NewsBot:
             [
                 InlineKeyboardButton(f"AI {ai_status}", callback_data="toggle_ai"),
             ],
-            [
-                InlineKeyboardButton("📥 Unload", callback_data="export_menu"),
-            ],
-            [
-                InlineKeyboardButton("📊 Статус бота", callback_data="show_status"),
-            ],
-            [
-                InlineKeyboardButton(f"📄 Мои новости ({selection_count})", callback_data="show_my_selection"),
-            ]
+            [InlineKeyboardButton("📊 Статус бота", callback_data="show_status")],
         ]
+        if app_env == "prod":
+            keyboard.append([InlineKeyboardButton("📥 Unload", callback_data="export_menu")])
+            keyboard.append([InlineKeyboardButton(f"📄 Мои новости ({selection_count})", callback_data="show_my_selection")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         ai_status_text = "включена" if self.ai_verification_enabled else "отключена"
         await update.message.reply_text(
@@ -930,6 +978,26 @@ class NewsBot:
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик нажатия на кнопку"""
         query = update.callback_query
+
+        if not await self._sandbox_admin_guard(query=query):
+            return
+        app_env = get_app_env()
+        if app_env == "sandbox":
+            data = query.data or ""
+            if (
+                data.startswith("settings:sources:")
+                or data.startswith("settings:src_toggle:")
+                or data.startswith("settings:src_page:")
+                or data == "settings:translate_toggle"
+                or data == "export_menu"
+                or data.startswith("export_period:")
+                or data == "export_doc"
+                or data == "clear_selection"
+                or data == "show_my_selection"
+                or data.startswith("select:")
+            ):
+                await query.answer("⛔ Access denied", show_alert=True)
+                return
         
         # ==================== COLLECTION CONTROL CALLBACKS ====================
         if query.data == "collection:stop":
@@ -961,7 +1029,8 @@ class NewsBot:
             
             self.db.set_collection_stopped(False)
             # Unpause the user who pressed restore
-            self.db.set_user_paused(str(user_id), False)
+            if get_app_env() == "prod":
+                self.db.set_user_paused(str(user_id), False, env="prod")
             
             await query.edit_message_text(
                 "🔄 Сбор новостей восстановлен!\n\n"
@@ -1022,7 +1091,7 @@ class NewsBot:
             page = int(parts[3]) if len(parts) > 3 else 0
             
             user_id = query.from_user.id
-            new_state = self.db.toggle_user_source(user_id, source_id)
+            new_state = self.db.toggle_user_source(user_id, source_id, env="prod")
             
             await query.answer(f"{'✅ Включено' if new_state else '❌ Отключено'}", show_alert=False)
             await self._show_sources_menu(query, page)
@@ -1038,7 +1107,7 @@ class NewsBot:
         if query.data == "settings:back":
             # Вернуться к меню настроек
             await query.answer()
-            translate_enabled, target_lang = self.db.get_user_translation(str(query.from_user.id))
+            translate_enabled, target_lang = self.db.get_user_translation(str(query.from_user.id), env="prod")
             translate_status = "Вкл" if translate_enabled else "Выкл"
             keyboard = [
                 [InlineKeyboardButton("🧰 Фильтр", callback_data="settings:filter")],
@@ -1055,9 +1124,9 @@ class NewsBot:
         if query.data == "settings:translate_toggle":
             await query.answer()
             user_id = str(query.from_user.id)
-            enabled, target_lang = self.db.get_user_translation(user_id)
+            enabled, target_lang = self.db.get_user_translation(user_id, env="prod")
             new_enabled = not enabled
-            self.db.set_user_translation(user_id, new_enabled, target_lang)
+            self.db.set_user_translation(user_id, new_enabled, target_lang, env="prod")
 
             status_text = "Включен" if new_enabled else "Выключен"
             await query.edit_message_text(
@@ -1081,33 +1150,38 @@ class NewsBot:
             await self._handle_ai_level_change(query, module, action="inc")
             return
         
-        if query.data.startswith("ai:dec:"):
-            # Decrement AI level
-            module = query.data.split(":")[-1]
-            await self._handle_ai_level_change(query, module, action="dec")
+        elif query.data.startswith("filter_"):
+            # Фильтрация по категориям
+            filter_type = query.data.replace("filter_", "")
+            new_filter = filter_type if filter_type != 'all' else None
+            app_env = get_app_env()
+            if app_env == "sandbox":
+                self._set_global_category_filter(new_filter)
+            else:
+                self._set_user_category_filter(query.from_user.id, new_filter)
+
+            filter_names = {
+                'world': '#Мир',
+                'russia': '#Россия',
+                'moscow': '#Москва',
+                'moscow_region': '#Подмосковье',
+                'all': 'Все новости'
+            }
+
+            await query.answer(
+                f"✅ Фильтр установлен: {filter_names.get(filter_type, 'Неизвестно')}",
+                show_alert=False,
+            )
+            await query.edit_message_text(
+                text=f"✅ Установлена фильтрация: {filter_names.get(filter_type, 'Неизвестно')}\n\n"
+                     f"Режим: {'глобальный (sandbox)' if app_env == 'sandbox' else 'персональный (prod)'}"
+            )
             return
-        
-        if query.data.startswith("ai:set:"):
-            # Set AI level directly
-            parts = query.data.split(":")
-            module = parts[2]
-            level = int(parts[3])
-            await self._handle_ai_level_change(query, module, action="set", level=level)
-            return
-        
         # ==================== MANAGEMENT CALLBACKS (SANDBOX ADMIN ONLY) ====================
-        # Check if sandbox for all management operations
         if query.data.startswith("mgmt:"):
-            try:
-                from config.railway_config import APP_ENV
-            except (ImportError, ValueError):
-                from config.config import APP_ENV
-            
-            # Management only in sandbox (but allow send_invite to check separately)
-            if APP_ENV != "sandbox" and not query.data.startswith("mgmt:send_invite:"):
+            if get_app_env() != "sandbox" and not query.data.startswith("mgmt:send_invite:"):
                 await query.answer("❌ Управление доступно только в песочнице", show_alert=True)
                 return
-        
         if query.data.startswith("mgmt:send_invite:"):
             # Show share options for invite (works in sandbox only)
             await query.answer()
@@ -1123,6 +1197,7 @@ class NewsBot:
             # Extract invite code from callback data
             invite_code = query.data.split(":", 2)[2]
             logger.info(f"Preparing to share invite {invite_code}")
+            invite_label = self.db.get_invite_label(invite_code)
             
             # Get PROD bot username (инвайт должен вести на прод бота)
             try:
@@ -1141,9 +1216,15 @@ class NewsBot:
             
             # Красивое сообщение с эмодзи (без ссылки на бота)
             from urllib.parse import quote
+            if invite_label:
+                from html import escape
+                label_line = f"👤 Для: {escape(invite_label)}\n"
+            else:
+                label_line = ""
             share_text = quote(
-                f"🎁 Приглашение в News Aggregator Bot!\n\n"
-                f"✨ Используйте этот инвайт-код для регистрации:\n"
+                "🎁 Приглашение в News Aggregator Bot!\n\n"
+                f"{label_line}"
+                "✨ Используйте этот инвайт-код для регистрации:\n"
                 f"👉 {invite_code}\n\n"
                 f"🚀 Перейти: {invite_link}"
             )
@@ -1160,6 +1241,7 @@ class NewsBot:
                 text=(
                     f"📤 Отправка инвайта\n\n"
                     f"Нажмите кнопку 'Поделиться' и выберите контакт из Telegram\n\n"
+                    f"{label_line}"
                     f"📌 Код инвайта: <code>{invite_code}</code>\n"
                     f"🔗 Ссылка: <code>{invite_link}</code>"
                 ),
@@ -1205,67 +1287,31 @@ class NewsBot:
             return
         
         if query.data == "mgmt:new_invite":
-            # Create new invite (sandbox only)
-            admin_id = str(query.from_user.id)
-            invite_code = self._generate_signed_invite_code(admin_id)
-            if invite_code:
-                # Store invite in sandbox DB for tracking
-                self.db.create_invite_with_code(invite_code, admin_id)
-                # Also store in access DB to allow validation without INVITE_SECRET when shared
-                try:
-                    self.access_db.create_invite_with_code(invite_code, admin_id)
-                except Exception:
-                    pass
-            else:
-                await query.edit_message_text(
-                    "❌ Не задан INVITE_SECRET.\n\n"
-                    "Установите переменную окружения INVITE_SECRET одинаково в prod и sandbox.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:users")]
-                    ])
-                )
-                return
-            
-            if invite_code:
-                # Get bot username for link
-                try:
-                    from config.railway_config import BOT_PROD_USERNAME
-                except (ImportError, ValueError):
-                    try:
-                        from config.config import BOT_PROD_USERNAME
-                    except ImportError:
-                        BOT_PROD_USERNAME = None
-                
-                if not BOT_PROD_USERNAME:
-                    # Fallback: try to get from bot info
-                    bot_info = await self.application.bot.get_me()
-                    bot_username = bot_info.username
-                else:
-                    bot_username = BOT_PROD_USERNAME
-                
-                invite_link = f"https://t.me/{bot_username}?start={invite_code}"
-                
-                # Show invite in popup with Send button
-                keyboard = [
-                    [InlineKeyboardButton("📤 Отправить пользователю", callback_data=f"mgmt:send_invite:{invite_code}")],
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:users")],
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await query.edit_message_text(
-                    text=(
-                        f"🎉 Новый инвайт-код создан!\n\n"
-                        f"📌 Код: `{invite_code}`\n\n"
-                        f"🔗 Ссылка для пользователя:\n"
-                        f"`{invite_link}`\n\n"
-                        f"Нажмите кнопку ниже для отправки инвайта пользователю."
-                    ),
-                    reply_markup=reply_markup,
-                    parse_mode='Markdown'
-                )
-            else:
-                await query.answer("❌ Ошибка при создании инвайта", show_alert=True)
-            
+            context.user_data["awaiting_invite_label"] = True
+            keyboard = [
+                [InlineKeyboardButton("Пропустить", callback_data="mgmt:invite_label:skip")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:users")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                text=(
+                    "✍️ Введите имя или комментарий для инвайта.\n"
+                    "Например: Иван (редакция), Петр С.\n\n"
+                    "Можно нажать 'Пропустить', если имя не нужно."
+                ),
+                reply_markup=reply_markup
+            )
+            return
+
+        if query.data == "mgmt:invite_label:skip":
+            await query.answer()
+            context.user_data["awaiting_invite_label"] = False
+            await self._finalize_invite_creation(
+                admin_id=str(query.from_user.id),
+                label=None,
+                context=context,
+                query=query,
+            )
             return
         
         if query.data == "mgmt:users_list":
@@ -1281,7 +1327,7 @@ class NewsBot:
             
             # Показываем по одному пользователю с кнопками действия
             # (Telegram имеет ограничение на размер сообщения)
-            user_id, username, first_name, approved_at = approved_users[0]
+            user_id, username, first_name, approved_at, invited_by, invite_label = approved_users[0]
             name = first_name or username or user_id
             
             text = f"👤 Управление пользователями\n\n"
@@ -1289,6 +1335,11 @@ class NewsBot:
             text += f"ID: <code>{user_id}</code>\n"
             text += f"Username: {f'@{username}' if username else 'нет'}\n"
             text += f"Одобрен: {approved_at}\n\n"
+            if invite_label:
+                from html import escape
+                text += f"Инвайт: {escape(invite_label)}\n"
+            if invited_by:
+                text += f"Кем приглашен: {invited_by}\n"
             text += f"Всего одобренных: {len(approved_users)}\n"
             
             # Кнопки для управления
@@ -1316,7 +1367,7 @@ class NewsBot:
                 await query.answer("Нет пользователей", show_alert=True)
                 return
             
-            user_id, username, first_name, approved_at = approved_users[page]
+            user_id, username, first_name, approved_at, invited_by, invite_label = approved_users[page]
             name = first_name or username or user_id
             
             text = f"👤 Управление пользователями\n\n"
@@ -1324,6 +1375,11 @@ class NewsBot:
             text += f"ID: <code>{user_id}</code>\n"
             text += f"Username: {f'@{username}' if username else 'нет'}\n"
             text += f"Одобрен: {approved_at}\n\n"
+            if invite_label:
+                from html import escape
+                text += f"Инвайт: {escape(invite_label)}\n"
+            if invited_by:
+                text += f"Кем приглашен: {invited_by}\n"
             text += f"Пользователь {page + 1} из {len(approved_users)}\n"
             
             # Navigation and action buttons
@@ -1419,7 +1475,7 @@ class NewsBot:
         if query.data == "show_my_selection":
             # Показать выбранные новости с кнопками экспорта
             user_id = query.from_user.id
-            selected = self.db.get_user_selections(user_id)
+            selected = self.db.get_user_selections(user_id, env="prod")
             
             if not selected:
                 await query.answer("📭 У вас нет выбранных новостей", show_alert=True)
@@ -1498,7 +1554,7 @@ class NewsBot:
             try:
                 doc_file = await self._generate_doc_file(user_id)
                 if doc_file:
-                    count = len(self.db.get_user_selections(user_id))
+                    count = len(self.db.get_user_selections(user_id, env="prod"))
                     await context.bot.send_document(
                         chat_id=user_id,
                         document=open(doc_file, 'rb'),
@@ -1510,7 +1566,7 @@ class NewsBot:
                     os.remove(doc_file)
                     
                     # Очистить выбранные новости после отправки
-                    self.db.clear_user_selections(user_id)
+                    self.db.clear_user_selections(user_id, env="prod")
                     await context.bot.send_message(
                         chat_id=user_id,
                         text="✅ Документ отправлен!\n\n📌 Выбранные новости очищены. Начните новую подборку!"
@@ -1525,8 +1581,8 @@ class NewsBot:
         elif query.data == "clear_selection":
             # Очистить выбранные новости
             user_id = query.from_user.id
-            count = len(self.db.get_user_selections(user_id))
-            self.db.clear_user_selections(user_id)
+            count = len(self.db.get_user_selections(user_id, env="prod"))
+            self.db.clear_user_selections(user_id, env="prod")
             await query.answer(f"🗑 Очищено {count} новостей", show_alert=False)
             await query.edit_message_text("✅ Выбранные новости очищены")
             return
@@ -1548,7 +1604,12 @@ class NewsBot:
         elif query.data.startswith("filter_"):
             # Фильтрация по категориям
             filter_type = query.data.replace("filter_", "")
-            self.category_filter = filter_type if filter_type != 'all' else None
+            new_filter = filter_type if filter_type != 'all' else None
+            app_env = get_app_env()
+            if app_env == "sandbox":
+                self._set_global_category_filter(new_filter)
+            else:
+                self._set_user_category_filter(query.from_user.id, new_filter)
             
             filter_names = {
                 'world': '#Мир',
@@ -1561,7 +1622,7 @@ class NewsBot:
             await query.answer(f"✅ Фильтр установлен: {filter_names.get(filter_type, 'Неизвестно')}", show_alert=False)
             await query.edit_message_text(
                 text=f"✅ Установлена фильтрация: {filter_names.get(filter_type, 'Неизвестно')}\n\n"
-                     "Новости будут отправляться в канал только выбранной категории."
+                     f"Режим: {'глобальный (sandbox)' if app_env == 'sandbox' else 'персональный (prod)'}"
             )
             return
         
@@ -1590,10 +1651,9 @@ class NewsBot:
                 try:
                     from config.config import AI_SUMMARY_MAX_REQUESTS_PER_MINUTE, APP_ENV
                     
-                    # Check AI summary level (global setting)
-                    from core.services.access_control import AILevelManager
-                    ai_manager = AILevelManager(self.db)
-                    summary_level = ai_manager.get_level('global', 'summary')
+                    # Check AI summary effective level
+                    from core.services.access_control import get_effective_level
+                    summary_level = get_effective_level(self.db, str(user_id), 'summary')
                     
                     if summary_level == 0:
                         await query.answer("⚠️ AI пересказ отключён администратором", show_alert=True)
@@ -1614,7 +1674,7 @@ class NewsBot:
                     cached_summary = self.db.get_cached_summary(news_id)
                     if cached_summary:
                         # Check if already selected
-                        is_selected = self.db.is_news_selected(user_id, news_id)
+                        is_selected = self.db.is_news_selected(user_id, news_id, env="prod")
                         select_btn_text = "✅ Выбрано" if is_selected else "📌 Выбрать"
                         
                         await context.bot.send_message(
@@ -1659,7 +1719,7 @@ class NewsBot:
                         self.db.save_summary(news_id, summary)
                         
                         # Check if already selected
-                        is_selected = self.db.is_news_selected(user_id, news_id)
+                        is_selected = self.db.is_news_selected(user_id, news_id, env="prod")
                         select_btn_text = "✅ Выбрано" if is_selected else "📌 Выбрать"
                         
                         await context.bot.send_message(
@@ -1701,9 +1761,9 @@ class NewsBot:
                 # Добавить/убрать новость из выбранных
                 user_id = query.from_user.id
                 
-                if self.db.is_news_selected(user_id, news_id):
+                if self.db.is_news_selected(user_id, news_id, env="prod"):
                     # Убрать из выбранных
-                    self.db.remove_user_selection(user_id, news_id)
+                    self.db.remove_user_selection(user_id, news_id, env="prod")
                     await query.answer("✅ Убрано из выбранных", show_alert=False)
                     # Обновить кнопку
                     new_keyboard = InlineKeyboardMarkup([
@@ -1714,7 +1774,7 @@ class NewsBot:
                     ])
                 else:
                     # Добавить в выбранные
-                    self.db.add_user_selection(user_id, news_id)
+                    self.db.add_user_selection(user_id, news_id, env="prod")
                     await query.answer("✅ Добавлено в выбранные", show_alert=False)
                     # Обновить кнопку
                     new_keyboard = InlineKeyboardMarkup([
@@ -1749,10 +1809,9 @@ class NewsBot:
         try:
             from config.config import APP_ENV
             
-            # Get AI level for summary (global setting)
-            from core.services.access_control import AILevelManager
-            ai_manager = AILevelManager(self.db)
-            level = ai_manager.get_level('global', 'summary')
+            # Get effective AI level for summary
+            from core.services.access_control import get_effective_level
+            level = get_effective_level(self.db, str(user_id or 'global'), 'summary')
             
             summary, token_usage = await self.deepseek_client.summarize(
                 title=title,
@@ -1769,27 +1828,22 @@ class NewsBot:
 
     def _get_delivery_user_ids(self) -> list[int]:
         """Get user IDs to receive news in DM (approved users in prod, admins in sandbox)."""
-        try:
-            from config.railway_config import APP_ENV
-        except (ImportError, ValueError):
-            from config.config import APP_ENV
-
         user_ids: set[int] = set()
 
-        if APP_ENV == "prod":
+        if get_app_env() == "prod":
             approved_users = self.access_db.get_approved_users()
-            for user_id, _username, _first_name, _approved_at in approved_users:
+            for user_id, _username, _first_name, _approved_at, _invited_by, _invite_label in approved_users:
                 try:
                     user_ids.add(int(user_id))
                 except Exception:
                     continue
         else:
             # Sandbox: send to admins only (no global user registry)
-            user_ids.update(ADMIN_IDS)
+            user_ids.update(self.admin_ids)
 
         if not user_ids:
             # Fallback to admins if approved list is empty
-            user_ids.update(ADMIN_IDS)
+            user_ids.update(self.admin_ids)
 
         return sorted(user_ids)
 
@@ -1819,7 +1873,12 @@ class NewsBot:
         """Final delivery gate with pause/version checks and idempotency."""
         try:
             user_id_str = str(user_id)
-            state_snapshot = self.db.get_delivery_state(user_id_str)
+            if get_app_env() == "prod" and news_data:
+                user_filter = self.db.get_user_category_filter(user_id_str, env="prod")
+                if user_filter and news_data.get('category') != user_filter:
+                    return False
+
+            state_snapshot = self.db.get_delivery_state(user_id_str, env="prod")
             pause_version_snapshot = state_snapshot.get('pause_version', 0)
 
             if state_snapshot.get('is_paused'):
@@ -1832,7 +1891,7 @@ class NewsBot:
                 return False
 
             if news_data:
-                enabled_source_ids = self.db.get_enabled_source_ids_for_user(user_id_str)
+                enabled_source_ids = self.db.get_enabled_source_ids_for_user(user_id_str, env="prod")
                 if enabled_source_ids is not None:
                     source = news_data.get('source', '')
                     source_id = None
@@ -1849,7 +1908,7 @@ class NewsBot:
                         return False
 
             # Last gate: re-check pause/version
-            state_current = self.db.get_delivery_state(user_id_str)
+            state_current = self.db.get_delivery_state(user_id_str, env="prod")
             if state_current.get('is_paused'):
                 logger.info(f"DELIVERY_SKIP_PAUSED user_id={user_id}")
                 return False
@@ -1871,7 +1930,7 @@ class NewsBot:
                 title = news_data.get('title', 'No title')
                 source_name = news_data.get('source', 'Unknown')
                 source_url = news_data.get('url', '')
-                translate_enabled, target_lang = self.db.get_user_translation(user_id_str)
+                translate_enabled, target_lang = self.db.get_user_translation(user_id_str, env="prod")
                 translated_text = None
                 if translate_enabled and news_data.get('language') == 'en' and base_text:
                     checksum = news_data.get('checksum') or ''
@@ -1917,7 +1976,7 @@ class NewsBot:
                 disable_web_page_preview=True,
                 disable_notification=True
             )
-            self.db.update_last_delivered(user_id_str, news_id)
+            self.db.update_last_delivered(user_id_str, news_id, env="prod")
             logger.info(f"DELIVERY_SENT_OK user_id={user_id} news_id={news_id}")
             return True
         except Exception as e:
@@ -1928,14 +1987,20 @@ class NewsBot:
     async def _deliver_pending_for_user(self, user_id: int, limit: int = 50):
         """Deliver pending news to user after resume."""
         try:
-            state = self.db.get_delivery_state(str(user_id))
+            state = self.db.get_delivery_state(str(user_id), env="prod")
             last_id = state.get('last_delivered_news_id')
             pending = self.db.get_news_after_id(last_id, limit=limit)
             if not pending:
                 return
 
+            user_filter = None
+            if get_app_env() == "prod":
+                user_filter = self.db.get_user_category_filter(str(user_id), env="prod")
+
             for item in pending:
                 if not self._is_today_news(item):
+                    continue
+                if user_filter and item.get('category') != user_filter:
                     continue
                 news_id = item.get('id')
                 if not news_id:
@@ -1984,15 +2049,8 @@ class NewsBot:
             logger.info("Starting news collection...")
             news_items = await self.collector.collect_all()
 
-            # Sandbox: apply source settings to collected news
-            try:
-                from config.railway_config import APP_ENV
-            except (ImportError, ValueError):
-                from config.config import APP_ENV
-            if APP_ENV == "sandbox":
-                filter_user_id = self._get_sandbox_filter_user_id()
-                if filter_user_id:
-                    news_items = self._filter_news_by_user_sources(news_items, str(filter_user_id))
+            app_env = get_app_env()
+            global_category_filter = self._get_global_category_filter() if app_env == "sandbox" else None
             
             published_count = 0
             max_publications = 40  # Лимит публикаций за цикл (защита от rate limiting)
@@ -2021,8 +2079,10 @@ class NewsBot:
                     domain = self._get_domain(news)
                     self._record_drop_reason(domain, reason)
                     source = news.get('source', '')
-                    if reason == "DROP_OLD_PUBLISHED_AT":
+                    if reason == "OLD_PUBLISHED_AT":
                         self.db.record_source_event(source, "drop_old")
+                    elif reason in ("NO_PUBLISHED_DATE", "PARSE_DATE_FAILED"):
+                        self.db.record_source_event(source, "drop_date", error_code=reason)
                     else:
                         self.db.record_source_event(source, "error", error_code=reason)
                     logger.debug(f"Skipping news ({reason}): {news.get('title', '')[:50]}")
@@ -2038,8 +2098,8 @@ class NewsBot:
                 # Но админы в ADMIN_IDS могут видеть разные выборки
                 # На данный момент - выдача всем одинаковая (глобальная)
                 
-                # Проверяем фильтр по категориям
-                if self.category_filter and news.get('category') != self.category_filter:
+                # Проверяем фильтр по категориям (sandbox global)
+                if global_category_filter and news.get('category') != global_category_filter:
                     logger.debug(f"Skipping news (category filter): {news.get('title')[:50]}")
                     continue
                 
@@ -2235,6 +2295,38 @@ class NewsBot:
         }
         return mapping.get(category, '#Новости')
 
+    def _normalize_hashtag(self, tag: str) -> str:
+        cleaned = (tag or '').strip()
+        if not cleaned:
+            return ''
+        if not cleaned.startswith('#'):
+            cleaned = '#' + cleaned
+        return cleaned
+
+    def _enforce_category_hashtag(self, tags: list[str], category: str, language: str) -> list[str]:
+        required = self._get_category_tag(category, language)
+        normalized = []
+        seen = set()
+        for tag in tags:
+            cleaned = self._normalize_hashtag(tag)
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key not in seen:
+                normalized.append(cleaned)
+                seen.add(key)
+
+        required_key = required.lower()
+        if required_key not in seen:
+            normalized.insert(0, required)
+            seen.add(required_key)
+
+        if category in ('moscow', 'moscow_region'):
+            drop = '#россия' if language == 'ru' else '#russia'
+            normalized = [tag for tag in normalized if tag.lower() != drop]
+
+        return normalized[:8]
+
     def _get_category_line(self, category: str, language: str = 'ru', extra_tags: str = '') -> str:
         """Return category line with emoji and optional extra hashtags."""
         emoji_map = {
@@ -2253,64 +2345,32 @@ class NewsBot:
         title = news.get('title', '')
         text = news.get('clean_text') or news.get('text', '') or ''
         language = news.get('language') or 'ru'
-        checksum = news.get('checksum')
-
-        from utils.hashtag_candidates import extract_hashtag_candidates
+        category = news.get('category', 'russia')
+        from core.services.access_control import get_effective_level
+        from utils.hashtags_taxonomy import build_hashtags, build_hashtags_en
 
         # Default fallback tags
-        fallback_ru = self._get_category_tag(news.get('category', 'russia'), 'ru')
-        fallback_en = self._get_category_tag(news.get('category', 'world'), 'en')
+        fallback_ru = self._get_category_tag(category, 'ru')
+        fallback_en = self._get_category_tag(category, 'en')
 
-        from core.services.access_control import AILevelManager
-        ai_manager = AILevelManager(self.db)
-        level = ai_manager.get_level('global', 'hashtags')
-        if level == 0:
-            return fallback_ru, fallback_en
-
-        tags_ru = []
-        tags_en = []
-        candidates_info = extract_hashtag_candidates(title, text, language)
-        candidates = candidates_info.get('candidates', [])
+        level = get_effective_level(self.db, 'global', 'hashtags')
 
         try:
-            if language == 'en':
-                tags_en, usage = await self.deepseek_client.generate_hashtags(
-                    title=title,
-                    text=text,
-                    language='en',
-                    level=level,
-                    checksum=checksum,
-                    candidates=candidates,
-                )
-                if usage and usage.get('total_tokens', 0) > 0:
-                    cost_usd = usage.get('cost_usd', 0.0) or 0.0
-                    self.db.add_ai_usage(usage['total_tokens'], cost_usd, 'hashtags')
-
-                tags_ru, usage_ru = await self.deepseek_client.generate_hashtags(
-                    title=title,
-                    text=text,
-                    language='ru',
-                    level=level,
-                    checksum=checksum,
-                    candidates=candidates,
-                )
-                if usage_ru and usage_ru.get('total_tokens', 0) > 0:
-                    cost_usd = usage_ru.get('cost_usd', 0.0) or 0.0
-                    self.db.add_ai_usage(usage_ru['total_tokens'], cost_usd, 'hashtags')
-            else:
-                tags_ru, usage = await self.deepseek_client.generate_hashtags(
-                    title=title,
-                    text=text,
-                    language='ru',
-                    level=level,
-                    checksum=checksum,
-                    candidates=candidates,
-                )
-                if usage and usage.get('total_tokens', 0) > 0:
-                    cost_usd = usage.get('cost_usd', 0.0) or 0.0
-                    self.db.add_ai_usage(usage['total_tokens'], cost_usd, 'hashtags')
+            tags_ru = await build_hashtags(
+                title=title,
+                text=text,
+                language=language,
+                ai_client=self.deepseek_client,
+                level=level,
+            )
         except Exception as e:
-            logger.debug(f"Hashtag generation failed: {e}")
+            logger.debug(f"Hashtag taxonomy failed: {e}")
+            tags_ru = []
+
+        if not tags_ru:
+            tags_ru = [fallback_ru]
+
+        tags_en = build_hashtags_en(tags_ru) if language == 'en' else build_hashtags_en(tags_ru)
 
         hashtags_ru = " ".join(tags_ru) if tags_ru else fallback_ru
         hashtags_en = " ".join(tags_en) if tags_en else fallback_en
@@ -2439,7 +2499,7 @@ class NewsBot:
             from docx.enum.text import WD_ALIGN_PARAGRAPH
             import tempfile
             
-            selected_ids = self.db.get_user_selections(user_id)
+            selected_ids = self.db.get_user_selections(user_id, env="prod")
             if not selected_ids:
                 return None
             
@@ -2582,7 +2642,7 @@ class NewsBot:
         """Показать меню источников с пагинацией"""
         sources = self.db.list_sources()
         user_id = str(query.from_user.id)
-        user_enabled = self.db.get_user_source_enabled_map(user_id)
+        user_enabled = self.db.get_user_source_enabled_map(user_id, env="prod")
         
         # Пагинация
         PAGE_SIZE = 8
@@ -2635,7 +2695,7 @@ class NewsBot:
         if not user_id:
             return news_items
         
-        enabled_source_ids = self.db.get_enabled_source_ids_for_user(user_id)
+        enabled_source_ids = self.db.get_enabled_source_ids_for_user(user_id, env="prod")
         
         # Если None -> все включены
         if enabled_source_ids is None:
@@ -2677,6 +2737,18 @@ class NewsBot:
         bucket = self.drop_counters.setdefault(domain, {})
         bucket[reason] = bucket.get(reason, 0) + 1
 
+    def _get_global_category_filter(self) -> str | None:
+        return self.db.get_bot_setting("global_category_filter")
+
+    def _set_global_category_filter(self, value: str | None) -> None:
+        self.db.set_bot_setting("global_category_filter", value)
+
+    def _get_user_category_filter(self, user_id: int) -> str | None:
+        return self.db.get_user_category_filter(str(user_id), env="prod")
+
+    def _set_user_category_filter(self, user_id: int, value: str | None) -> None:
+        self.db.set_user_category_filter(str(user_id), value, env="prod")
+
     def _should_publish_news(self, news: dict) -> tuple[bool, str | None]:
         """Apply freshness rules based on published_confidence."""
         from datetime import datetime, timedelta
@@ -2688,74 +2760,41 @@ class NewsBot:
         }
         override_days = freshness_days_override.get(domain)
         confidence = (news.get('published_confidence') or 'none').lower()
-        published_at = parse_datetime_value(news.get('published_at'))
+        published_raw = news.get('published_at')
+        published_at = parse_datetime_value(published_raw)
+        published_date_raw = news.get('published_date')
+        fallback_at = parse_datetime_value(news.get('fetched_at') or news.get('first_seen_at'))
         now_local = get_project_now()
 
-        if published_at:
-            published_local = to_project_tz(published_at)
-            if published_local > now_local + timedelta(minutes=5):
-                return False, "DROP_BAD_TZ_FUTURE_DATE"
-
-        if confidence == 'high':
-            if not published_at:
-                return False, "DROP_PARSE_FAILED"
-            published_local = to_project_tz(published_at)
-            if override_days is not None:
-                if published_local < now_local - timedelta(days=override_days):
-                    return False, "DROP_OLD_PUBLISHED_AT"
-                return True, None
-            if published_local < now_local - timedelta(hours=36):
-                return False, "DROP_OLD_PUBLISHED_AT"
-            return True, None
-
-        if confidence == 'medium':
-            if not published_at:
-                return False, "DROP_PARSE_FAILED"
-            published_local = to_project_tz(published_at)
-            if override_days is not None:
-                if published_local < now_local - timedelta(days=override_days):
-                    return False, "DROP_OLD_PUBLISHED_AT"
-                return True, None
-            if published_local < now_local - timedelta(hours=48):
-                return False, "DROP_OLD_PUBLISHED_AT"
-            return True, None
-
-        if confidence == 'low':
-            published_date = news.get('published_date')
-            if not published_date:
-                return False, "DROP_PARSE_FAILED"
+        if not published_at and published_date_raw:
             try:
-                pub_date = datetime.fromisoformat(str(published_date)).date()
+                pub_date = datetime.fromisoformat(str(published_date_raw)).date()
+                published_at = datetime.combine(pub_date, datetime.min.time())
+                confidence = 'low'
             except Exception:
-                return False, "DROP_PARSE_FAILED"
-            today = now_local.date()
-            if pub_date == today:
-                return True, None
-            pub_dt_local = datetime.combine(pub_date, datetime.min.time()).replace(tzinfo=now_local.tzinfo)
-            if override_days is not None:
-                if now_local - pub_dt_local <= timedelta(days=override_days):
-                    return True, None
-                return False, "DROP_OLD_PUBLISHED_AT"
-            if now_local - pub_dt_local <= timedelta(days=2):
-                return True, None
-            return False, "DROP_OLD_PUBLISHED_AT"
+                return False, "PARSE_DATE_FAILED"
 
-        url_date = parse_url_date(news.get('url'))
-        if url_date and url_date == now_local.date():
+        if not published_at:
+            if published_raw:
+                return False, "PARSE_DATE_FAILED"
+            if fallback_at:
+                published_at = fallback_at
+                confidence = 'surrogate'
+            else:
+                return False, "NO_PUBLISHED_DATE"
+
+        published_local = to_project_tz(published_at)
+        if published_local > now_local + timedelta(minutes=5):
+            return False, "PARSE_DATE_FAILED"
+
+        if override_days is not None:
+            if published_local < now_local - timedelta(days=override_days):
+                return False, "OLD_PUBLISHED_AT"
             return True, None
 
-        if news.get('is_first_seen'):
-            return True, None
-
-        first_seen_at = parse_datetime_value(news.get('first_seen_at') or news.get('fetched_at'))
-        if first_seen_at:
-            first_seen_local = to_project_tz(first_seen_at)
-            if now_local - first_seen_local <= timedelta(hours=48):
-                return True, None
-
-        if url_date:
-            return False, "DROP_NO_PUBLISHED_AT_AND_URL_DATE_MISMATCH"
-        return False, "DROP_PARSE_FAILED"
+        if published_local < now_local - timedelta(hours=36):
+            return False, "OLD_PUBLISHED_AT"
+        return True, None
 
     def _is_today_news(self, news: dict) -> bool:
         """Backward-compatible wrapper for freshness logic."""
@@ -2765,28 +2804,37 @@ class NewsBot:
     async def _show_ai_management(self, query):
         """Show AI levels management screen"""
         try:
-            try:
-                from config.railway_config import APP_ENV
-            except (ImportError, ValueError):
-                from config.config import APP_ENV
-            
-            from core.services.access_control import AILevelManager
-            
+            from core.services.access_control import (
+                get_effective_level,
+                get_global_level,
+                get_user_level_override,
+            )
+
+            app_env = get_app_env()
             user_id = str(query.from_user.id)
-            
-            # Check admin
-            is_admin = self._is_admin(int(user_id))
-            if not is_admin:
-                await query.answer("❌ Доступ запрещён", show_alert=True)
-                return
-            
-            # Get AI level manager
-            ai_manager = AILevelManager(self.db)
-            
-            # Get current levels (global settings)
-            hashtags_level = ai_manager.get_level('global', 'hashtags')
-            cleanup_level = ai_manager.get_level('global', 'cleanup')
-            summary_level = ai_manager.get_level('global', 'summary')
+
+            if app_env == "sandbox":
+                # Admin-only global management
+                is_admin = self._is_admin(int(user_id))
+                if not is_admin:
+                    await query.answer("❌ Доступ запрещён", show_alert=True)
+                    return
+
+                hashtags_level = get_global_level(self.db, 'hashtags')
+                cleanup_level = get_global_level(self.db, 'cleanup')
+                summary_level = get_global_level(self.db, 'summary')
+            else:
+                hashtags_level = get_effective_level(self.db, user_id, 'hashtags')
+                cleanup_level = get_effective_level(self.db, user_id, 'cleanup')
+                summary_level = get_effective_level(self.db, user_id, 'summary')
+
+                hashtags_global = get_global_level(self.db, 'hashtags')
+                cleanup_global = get_global_level(self.db, 'cleanup')
+                summary_global = get_global_level(self.db, 'summary')
+
+                hashtags_override = get_user_level_override(self.db, user_id, 'hashtags')
+                cleanup_override = get_user_level_override(self.db, user_id, 'cleanup')
+                summary_override = get_user_level_override(self.db, user_id, 'summary')
             
             # Build UI
             def level_text(level: int) -> str:
@@ -2798,10 +2846,12 @@ class NewsBot:
             keyboard = []
             
             # Hashtags
-            keyboard.append([InlineKeyboardButton(
-                f"{level_icon(hashtags_level)} 🏷 Хештеги (AI): {level_text(hashtags_level)}",
-                callback_data="noop"
-            )])
+            header = f"{level_icon(hashtags_level)} 🏷 Хештеги (AI): {level_text(hashtags_level)}"
+            if app_env == "prod":
+                header += f" | G {level_text(hashtags_global)}"
+                if hashtags_override is not None:
+                    header += f" | U {level_text(hashtags_override)}"
+            keyboard.append([InlineKeyboardButton(header, callback_data="noop")])
             keyboard.append([
                 InlineKeyboardButton("−", callback_data="ai:dec:hashtags"),
                 InlineKeyboardButton("OFF", callback_data="ai:set:hashtags:0"),
@@ -2809,10 +2859,12 @@ class NewsBot:
             ])
             
             # Cleanup
-            keyboard.append([InlineKeyboardButton(
-                f"{level_icon(cleanup_level)} 🧹 Очистка (AI): {level_text(cleanup_level)}",
-                callback_data="noop"
-            )])
+            header = f"{level_icon(cleanup_level)} 🧹 Очистка (AI): {level_text(cleanup_level)}"
+            if app_env == "prod":
+                header += f" | G {level_text(cleanup_global)}"
+                if cleanup_override is not None:
+                    header += f" | U {level_text(cleanup_override)}"
+            keyboard.append([InlineKeyboardButton(header, callback_data="noop")])
             keyboard.append([
                 InlineKeyboardButton("−", callback_data="ai:dec:cleanup"),
                 InlineKeyboardButton("OFF", callback_data="ai:set:cleanup:0"),
@@ -2820,10 +2872,12 @@ class NewsBot:
             ])
             
             # Summary
-            keyboard.append([InlineKeyboardButton(
-                f"{level_icon(summary_level)} 📝 Пересказ (AI): {level_text(summary_level)}",
-                callback_data="noop"
-            )])
+            header = f"{level_icon(summary_level)} 📝 Пересказ (AI): {level_text(summary_level)}"
+            if app_env == "prod":
+                header += f" | G {level_text(summary_global)}"
+                if summary_override is not None:
+                    header += f" | U {level_text(summary_override)}"
+            keyboard.append([InlineKeyboardButton(header, callback_data="noop")])
             keyboard.append([
                 InlineKeyboardButton("−", callback_data="ai:dec:summary"),
                 InlineKeyboardButton("OFF", callback_data="ai:set:summary:0"),
@@ -2835,19 +2889,31 @@ class NewsBot:
             
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            text = (
-                "🤖 Управление AI модулями (ГЛОБАЛЬНЫЕ)\n\n"
-                "Уровни 0-5:\n"
-                "• 0 = выключено (no LLM calls)\n"
-                "• 1-2 = быстрый/экономный режим\n"
-                "• 3 = стандартный (по умолчанию)\n"
-                "• 4-5 = максимальное качество\n\n"
-                "⚡️ Очистка level=5: автоматический пересказ\n"
-                "   для lenta.ru и ria.ru (1-2 предложения)\n\n"
-                "Используйте − и + для настройки уровня,\n"
-                "или OFF для полного отключения.\n\n"
-                "⚠️ Настройки применяются к ПРОДУ и ПЕСОЧНИЦЕ"
-            )
+            if app_env == "sandbox":
+                text = (
+                    "🤖 Управление AI модулями (ГЛОБАЛЬНЫЕ)\n\n"
+                    "Уровни 0-5:\n"
+                    "• 0 = выключено (no LLM calls)\n"
+                    "• 1-2 = быстрый/экономный режим\n"
+                    "• 3 = стандартный (по умолчанию)\n"
+                    "• 4-5 = максимальное качество\n\n"
+                    "⚡️ Очистка level=5: автоматический пересказ\n"
+                    "   для lenta.ru и ria.ru (1-2 предложения)\n\n"
+                    "Используйте − и + для настройки уровня,\n"
+                    "или OFF для полного отключения.\n\n"
+                    "⚠️ Настройки применяются к ПРОДУ и ПЕСОЧНИЦЕ"
+                )
+            else:
+                text = (
+                    "🤖 Управление AI модулями (ПЕРСОНАЛЬНЫЕ)\n\n"
+                    "Уровни 0-5:\n"
+                    "• 0 = выключено (no LLM calls)\n"
+                    "• 1-2 = быстрый/экономный режим\n"
+                    "• 3 = стандартный (по умолчанию)\n"
+                    "• 4-5 = максимальное качество\n\n"
+                    "G = global, U = user override\n"
+                    "Персональные уровни действуют только для вас."
+                )
             
             await query.edit_message_text(text=text, reply_markup=reply_markup)
         except Exception as e:
@@ -2856,40 +2922,128 @@ class NewsBot:
     
     async def _handle_ai_level_change(self, query, module: str, action: str, level: int = None):
         """Handle AI level change (inc/dec/set) - uses global settings"""
-        try:
-            from config.railway_config import APP_ENV
-        except (ImportError, ValueError):
-            from config.config import APP_ENV
-        from core.services.access_control import AILevelManager
-        
+        from core.services.access_control import (
+            get_effective_level,
+            set_global_level,
+            set_user_level,
+        )
+
         user_id = str(query.from_user.id)
-        
-        # Check admin
-        is_admin = self._is_admin(int(user_id))
-        if not is_admin:
-            await query.answer("❌ Доступ запрещён", show_alert=True)
-            return
-        
-        # Get AI level manager
-        ai_manager = AILevelManager(self.db)
-        
-        # Perform action on GLOBAL settings (affects both prod and sandbox)
-        if action == "inc":
-            new_level = ai_manager.inc_level('global', module)
-        elif action == "dec":
-            new_level = ai_manager.dec_level('global', module)
-        elif action == "set":
-            ai_manager.set_level('global', module, level)
-            new_level = level
+        app_env = get_app_env()
+
+        if app_env == "sandbox":
+            is_admin = self._is_admin(int(user_id))
+            if not is_admin:
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+
+            if action == "inc":
+                current = get_effective_level(self.db, 'global', module)
+                new_level = min(5, current + 1)
+                set_global_level(self.db, module, new_level)
+            elif action == "dec":
+                current = get_effective_level(self.db, 'global', module)
+                new_level = max(0, current - 1)
+                set_global_level(self.db, module, new_level)
+            elif action == "set":
+                new_level = max(0, min(5, int(level)))
+                set_global_level(self.db, module, new_level)
+            else:
+                await query.answer("❌ Invalid action", show_alert=True)
+                return
         else:
-            await query.answer("❌ Invalid action", show_alert=True)
-            return
-        
-        # Show feedback
+            if action == "inc":
+                current = get_effective_level(self.db, user_id, module)
+                new_level = min(5, current + 1)
+                set_user_level(self.db, user_id, module, new_level)
+            elif action == "dec":
+                current = get_effective_level(self.db, user_id, module)
+                new_level = max(0, current - 1)
+                set_user_level(self.db, user_id, module, new_level)
+            elif action == "set":
+                new_level = max(0, min(5, int(level)))
+                set_user_level(self.db, user_id, module, new_level)
+            else:
+                await query.answer("❌ Invalid action", show_alert=True)
+                return
+
         await query.answer(f"✅ {module}: {new_level}")
-        
-        # Re-render screen
         await self._show_ai_management(query)
+
+    async def _finalize_invite_creation(
+        self,
+        admin_id: str,
+        label: str | None,
+        context: ContextTypes.DEFAULT_TYPE,
+        update: Update | None = None,
+        query=None,
+    ) -> None:
+        cleaned_label = label.strip() if label else None
+        if cleaned_label and len(cleaned_label) > 80:
+            cleaned_label = cleaned_label[:80]
+
+        invite_code = self._generate_signed_invite_code(admin_id)
+        if not invite_code:
+            message = (
+                "❌ Не задан INVITE_SECRET.\n\n"
+                "Установите переменную окружения INVITE_SECRET одинаково в prod и sandbox."
+            )
+            back_markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:users")]
+            ])
+            if query:
+                await query.edit_message_text(message, reply_markup=back_markup)
+            elif update:
+                await update.message.reply_text(message, reply_markup=back_markup)
+            return
+
+        self.db.create_invite_with_code(invite_code, admin_id, invite_label=cleaned_label)
+        try:
+            self.access_db.create_invite_with_code(invite_code, admin_id, invite_label=cleaned_label)
+        except Exception:
+            pass
+
+        # Get bot username for link
+        try:
+            from config.railway_config import BOT_PROD_USERNAME
+        except (ImportError, ValueError):
+            try:
+                from config.config import BOT_PROD_USERNAME
+            except ImportError:
+                BOT_PROD_USERNAME = None
+
+        if not BOT_PROD_USERNAME:
+            bot_info = await self.application.bot.get_me()
+            bot_username = bot_info.username
+        else:
+            bot_username = BOT_PROD_USERNAME
+
+        invite_link = f"https://t.me/{bot_username}?start={invite_code}"
+        if cleaned_label:
+            from html import escape
+            label_line = f"👤 Для: {escape(cleaned_label)}\n"
+        else:
+            label_line = ""
+
+        keyboard = [
+            [InlineKeyboardButton("📤 Отправить пользователю", callback_data=f"mgmt:send_invite:{invite_code}")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:users")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        message = (
+            "🎉 Новый инвайт-код создан!\n\n"
+            f"{label_line}"
+            f"📌 Код: <code>{invite_code}</code>\n\n"
+            "🔗 Ссылка для пользователя:\n"
+            f"<code>{invite_link}</code>\n\n"
+            "Нажмите кнопку ниже для отправки инвайта пользователю."
+        )
+
+        if query:
+            await query.edit_message_text(text=message, reply_markup=reply_markup, parse_mode='HTML')
+        elif update:
+            await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='HTML')
 
     async def _show_users_management(self, query):
         """Show users and invites management screen"""

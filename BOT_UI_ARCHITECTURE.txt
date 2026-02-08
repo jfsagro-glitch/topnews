@@ -1,0 +1,121 @@
+TopNews Bot UI Architecture (prod + sandbox)
+
+1) Scope and environments
+- Single codebase, two environments: prod and sandbox (APP_ENV).
+- Sandbox is admin-only; non-admins are denied for all commands/callbacks.
+- Prod requires invite approval for users.
+- UI behavior is mostly identical; sandbox adds a visible marker in /start.
+- Management (users/invites) is limited to sandbox, but AI levels are global and affect both bots.
+
+2) Entry points (commands)
+- /start: access control + invite activation (sandbox shows SANDBOX marker).
+- /help: list of commands and hints for Settings.
+- /sync: manual collection (admin or user, subject to access).
+- /status: bot stats and source status (24h window).
+- /pause, /resume: per-user delivery pause/unpause.
+- /filter: category filter menu (global in sandbox, per-user in prod).
+- /sync_deepseek: update AI usage stats (admin).
+- /update_stats: manual AI stats sync (admin).
+- /debug_sources: show sources present in DB (admin).
+- /my_selection: show user selected news and export/clear actions.
+
+3) Persistent reply keyboard (bottom menu)
+- Normal users:
+  [ "SYNC" , "MY NEWS" , "PAUSE" , "RESUME" ] + [ "SETTINGS" ]
+- Sandbox admins:
+  same as above + [ "MANAGEMENT" ]
+
+Behavior mapping:
+- SYNC -> /sync
+- MY NEWS -> /my_selection
+- PAUSE -> /pause
+- RESUME -> /resume
+- SETTINGS -> /settings (inline menu)
+- MANAGEMENT -> /management (inline menu)
+
+4) Settings menu (inline buttons)
+- Filter (settings:filter) -> category selection
+- Sources (settings:sources:0) -> per-user source toggles with pagination (prod only)
+- AI switches (ai:management) -> global AI levels
+- Translation toggle (settings:translate_toggle) -> per-user translation (prod only)
+- Export news (export_menu) -> export period selection (prod only)
+- Bot status (show_status) -> same as /status
+- Collection control (collection:stop / collection:restore) -> admin only
+
+5) Filter menu (inline)
+- Categories: World, Russia, Moscow, Moscow Region, All
+- AI verification toggle (toggle_ai)
+
+Effect:
+- Sandbox: global filter stored in bot settings.
+- Prod: per-user filter stored in user preferences.
+
+6) Sources menu (inline)
+- Paginated list of sources with per-user on/off state.
+- Stored in user_source_settings; default is enabled if no record.
+
+Effect:
+- Applies only to that user in prod.
+
+7) Translation toggle (inline)
+- Per-user translation on/off and target language stored in DB.
+
+Effect:
+- Applies only to that user in prod.
+
+8) Export menu (inline)
+- Period selection: 1,2,3,6,12,24 hours or custom.
+- Generates export doc for that user and clears selections after send.
+
+Effect:
+- Per-user selection and export in prod.
+
+9) News item inline buttons (in channel or DM)
+- AI summary: ai:{news_id}
+- Select/unselect: select:{news_id}
+
+Effect:
+- AI summary depends on global AI levels; selection is per-user.
+
+10) Status screen (inline and /status)
+- Shows bot status and source health for last 24h.
+- Uses source_events and source_health tables.
+
+11) Management menu (sandbox admin only)
+- Users/invites screen
+- Create invite
+- Send invite via share link
+- List approved users
+- Block user
+
+Effect:
+- Access control only; does not change global content flow.
+
+12) AI management
+- Sandbox (admin-only): edits GLOBAL levels (hashtags/cleanup/summary).
+- Prod (user): edits USER override levels; effective level = user override if set, else global.
+- Levels are stored as integers (0-5) and affect behavior in both bots.
+
+Global vs per-user summary
+
+Global (affects all users / channel):
+- AI levels (hashtags/cleanup/summary) default
+- Category filter (sandbox global)
+- Collection stop/restore (global)
+- Source health/status data
+- Published news storage and deduplication
+- AI usage counters
+
+Per-user (local to user):
+- AI level overrides (hashtags/cleanup/summary)
+- Access approval (prod)
+- Pause/resume delivery (prod)
+- Translation toggle and target language (prod)
+- Source toggles in settings (prod)
+- Selected news list and exports (prod)
+- Category filter (prod)
+
+Environment-specific differences
+- Sandbox: admin-only access and SANDBOX marker in /start.
+- Management menu is only active in sandbox.
+- Both environments share global AI level settings.

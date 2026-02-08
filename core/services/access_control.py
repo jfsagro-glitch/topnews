@@ -61,8 +61,11 @@ class AILevelManager:
             logger.warning(f"Unknown module: {module}")
             return default
         
-        # Try to get from feature_flags
-        value_str = self.db.get_feature_flag(user_id, key)
+        # Global levels are stored in bot_settings
+        if user_id == 'global':
+            value_str = self.db.get_bot_setting(key)
+        else:
+            value_str = self.db.get_feature_flag(user_id, key)
         
         if value_str is not None:
             try:
@@ -74,7 +77,9 @@ class AILevelManager:
         
         # No *_level flag found - try to migrate from old *_enabled flag
         old_key = key.replace('_level', '_enabled')
-        old_value_str = self.db.get_feature_flag(user_id, old_key)
+        old_value_str = None
+        if user_id != 'global':
+            old_value_str = self.db.get_feature_flag(user_id, old_key)
         
         if old_value_str is not None:
             try:
@@ -112,6 +117,8 @@ class AILevelManager:
             logger.warning(f"Unknown module: {module}")
             return False
         
+        if user_id == 'global':
+            return self.db.set_bot_setting(key, str(level))
         return self.db.set_feature_flag(user_id, key, str(level))
 
     def inc_level(self, user_id: str, module: str) -> int:
@@ -133,6 +140,43 @@ class AILevelManager:
         new_level = max(0, current - 1)
         self.set_level(user_id, module, new_level)
         return new_level
+
+
+def get_user_level_override(db, user_id: str, module: str) -> Optional[int]:
+    """Return per-user override level if set, otherwise None."""
+    key = AI_MODULES.get(module)
+    if not key:
+        return None
+    value_str = db.get_feature_flag(str(user_id), key)
+    if value_str is None:
+        return None
+    try:
+        return max(0, min(5, int(value_str)))
+    except (ValueError, TypeError):
+        return None
+
+
+def get_global_level(db, module: str, default: Optional[int] = None) -> int:
+    manager = AILevelManager(db)
+    return manager.get_level('global', module, default=default)
+
+
+def get_effective_level(db, user_id: str, module: str, default: Optional[int] = None) -> int:
+    """Return user override if present, otherwise global level."""
+    override = get_user_level_override(db, user_id, module)
+    if override is not None:
+        return override
+    return get_global_level(db, module, default=default)
+
+
+def set_global_level(db, module: str, level: int) -> bool:
+    manager = AILevelManager(db)
+    return manager.set_level('global', module, level)
+
+
+def set_user_level(db, user_id: str, module: str, level: int) -> bool:
+    manager = AILevelManager(db)
+    return manager.set_level(str(user_id), module, level)
 
 
 def get_llm_profile(level: int, module: str = 'summary') -> dict:

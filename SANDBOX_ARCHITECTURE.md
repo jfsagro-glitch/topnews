@@ -106,7 +106,11 @@ Sandbox:    content/cache/sandbox/
 
 ### Visual Differentiation
 - Production: No marker in `/start` response
-- Sandbox: Shows "🧪 SANDBOX" in `/start` response
+- Sandbox: Shows "SANDBOX" marker in `/start` response
+
+### Access Policy
+- Sandbox is admin-only. Non-admin users are denied for all commands/callbacks.
+- Prod is user-facing and requires approval (invites).
 
 ## Source Health & Freshness (Sandbox)
 
@@ -163,11 +167,12 @@ sudo systemctl enable bot-prod bot-sandbox
 ## Safety Features
 
 1. **Token Mismatch Detection**: Won't start if wrong token used for environment
-2. **Environment Markers**: Visual indicator (🧪) shows which bot you're talking to
-3. **Separate Databases**: No risk of test data mixing with production
-4. **Separate Caches**: No risk of test cache affecting production
-5. **Side-Effect Guards**: `DISABLE_PROD_SIDE_EFFECTS` prevents risky operations in sandbox
-6. **Guard Helper**: `utils/sandbox.py` provides `guard_side_effect()` for protecting code paths
+2. **Environment Markers**: Visual indicator shows which bot you're talking to
+3. **Admin-only Sandbox**: non-admin users are denied in sandbox
+4. **Separate Databases**: No risk of test data mixing with production
+5. **Separate Caches**: No risk of test cache affecting production
+6. **Side-Effect Guards**: `DISABLE_PROD_SIDE_EFFECTS` prevents risky operations in sandbox
+7. **Guard Helper**: `utils/sandbox.py` provides `guard_side_effect()` for protecting code paths
 
 ## Migration from Single Instance
 

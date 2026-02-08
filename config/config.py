@@ -56,7 +56,20 @@ TELEGRAM_CHANNEL_ID = env_int('TELEGRAM_CHANNEL_ID', -1001234567890)
 BOT_PROD_USERNAME = env_str('BOT_PROD_USERNAME', 'topnews_prod_bot')  # Change to actual prod bot username
 BOT_SANDBOX_USERNAME = env_str('BOT_SANDBOX_USERNAME', 'topnews_sandbox_bot')  # Change to actual sandbox bot username
 
-ADMIN_IDS = [464108692, 1592307306, 408817675]
+def _parse_admin_ids() -> list[int]:
+    raw_list = env_str('ADMIN_TELEGRAM_IDS', '') or ''
+    raw_single = env_str('ADMIN_TELEGRAM_ID', '') or ''
+    values = []
+    for item in (raw_list.split(',') if raw_list else []):
+        item = item.strip()
+        if item.isdigit():
+            values.append(int(item))
+    if raw_single and raw_single.strip().isdigit():
+        values.append(int(raw_single.strip()))
+    return sorted(set(values))
+
+
+ADMIN_IDS = _parse_admin_ids() or [464108692, 1592307306, 408817675]
 
 # Admin Users IDs for sandbox management (comma-separated from env)
 ADMIN_USER_IDS = env_str('ADMIN_USER_IDS', '')

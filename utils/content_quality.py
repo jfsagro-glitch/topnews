@@ -30,14 +30,23 @@ def compute_url_hash(url: str) -> str:
         return hashlib.sha256(b"").hexdigest()
 
     parts = urlsplit(raw)
-    netloc = parts.netloc.lower()
+    scheme = (parts.scheme or "").lower()
+    netloc = (parts.netloc or "").lower()
     path = parts.path or ""
     query = parts.query or ""
     if query:
         query_pairs = parse_qsl(query, keep_blank_values=True)
-        query = urlencode(sorted(query_pairs))
+        filtered = []
+        for key, value in query_pairs:
+            key_lower = key.lower()
+            if key_lower.startswith("utm_"):
+                continue
+            if key_lower in {"fbclid", "gclid", "yclid", "mc_cid", "mc_eid"}:
+                continue
+            filtered.append((key, value))
+        query = urlencode(sorted(filtered)) if filtered else ""
 
-    normalized = urlunsplit((parts.scheme, netloc, path, query, ""))
+    normalized = urlunsplit((scheme, netloc, path, query, ""))
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 

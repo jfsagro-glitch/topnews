@@ -138,6 +138,49 @@ def _build_hashtags_messages(title: str, text: str, language: str, candidates: l
     ]
 
 
+def _build_hashtags_classify_messages(
+    title: str,
+    text: str,
+    allowed: dict,
+    detected: dict,
+) -> list[dict]:
+    allowed_lines = [
+        f"g0: {', '.join(allowed.get('g0', []))}",
+        f"g1: {', '.join(allowed.get('g1', []))}",
+        f"g2: {', '.join(allowed.get('g2', []))}",
+        f"g3: {', '.join(allowed.get('g3', []))}",
+        f"r0: {', '.join(allowed.get('r0', []))}",
+    ]
+    detected_lines = [
+        f"g0: {detected.get('g0')}",
+        f"g1: {detected.get('g1')}",
+        f"g2: {detected.get('g2')}",
+        f"g3: {detected.get('g3')}",
+        f"r0: {detected.get('r0')}",
+    ]
+    system_prompt = (
+        "Ты классифицируешь новость по иерархии хештегов. "
+        "Верни ТОЛЬКО JSON объект вида "
+        "{\"g0\":\"#Россия|#Мир\",\"g1\":\"#ЦФО|...|null\","
+        "\"g2\":\"#...|null\",\"g3\":\"#...|null\",\"r0\":\"#Политика|...\"}. "
+        "Значения должны быть только из allow-list ниже (или null). "
+        "Если g0 = #Мир, то g1/g2/g3 должны быть null. "
+        "Учитывай уже обнаруженные значения, если они корректны."
+    )
+    user_content = (
+        f"Заголовок: {title}\n\n"
+        f"Текст: {text[:1200]}\n\n"
+        "Allow-list:\n"
+        + "\n".join(allowed_lines)
+        + "\n\nDetected:\n"
+        + "\n".join(detected_lines)
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+
 def _parse_hashtags_json(raw: str) -> tuple[list[str], bool]:
     import json
 
@@ -166,6 +209,22 @@ def _parse_hashtags_json(raw: str) -> tuple[list[str], bool]:
         if tag not in tags:
             tags.append(tag)
     return tags, True
+
+
+def _parse_hashtags_classification(raw: str) -> tuple[dict, bool]:
+    import json
+
+    if not raw:
+        return {}, False
+    raw = raw.strip()
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {}, False
+
+    if not isinstance(data, dict):
+        return {}, False
+    return data, True
 
 
 def _is_only_common_tags(tags: list[str], language: str) -> bool:
@@ -582,6 +641,65 @@ class DeepSeekClient:
             logger.debug(f"Hashtags failed: {e}")
 
         return [], token_usage
+
+    async def classify_hashtags(
+        self,
+        title: str,
+        text: str,
+        allowed_taxonomy: dict,
+        detected: dict,
+        level: int = 1,
+    ) -> tuple[dict, dict]:
+        """Classify hashtags using a fixed taxonomy. Returns dict with g0/g1/g2/g3/r0."""
+        token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+        if not text and not title:
+            return {}, token_usage
+
+        env_key = os.getenv('DEEPSEEK_API_KEY')
+        api_key = (env_key or self.api_key or '').strip()
+        if not api_key:
+            return {}, token_usage
+
+        from core.services.access_control import get_llm_profile
+        profile = get_llm_profile(level, 'hashtags')
+        if profile.get('disabled'):
+            return {}, token_usage
+
+        payload = {
+            "model": profile.get('model', 'deepseek-chat'),
+            "messages": _build_hashtags_classify_messages(title, text, allowed_taxonomy, detected),
+            "temperature": 0.0,
+            "max_tokens": min(int(profile.get('max_tokens', 120) or 120), 120),
+        }
+        if 'top_p' in profile:
+            payload['top_p'] = profile['top_p']
+
+        try:
+            async with httpx.AsyncClient(timeout=AI_SUMMARY_TIMEOUT) as client:
+                response = await client.post(
+                    self.endpoint,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json=payload,
+                )
+            if response.status_code == 200:
+                data = response.json()
+                raw = data["choices"][0]["message"]["content"]
+                result, valid = _parse_hashtags_classification(raw)
+                if not valid:
+                    return {}, token_usage
+
+                usage = data.get("usage", {})
+                token_usage = {
+                    "input_tokens": int(usage.get("prompt_tokens", 0) or 0),
+                    "output_tokens": int(usage.get("completion_tokens", 0) or 0),
+                    "total_tokens": int(usage.get("total_tokens", 0) or 0),
+                }
+                return result, token_usage
+        except Exception as e:
+            logger.debug(f"Hashtag classification failed: {e}")
+
+        return {}, token_usage
 
     async def verify_category(self, title: str, text: str, current_category: str) -> tuple[Optional[str], dict]:
         """

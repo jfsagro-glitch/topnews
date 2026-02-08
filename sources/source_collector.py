@@ -444,6 +444,10 @@ class SourceCollector:
 
                     lang = detect_language(clean_text, title)
                     checksum = compute_checksum(clean_text)
+                    if not published_at:
+                        fallback_dt = self._coerce_datetime(item.get('fetched_at')) or datetime.utcnow()
+                        published_at = fallback_dt
+                        published_confidence = 'surrogate'
                     pub_iso = published_at.isoformat() if published_at else None
                     if published_at and not published_date:
                         published_date, published_time = split_date_time(published_at)
@@ -453,7 +457,7 @@ class SourceCollector:
                     
                     # For trusted sources like Yahoo News/Reuters/etc, use source category directly (skip AI override)
                     # For other sources, allow AI to optionally override
-                    skip_ai_verification = source_name in ['news.yahoo.com', 'rss.news.yahoo.com']
+                    skip_ai_verification = source_name in ['news.yahoo.com', 'rss.news.yahoo.com', 'regions.ru']
                     
                     # Optional AI category verification (if client provided and not skipped)
                     if self.ai_client and detected_category and not skip_ai_verification:
@@ -597,6 +601,10 @@ class SourceCollector:
 
                     lang = detect_language(clean_text, title)
                     checksum = compute_checksum(clean_text)
+                    if not published_at:
+                        fallback_dt = self._coerce_datetime(item.get('fetched_at')) or datetime.utcnow()
+                        published_at = fallback_dt
+                        published_confidence = 'surrogate'
                     pub_iso = published_at.isoformat() if published_at else None
                     if published_at and not published_date:
                         published_date, published_time = split_date_time(published_at)
@@ -605,7 +613,7 @@ class SourceCollector:
                     detected_category = self.classifier.classify(title, clean_text, item_url)
                     
                     # For trusted sources (Telegram channels, news agencies), skip AI verification
-                    skip_ai_verification = source_name in ['news.yahoo.com', 'rss.news.yahoo.com']
+                    skip_ai_verification = source_name in ['news.yahoo.com', 'rss.news.yahoo.com', 'regions.ru']
                     
                     # Optional AI category verification (if client provided and not skipped)
                     if self.ai_client and detected_category and not skip_ai_verification:

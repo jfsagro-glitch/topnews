@@ -305,6 +305,7 @@ class ContentClassifier:
             'mosreg',
             'mosregtoday',
             'mosreg.ru',
+            'regions.ru',
             '360.ru/rubriki/mosobl',
         )
         if any(marker in url_lower for marker in moscow_region_markers):
