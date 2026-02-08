@@ -7,15 +7,15 @@ import time
 from typing import List, Dict, Optional
 from datetime import datetime
 try:
-    from config.railway_config import SOURCES_CONFIG, RSSHUB_BASE_URL
+    from config.railway_config import SOURCES_CONFIG, RSSHUB_BASE_URL, RSSHUB_MIRROR_URLS
 except (ImportError, ValueError):
-    from config.config import SOURCES_CONFIG, RSSHUB_BASE_URL
+    from config.config import SOURCES_CONFIG, RSSHUB_BASE_URL, RSSHUB_MIRROR_URLS
 from parsers.rss_parser import RSSParser
 from parsers.html_parser import HTMLParser
 from urllib.parse import urlparse
 from utils.content_classifier import ContentClassifier
 from utils.content_quality import content_quality_score, compute_checksum, detect_language, is_low_quality
-from utils.date_parser import parse_published_at, split_date_time
+from utils.date_parser import parse_published_info, split_date_time
 from utils.article_extractor import extract_article_text
 from utils.site_extractors import extract_lenta, extract_ria
 
@@ -44,14 +44,21 @@ class SourceCollector:
         
         # Cooldown для источников, которые возвращают 403/429
         self._cooldown_until = {}  # url -> timestamp
+        self._rsshub_bases = self._normalize_rsshub_bases(RSSHUB_BASE_URL, RSSHUB_MIRROR_URLS)
+        self._rss_fallback_blocklist = {
+            'gazeta.ru',
+            'www.gazeta.ru',
+            'mosreg.ru',
+            'www.mosreg.ru',
+        }
         
         # Known RSS overrides by domain (when config contains site root)
         # Includes fallback URLs for sites that block direct requests
         self.rss_overrides = {
             'ria.ru': 'https://ria.ru/export/rss2/archive/index.xml',
             'lenta.ru': 'https://lenta.ru/rss/',
-            'www.gazeta.ru': 'https://www.gazeta.ru/export/rss/lenta.xml',
-            'gazeta.ru': 'https://www.gazeta.ru/export/rss/lenta.xml',
+            'www.gazeta.ru': None,
+            'gazeta.ru': None,
             'tass.ru': 'https://tass.ru/rss/v2.xml',
             'rg.ru': 'https://rg.ru/xml/index.xml',
             'iz.ru': 'https://iz.ru/xml/rss/all.xml',  # Will use HTML if blocked
@@ -69,7 +76,7 @@ class SourceCollector:
             'dzen.ru': None,  # Dzen не имеет RSS, нужен HTML парсинг
             '360.ru': 'https://360.ru/rss/',
             'regions.ru': None,  # RSS empty, use HTML
-            'riamo.ru': 'https://riamo.ru/feed',
+            'riamo.ru': None,
             'mosregtoday.ru': None,  # HTML only
             'mosreg.ru': None,  # HTML only, блокирует RSS
             # Yahoo News - используем официальные RSS фиды (стабильно, без consent/JS)
@@ -115,10 +122,7 @@ class SourceCollector:
                         # t.me channels: use RSSHub if configured
                         if domain.endswith('t.me') or 't.me' in domain:
                             channel = src.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '').strip('/')
-                            base = (RSSHUB_BASE_URL or '').strip()
-                            if base and not base.startswith('http'):
-                                base = f"https://{base}"
-                            base = base.rstrip('/') if base else ''
+                            base = self._rsshub_bases[0] if self._rsshub_bases else ''
 
                             source_name = channel  # Use short name like 'mash' instead of 't.me/mash'
                             if base:
@@ -131,10 +135,7 @@ class SourceCollector:
                         elif 'x.com' in domain or 'twitter.com' in domain:
                             # Extract username from URL like https://x.com/username
                             username = src.replace('https://x.com/', '').replace('http://x.com/', '').replace('https://twitter.com/', '').replace('http://twitter.com/', '').replace('@', '').strip('/')
-                            base = (RSSHUB_BASE_URL or '').strip()
-                            if base and not base.startswith('http'):
-                                base = f"https://{base}"
-                            base = base.rstrip('/') if base else ''
+                            base = self._rsshub_bases[0] if self._rsshub_bases else ''
 
                             source_name = f"@{username}"  # Use @username format
                             if base:
@@ -180,24 +181,67 @@ class SourceCollector:
         self._cooldown_until[url] = time.time() + seconds
         logger.warning(f"Cooldown set for {url} for {seconds}s")
 
+    def _normalize_rsshub_bases(self, base_url: str | None, mirrors: list[str] | None) -> list[str]:
+        bases = []
+        for raw in [base_url] + (mirrors or []):
+            if not raw:
+                continue
+            base = raw.strip()
+            if not base:
+                continue
+            if not base.startswith('http'):
+                base = f"https://{base}"
+            base = base.rstrip('/')
+            if base not in bases:
+                bases.append(base)
+        return bases
+
+    def _get_rsshub_mirror_urls(self, url: str) -> list[str]:
+        if not self._rsshub_bases:
+            return []
+        current_base = None
+        path = None
+        for base in self._rsshub_bases:
+            if url.startswith(base):
+                current_base = base
+                path = url[len(base):]
+                break
+        if path is None:
+            return []
+        return [f"{base}{path}" for base in self._rsshub_bases if base != current_base]
+
+    async def _try_rsshub_mirrors(self, url: str, source_name: str) -> list[Dict]:
+        for mirror_url in self._get_rsshub_mirror_urls(url):
+            try:
+                items = await self.rss_parser.parse(mirror_url, source_name)
+                if items:
+                    logger.info(f"RSSHub mirror used for {source_name}: {mirror_url}")
+                    return items
+            except Exception:
+                continue
+        return []
+
+    def _should_skip_article_fetch(self, source_name: str, item_url: str | None) -> bool:
+        target = f"{source_name or ''} {item_url or ''}".lower()
+        return any(domain in target for domain in (
+            'ren.tv',
+            'gazeta.ru',
+            'iz.ru',
+            'rg.ru',
+            'russian.rt.com',
+        ))
+
     def _coerce_datetime(self, value) -> datetime | None:
         if not value:
             return None
-        if isinstance(value, datetime):
-            return value
-        try:
-            text = str(value).strip()
-            if text.endswith('Z'):
-                text = text.replace('Z', '+00:00')
-            return datetime.fromisoformat(text)
-        except Exception:
-            return None
+        from utils.date_parser import parse_datetime_value
+        return parse_datetime_value(value)
 
     async def _fetch_article_html(self, url: str) -> str | None:
         try:
             from net.http_client import get_http_client
             http_client = await get_http_client()
-            response = await http_client.get(url, retries=2, timeout=15)
+            response = await http_client.get(url, retries=2)
             return response.text
         except Exception as e:
             logger.debug(f"Failed to fetch article HTML: {type(e).__name__}: {str(e)[:80]}")
@@ -281,21 +325,30 @@ class SourceCollector:
                     text = item.get('text', '') or item.get('lead_text', '')
                     item_url = item.get('url', '')
                     published_at = self._coerce_datetime(item.get('published_at'))
+                    published_date = item.get('published_date')
+                    published_time = item.get('published_time')
+                    published_confidence = (item.get('published_confidence') or 'none').lower()
+                    published_source = item.get('published_source')
 
                     html = None
                     is_lenta = 'lenta.ru' in source_name
                     is_ria = 'ria.ru' in source_name
 
+                    is_yahoo = source_name in ('news.yahoo.com', 'rss.news.yahoo.com')
+                    skip_article_fetch = self._should_skip_article_fetch(source_name, item_url)
                     if not published_at or is_lenta or is_ria or not text or len(text.strip()) < 120:
-                        if item_url:
+                        if item_url and not is_yahoo and not skip_article_fetch:
                             html = await self._fetch_article_html(item_url)
 
-                    if html and not published_at:
-                        published_at = parse_published_at(html, item_url)
-
-                    if not published_at:
-                        logger.debug(f"Skipping item without published_at: {title[:50]}")
-                        continue
+                    if html and (not published_at or published_confidence in ('none', 'low')):
+                        info = parse_published_info(html, item_url)
+                        rank = {'high': 3, 'medium': 2, 'low': 1, 'none': 0}
+                        if rank.get(info.get('published_confidence', 'none'), 0) >= rank.get(published_confidence, 0):
+                            published_at = info.get('published_at') or published_at
+                            published_date = info.get('published_date') or published_date
+                            published_time = info.get('published_time') or published_time
+                            published_confidence = info.get('published_confidence', published_confidence)
+                            published_source = info.get('published_source') or published_source
 
                     raw_text = text or ""
                     extraction_method = 'rss'
@@ -322,20 +375,34 @@ class SourceCollector:
                             clean_text = ai_clean
                             extraction_method = f"{extraction_method}+ai"
 
-                    score, _meta = content_quality_score(clean_text, title)
+                    is_rsshub_telegram = '/telegram/channel/' in url
+                    is_rsshub_x = '/twitter/user/' in url
                     min_score = 0.65 if (is_lenta or is_ria) else 0.55
-                    min_len = 400 if (is_lenta or is_ria) else 120
+                    min_len = 400 if (is_lenta or is_ria) else 20
+                    used_title_fallback = False
+                    if (not clean_text or len(clean_text.strip()) < min_len) and title:
+                        clean_text = title.strip()
+                        used_title_fallback = True
+
+                    score, _meta = content_quality_score(clean_text, title)
+                    if used_title_fallback and not (is_lenta or is_ria):
+                        min_score = 0.2
+                    if is_rsshub_telegram or is_rsshub_x:
+                        min_score = 0.4
+                        min_len = 40
                     if not clean_text or len(clean_text.strip()) < min_len or is_low_quality(score, threshold=min_score):
-                        logger.debug(f"Skipping low quality RSS item: {title[:50]}")
+                        logger.debug(
+                            "Skipping low quality RSS item: "
+                            f"source={source_name} len={len(clean_text or '')} score={score:.2f} "
+                            f"min_len={min_len} min_score={min_score} title={title[:50]}"
+                        )
                         continue
 
                     lang = detect_language(clean_text, title)
                     checksum = compute_checksum(clean_text)
                     pub_iso = published_at.isoformat() if published_at else None
-                    pub_date = None
-                    pub_time = None
-                    if published_at:
-                        pub_date, pub_time = split_date_time(published_at)
+                    if published_at and not published_date:
+                        published_date, published_time = split_date_time(published_at)
                     
                     # Classify by content
                     detected_category = self.classifier.classify(title, clean_text, item_url)
@@ -360,8 +427,12 @@ class SourceCollector:
                     item['checksum'] = checksum
                     item['language'] = lang
                     item['published_at'] = pub_iso
-                    item['published_date'] = pub_date
-                    item['published_time'] = pub_time
+                    item['published_date'] = published_date
+                    item['published_time'] = published_time
+                    item['published_confidence'] = published_confidence
+                    item['published_source'] = published_source
+                    if not item.get('fetched_at'):
+                        item['fetched_at'] = datetime.utcnow().isoformat()
                     item['extraction_method'] = extraction_method
                     item['quality_score'] = score
                     if item_url:
@@ -381,6 +452,12 @@ class SourceCollector:
                 elif '429' in error_str:
                     self._set_cooldown(url, 300)
                     logger.warning(f"HTTP 429 from {source_name} ({url}), setting cooldown for 5 minutes")
+                elif '503' in error_str and '/telegram/channel/' in url:
+                    mirror_items = await self._try_rsshub_mirrors(url, source_name)
+                    if mirror_items:
+                        return mirror_items
+                    self._set_cooldown(url, 300)
+                    logger.warning(f"⚠️ RSSHub Telegram feed unavailable for {source_name} (503), will retry in 5 min")
                 elif '503' in error_str and '/twitter/' in url:
                     # 503 from RSSHub Twitter/X feeds - likely API issues, short cooldown
                     self._set_cooldown(url, 300)
@@ -397,6 +474,10 @@ class SourceCollector:
             
             try:
                 news = await self.html_parser.parse(url, source_name)
+                if not news:
+                    rss_fallback = await self._try_fallback_rss(url, source_name, category)
+                    if rss_fallback:
+                        return rss_fallback
                 filtered_news = []
                 for item in news:
                     title = item.get('title', '')
@@ -404,19 +485,27 @@ class SourceCollector:
                     item_url = item.get('url', '')
 
                     published_at = self._coerce_datetime(item.get('published_at'))
+                    published_date = item.get('published_date')
+                    published_time = item.get('published_time')
+                    published_confidence = (item.get('published_confidence') or 'none').lower()
+                    published_source = item.get('published_source')
                     html = None
                     is_lenta = 'lenta.ru' in source_name
                     is_ria = 'ria.ru' in source_name
 
-                    if item_url:
+                    skip_article_fetch = self._should_skip_article_fetch(source_name, item_url)
+                    if item_url and not skip_article_fetch:
                         html = await self._fetch_article_html(item_url)
 
-                    if html and not published_at:
-                        published_at = parse_published_at(html, item_url)
-
-                    if not published_at:
-                        logger.debug(f"Skipping item without published_at: {title[:50]}")
-                        continue
+                    if html and (not published_at or published_confidence in ('none', 'low')):
+                        info = parse_published_info(html, item_url)
+                        rank = {'high': 3, 'medium': 2, 'low': 1, 'none': 0}
+                        if rank.get(info.get('published_confidence', 'none'), 0) >= rank.get(published_confidence, 0):
+                            published_at = info.get('published_at') or published_at
+                            published_date = info.get('published_date') or published_date
+                            published_time = info.get('published_time') or published_time
+                            published_confidence = info.get('published_confidence', published_confidence)
+                            published_source = info.get('published_source') or published_source
 
                     raw_text = text or ""
                     extraction_method = 'html'
@@ -443,20 +532,29 @@ class SourceCollector:
                             clean_text = ai_clean
                             extraction_method = f"{extraction_method}+ai"
 
-                    score, _meta = content_quality_score(clean_text, title)
                     min_score = 0.65 if (is_lenta or is_ria) else 0.55
-                    min_len = 400 if (is_lenta or is_ria) else 120
+                    min_len = 400 if (is_lenta or is_ria) else 40
+                    used_title_fallback = False
+                    if (not clean_text or len(clean_text.strip()) < min_len) and title:
+                        clean_text = title.strip()
+                        used_title_fallback = True
+
+                    score, _meta = content_quality_score(clean_text, title)
+                    if used_title_fallback and not (is_lenta or is_ria):
+                        min_score = 0.2
                     if not clean_text or len(clean_text.strip()) < min_len or is_low_quality(score, threshold=min_score):
-                        logger.debug(f"Skipping low quality HTML item: {title[:50]}")
+                        logger.debug(
+                            "Skipping low quality HTML item: "
+                            f"source={source_name} len={len(clean_text or '')} score={score:.2f} "
+                            f"min_len={min_len} min_score={min_score} title={title[:50]}"
+                        )
                         continue
 
                     lang = detect_language(clean_text, title)
                     checksum = compute_checksum(clean_text)
                     pub_iso = published_at.isoformat() if published_at else None
-                    pub_date = None
-                    pub_time = None
-                    if published_at:
-                        pub_date, pub_time = split_date_time(published_at)
+                    if published_at and not published_date:
+                        published_date, published_time = split_date_time(published_at)
                     
                     # Classify by content
                     detected_category = self.classifier.classify(title, clean_text, item_url)
@@ -480,8 +578,12 @@ class SourceCollector:
                     item['checksum'] = checksum
                     item['language'] = lang
                     item['published_at'] = pub_iso
-                    item['published_date'] = pub_date
-                    item['published_time'] = pub_time
+                    item['published_date'] = published_date
+                    item['published_time'] = published_time
+                    item['published_confidence'] = published_confidence
+                    item['published_source'] = published_source
+                    if not item.get('fetched_at'):
+                        item['fetched_at'] = datetime.utcnow().isoformat()
                     item['extraction_method'] = extraction_method
                     item['quality_score'] = score
                     if item_url:
@@ -506,6 +608,36 @@ class SourceCollector:
                 
                 logger.error(f"Error collecting from HTML {source_name} ({url}): {e}", exc_info=False)
                 return []
+
+    async def _try_fallback_rss(self, url: str, source_name: str, category: str) -> List[Dict]:
+        """Try common RSS endpoints when HTML parsing yields no items."""
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            return []
+        if parsed.netloc.lower() in self._rss_fallback_blocklist:
+            return []
+
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        candidates = [
+            f"{base}/rss",
+            f"{base}/rss.xml",
+            f"{base}/feed",
+            f"{base}/feed.xml",
+            f"{base}/export/rss.xml",
+            f"{base}/rss/all",
+            f"{base}/rss/all.xml",
+        ]
+        for candidate in candidates:
+            try:
+                items = await self.rss_parser.parse(candidate, source_name)
+                if items:
+                    logger.info(f"Fallback RSS used for {source_name}: {candidate}")
+                    return items
+            except Exception:
+                continue
+        return []
     
     async def _verify_with_ai(self, title: str, text: str, current_category: str) -> Optional[str]:
         """

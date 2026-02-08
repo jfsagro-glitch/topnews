@@ -135,6 +135,8 @@ LOG_FILE = env_str('LOG_FILE', f"logs/bot_{APP_ENV}.log")
 
 # RSSHub (for Telegram channel RSS)
 RSSHUB_BASE_URL = env_str('RSSHUB_BASE_URL', 'https://rsshub-production-a367.up.railway.app')
+_RSSHUB_MIRROR_RAW = env_str('RSSHUB_MIRROR_URLS', 'https://rsshub.railway.internal')
+RSSHUB_MIRROR_URLS = [url.strip() for url in (_RSSHUB_MIRROR_RAW or '').split(',') if url.strip()]
 
 # Категории
 CATEGORIES = {
@@ -152,26 +154,24 @@ SOURCES_CONFIG = {
             'https://ria.ru/world/',
             'https://lenta.ru/tags/geo/',
             'https://tass.ru/rss/index.xml',
-            'https://www.gazeta.ru/export/rss/lenta.xml',
+            'https://www.gazeta.ru/news/',
             'https://rg.ru/world/',
             'https://www.rbc.ru/v10/static/rss/rbc_news.rss',
             'https://russian.rt.com/rss/',
             'https://www.interfax.ru/world/',
-            'https://dzen.ru/news/rubric/world',
             'https://iz.ru/xml/rss/all.xml',
-            'https://ren.tv/export/rss.xml',
+            'https://ren.tv/news',
         ]
     },
     'russia': {
         'category': 'russia',
         'sources': [
-            'https://dzen.ru/news/rubric/chronologic',
             'https://ria.ru/',
             'https://lenta.ru/',
-            'https://www.gazeta.ru/export/rss/lenta.xml',
+            'https://www.gazeta.ru/news/',
             'https://tass.ru/rss/v2.xml',
             'https://rg.ru/',
-            'https://ren.tv/export/rss.xml',
+            'https://ren.tv/news',
             'https://iz.ru/xml/rss/all.xml',
             'https://russian.rt.com/rss/',
             'https://www.rbc.ru/v10/static/rss/rbc_news.rss',
@@ -197,11 +197,11 @@ SOURCES_CONFIG = {
             'https://tass.ru/moskovskaya-oblast',
             'https://rg.ru/region/cfo/podmoskovie',
             'https://360.ru/rubriki/mosobl/',
-            'https://mosreg.ru/sobytiya/novosti/news-submoscow',
+            'https://mosreg.ru/sobytiya/novosti',
             'https://riamo.ru/tag/podmoskove/',
-            'https://mosregtoday.ru/',
+            'https://mosregtoday.ru/news/',
             'https://www.interfax-russia.ru/center/novosti-podmoskovya',
-            'https://regions.ru/rss/all/',
+            'https://regions.ru/news',
         ]
     },
     'additional': {
@@ -209,12 +209,15 @@ SOURCES_CONFIG = {
         'sources': [
             # Yahoo News - официальные RSS фиды (стабильно, без consent/JS)
             # Преимущества: не упираемся в consent, меньше банов, стабильный парсинг
-            'https://news.yahoo.com/rss/',  # Общий фид - будет обработан как world через RSS override
-            'https://news.yahoo.com/rss/world',  # Мировые новости
+            'https://news.yahoo.com/rss/',
+            'https://news.yahoo.com/rss/world',
+            'https://naked-science.ru/',
+            'https://new-science.ru/category/news/',
+            'https://forklog.com/news',
             # Telegram channels - Russian news agencies
-            'https://t.me/ruptlyalert',  # Ruptly (видео-агентство Sputnik)
+            'https://t.me/ruptlyalert',
             'https://t.me/tass_agency',  # TASS официальное
-            'https://t.me/rian_ru',  # РИА Новости
+            'https://t.me/rian_ru',
             'https://t.me/mod_russia',  # Минобороны России
             'https://t.me/frank_media',  # Frank Media
             # X (Twitter) accounts - ВРЕМЕННО ОТКЛЮЧЕНЫ (RSSHub и Nitter недоступны)
