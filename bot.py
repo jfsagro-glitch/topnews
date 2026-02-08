@@ -2744,12 +2744,30 @@ class NewsBot:
         bucket[reason] = bucket.get(reason, 0) + 1
 
     def _is_collection_stopped_global(self) -> bool:
+        stop_file = self._get_global_stop_file_path()
+        if stop_file and os.path.exists(stop_file):
+            return True
         try:
             return self.access_db.is_collection_stopped()
         except Exception:
             return self.db.is_collection_stopped()
 
     def _set_collection_stopped_global(self, stopped: bool) -> None:
+        stop_file = self._get_global_stop_file_path()
+        if stop_file:
+            if stopped:
+                try:
+                    os.makedirs(os.path.dirname(stop_file) or '.', exist_ok=True)
+                    with open(stop_file, "w", encoding="utf-8") as fh:
+                        fh.write(f"stopped_at={datetime.utcnow().isoformat()}Z\n")
+                except Exception:
+                    pass
+            else:
+                try:
+                    if os.path.exists(stop_file):
+                        os.remove(stop_file)
+                except Exception:
+                    pass
         try:
             self.access_db.set_collection_stopped(stopped)
         except Exception:
@@ -2758,6 +2776,15 @@ class NewsBot:
             self.db.set_collection_stopped(stopped)
         except Exception:
             pass
+
+    def _get_global_stop_file_path(self) -> str | None:
+        path = os.getenv("GLOBAL_COLLECTION_STOP_FILE")
+        if path:
+            return path
+        base_dir = os.path.dirname(getattr(self.access_db, "db_path", "") or "")
+        if not base_dir:
+            return None
+        return os.path.join(base_dir, "collection.stop")
 
     def _get_global_category_filter(self) -> str | None:
         return self.db.get_bot_setting("global_category_filter")
