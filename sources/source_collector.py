@@ -4,6 +4,8 @@
 import logging
 import asyncio
 import time
+import json
+import socket
 from typing import List, Dict, Optional
 from datetime import datetime
 try:
@@ -169,7 +171,7 @@ class SourceCollector:
                     seen_telegram.add(s[1])
         other_sources = [s[1] for s in self._configured_sources if s[1] not in seen_telegram]
         if telegram_sources:
-            logger.info(f"📡 Configured Telegram channels for collection: {telegram_sources}")
+            logger.info(f"Configured Telegram channels for collection: {telegram_sources}")
         logger.info(f"Total configured sources: {len(self._configured_sources)} (Telegram: {len(telegram_sources)}, Others: {len(other_sources)})")
     
     def _in_cooldown(self, url: str) -> bool:
@@ -233,24 +235,45 @@ class SourceCollector:
 
     def _classify_error(self, error: Exception) -> tuple[str, str | None]:
         status_code = None
-        if hasattr(error, 'response'):
+        if hasattr(error, "response"):
             status_code = getattr(error.response, "status_code", None)
         if status_code:
             return f"HTTP_{status_code}", None
+
         if isinstance(error, asyncio.TimeoutError):
             return "TIMEOUT", None
+
+        if isinstance(error, (json.JSONDecodeError, ValueError)):
+            return "PARSE_ERROR", None
+
+        if isinstance(error, (ConnectionError, OSError, socket.gaierror)):
+            return "CONNECTION_ERROR", None
+
         error_str = str(error).lower()
         if "timeout" in error_str:
             return "TIMEOUT", None
-        if "rss" in error_str and "parse" in error_str:
-            return "RSS_INVALID", None
-        return "FETCH_ERROR", str(error)
+        if "dns" in error_str or "name or service not known" in error_str:
+            return "CONNECTION_ERROR", None
+        if "parse" in error_str or "json" in error_str:
+            return "PARSE_ERROR", None
+
+        return error.__class__.__name__.upper() or "FETCH_ERROR", str(error)
 
     def _record_source_error(self, source_name: str, error: Exception) -> None:
         if not self.db or not source_name:
             return
-        error_code, message = self._classify_error(error)
-        self.db.record_source_event(source_name, "error", error_code=error_code, error_message=message)
+        try:
+            error_code, message = self._classify_error(error)
+            if message and len(message) > 300:
+                message = message[:300]
+            self.db.record_source_event(
+                source_name,
+                "error",
+                error_code=error_code,
+                error_message=message,
+            )
+        except Exception as exc:
+            logger.debug(f"Failed to record source error for {source_name}: {exc}")
 
     def _coerce_datetime(self, value) -> datetime | None:
         if not value:
@@ -313,11 +336,11 @@ class SourceCollector:
                     all_news.extend(result)
                     self.source_health[source_name] = True
                     if count > 0:
-                        logger.info(f"✅ {source_name}: collected {count} items")
+                        logger.info(f"{source_name}: collected {count} items")
                     else:
-                        logger.warning(f"⚠️ {source_name}: 0 items (no new content or parsing issue)")
+                        logger.warning(f"{source_name}: 0 items (no new content or parsing issue)")
                 elif isinstance(result, Exception):
-                    logger.error(f"❌ {source_name}: {type(result).__name__}: {result}")
+                    logger.error(f"{source_name}: {type(result).__name__}: {result}")
                     self.source_health[source_name] = False
                     # Ensure we still record 0 for failed sources so they show in status
                     self.last_collected_counts[source_name] = 0

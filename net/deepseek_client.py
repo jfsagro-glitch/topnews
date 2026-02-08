@@ -23,6 +23,16 @@ from utils.text_cleaner import truncate_text
 logger = logging.getLogger(__name__)
 
 MAX_INPUT_CHARS = 3500
+HASHTAG_PROMPT_VERSION = 2
+
+COMMON_HASHTAGS_RU = {
+    "#мир", "#россия", "#москва", "#подмосковье", "#новости", "#политика",
+    "#экономика", "#общество", "#спорт", "#культура",
+}
+COMMON_HASHTAGS_EN = {
+    "#world", "#russia", "#moscow", "#news", "#politics", "#economy",
+    "#society", "#sports", "#culture",
+}
 
 
 def _truncate_input(text: str, max_chars: int = MAX_INPUT_CHARS) -> str:
@@ -106,33 +116,44 @@ def _build_text_extraction_messages(title: str, raw_text: str) -> list[dict]:
     ]
 
 
-def _build_hashtags_messages(title: str, text: str, language: str) -> list[dict]:
+def _build_hashtags_messages(title: str, text: str, language: str, candidates: list[str]) -> list[dict]:
     system_prompt = (
-        "Ты генерируешь хештеги для новости. "
-        "Верни СТРОГО JSON массив строк. "
+        "Ты выбираешь лучшие хештеги для новости. "
+        "Верни СТРОГО JSON объект вида {\"hashtags\":[\"#...\",...]}. "
         "Без комментариев и без текста вне JSON. "
-        "Хештеги должны быть короткими и релевантными. "
+        "Выбери 6-8 тегов, избегай общих и пустых тегов. "
+        "Если текст длинный, обязательно включи 2-3 конкретных сущности, "
+        "предпочтительно из списка кандидатов. "
         "Язык хештегов: {lang}."
     )
-    user_content = f"Заголовок: {title}\n\nТекст: {text[:2000]}"
+    candidates_block = ", ".join(candidates[:20]) if candidates else ""
+    user_content = (
+        f"Заголовок: {title}\n\n"
+        f"Текст: {text[:1800]}\n\n"
+        f"Кандидаты: {candidates_block}"
+    )
     return [
         {"role": "system", "content": system_prompt.format(lang=language)},
         {"role": "user", "content": user_content},
     ]
 
 
-def _parse_hashtags_json(raw: str) -> list[str]:
+def _parse_hashtags_json(raw: str) -> tuple[list[str], bool]:
     import json
 
     if not raw:
-        return []
+        return [], False
     raw = raw.strip()
     try:
         data = json.loads(raw)
     except Exception:
-        return []
+        return [], False
+
+    if isinstance(data, dict):
+        data = data.get("hashtags")
+
     if not isinstance(data, list):
-        return []
+        return [], False
     tags = []
     for item in data:
         if not isinstance(item, str):
@@ -144,7 +165,13 @@ def _parse_hashtags_json(raw: str) -> list[str]:
             tag = "#" + tag
         if tag not in tags:
             tags.append(tag)
-    return tags
+    return tags, True
+
+
+def _is_only_common_tags(tags: list[str], language: str) -> bool:
+    common = COMMON_HASHTAGS_RU if language == "ru" else COMMON_HASHTAGS_EN
+    filtered = [t.lower() for t in tags if t]
+    return bool(filtered) and all(t in common for t in filtered)
 
 
 class DeepSeekClient:
@@ -161,7 +188,7 @@ class DeepSeekClient:
                 from net.llm_cache import LLMCacheManager, BudgetGuard
                 self.cache = LLMCacheManager(db)
                 self.budget = BudgetGuard(db, daily_limit_usd=float(os.getenv('DAILY_LLM_BUDGET_USD', '1.0')))
-                logger.info("✅ LLM cache and budget guard enabled")
+                logger.info("LLM cache and budget guard enabled")
             except Exception as e:
                 logger.warning(f"Failed to initialize LLM cache/budget: {e}")
         
@@ -179,7 +206,7 @@ class DeepSeekClient:
         # Check if AI level is 0 (disabled) - only in sandbox
         from config.config import APP_ENV
         if APP_ENV == 'sandbox' and level == 0:
-            logger.info(f"[{request_id}] ⏭️ AI summary disabled (level=0)")
+            logger.info(f"[{request_id}] AI summary disabled (level=0)")
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False, "disabled": True}
         
         # Get LLM profile for level (always default to 3 in prod)
@@ -194,7 +221,7 @@ class DeepSeekClient:
         
         # Check budget limit
         if self.budget and not self.budget.can_make_request():
-            logger.warning(f"[{request_id}] ❌ Daily budget exceeded, skipping LLM call")
+            logger.warning(f"[{request_id}] Daily budget exceeded, skipping LLM call")
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False, "budget_exceeded": True}
         
         # Check cache
@@ -202,7 +229,7 @@ class DeepSeekClient:
             cache_key = self.cache.generate_cache_key('summarize', title, text, level=level, checksum=checksum)
             cached = self.cache.get(cache_key)
             if cached:
-                logger.info(f"[{request_id}] ✅ Cache HIT for summarize")
+                logger.info(f"[{request_id}] Cache HIT for summarize")
                 return cached['response'], {
                     "input_tokens": cached['input_tokens'],
                     "output_tokens": cached['output_tokens'],
@@ -216,7 +243,7 @@ class DeepSeekClient:
         
         if not api_key:
             logger.error(
-                f"[{request_id}] ❌ DeepSeek API key not configured! "
+                f"[{request_id}] DeepSeek API key not configured! "
                 f"Env DEEPSEEK_API_KEY exists: {env_key is not None}, "
                 f"Env var empty: {env_key == ''}, "
                 f"Instance key set: {bool(self.api_key)}. "
@@ -239,7 +266,7 @@ class DeepSeekClient:
         if 'top_p' in profile:
             payload['top_p'] = profile['top_p']
         
-        logger.info(f"[{request_id}] 🔄 API call: summarize (level={level}, max_tokens={payload['max_tokens']})")
+        logger.info(f"[{request_id}] API call: summarize (level={level}, max_tokens={payload['max_tokens']})")
 
         backoff = 0.8
         for attempt in range(1, 4):
@@ -272,7 +299,7 @@ class DeepSeekClient:
                     if self.budget:
                         self.budget.add_cost(cost_usd)
                     
-                    logger.info(f"[{request_id}] ✅ summarize: {input_tokens}+{output_tokens}={total_tokens} tokens, ${cost_usd:.4f}")
+                    logger.info(f"[{request_id}] summarize: {input_tokens}+{output_tokens}={total_tokens} tokens, ${cost_usd:.4f}")
                     
                     # Store in cache
                     result_text = truncate_text(summary.strip(), max_length=800)
@@ -402,6 +429,7 @@ class DeepSeekClient:
         language: str = 'ru',
         level: int = 3,
         checksum: str | None = None,
+        candidates: list[str] | None = None,
     ) -> tuple[list[str], dict]:
         """Generate hashtags as JSON array for the given language."""
         token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
@@ -409,8 +437,13 @@ class DeepSeekClient:
         if not text or not title:
             return [], token_usage
 
+        text = _truncate_input(text, max_chars=1800)
+
         if self.budget and not self.budget.can_make_request():
             return [], token_usage
+
+        candidates = candidates or []
+        candidates_key = ",".join(candidates[:20])
 
         if self.cache:
             cache_key = self.cache.generate_cache_key(
@@ -419,7 +452,9 @@ class DeepSeekClient:
                 text,
                 language=language,
                 level=level,
-                checksum=checksum
+                checksum=checksum,
+                prompt_version=HASHTAG_PROMPT_VERSION,
+                candidates=candidates_key
             )
             cached = self.cache.get(cache_key)
             if cached:
@@ -440,11 +475,14 @@ class DeepSeekClient:
         if profile.get('disabled'):
             return [], token_usage
 
+        max_tokens = min(int(profile.get('max_tokens', 120) or 120), 120)
+        temperature = min(float(profile.get('temperature', 0.2) or 0.2), 0.3)
+
         payload = {
             "model": profile.get('model', 'deepseek-chat'),
-            "messages": _build_hashtags_messages(title, text, language),
-            "temperature": profile.get('temperature', 0.3),
-            "max_tokens": profile.get('max_tokens', 200),
+            "messages": _build_hashtags_messages(title, text, language, candidates),
+            "temperature": temperature,
+            "max_tokens": max_tokens,
         }
         if 'top_p' in profile:
             payload['top_p'] = profile['top_p']
@@ -459,7 +497,52 @@ class DeepSeekClient:
             if response.status_code == 200:
                 data = response.json()
                 raw = data["choices"][0]["message"]["content"]
-                tags = _parse_hashtags_json(raw)
+                tags, valid = _parse_hashtags_json(raw)
+
+                if not valid or not tags:
+                    repair_payload = {
+                        "model": profile.get('model', 'deepseek-chat'),
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "Исправь ответ и верни СТРОГО JSON объект вида "
+                                    "{\"hashtags\":[\"#...\",...]}. Без текста вне JSON."
+                                )
+                            },
+                            {"role": "user", "content": raw or ""},
+                        ],
+                        "temperature": 0.0,
+                        "max_tokens": max_tokens,
+                    }
+                    if 'top_p' in profile:
+                        repair_payload['top_p'] = profile['top_p']
+                    repair = await client.post(
+                        self.endpoint,
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        json=repair_payload,
+                    )
+                    if repair.status_code == 200:
+                        repaired = repair.json()["choices"][0]["message"]["content"]
+                        tags, _ = _parse_hashtags_json(repaired)
+
+                if _is_only_common_tags(tags, language) and len(text) > 300:
+                    if candidates:
+                        added = 0
+                        for candidate in candidates:
+                            tag = candidate.strip()
+                            if not tag:
+                                continue
+                            if not tag.startswith("#"):
+                                tag = "#" + tag
+                            if tag not in tags:
+                                tags.append(tag)
+                                added += 1
+                            if len(tags) >= 8 or added >= 3:
+                                break
+
+                if len(tags) > 8:
+                    tags = tags[:8]
 
                 usage = data.get("usage", {})
                 input_tokens = int(usage.get("prompt_tokens", 0) or 0)
@@ -482,7 +565,9 @@ class DeepSeekClient:
                         text,
                         language=language,
                         level=level,
-                        checksum=checksum
+                        checksum=checksum,
+                        prompt_version=HASHTAG_PROMPT_VERSION,
+                        candidates=candidates_key
                     )
                     self.cache.set(cache_key, 'hashtags', tags, input_tokens, output_tokens, ttl_hours=72)
 

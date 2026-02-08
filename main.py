@@ -21,7 +21,7 @@ try:
         TG_MODE,
         WEBHOOK_BASE_URL,
     )
-    print("✅ Using Railway configuration")
+    print("Using Railway configuration")
 except (ValueError, ImportError) as e:
     print("Using local configuration...")
     from config.config import (

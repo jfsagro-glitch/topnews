@@ -76,7 +76,9 @@
 3. PROCESSING PHASE
    ├─ Очистка HTML и форматирование текста
    ├─ Извлечение первого абзаца
-   ├─ Определение категории
+    ├─ Определение категории
+    ├─ Парсинг даты публикации (confidence: high/medium/low/none)
+    └─ Фильтр актуальности по confidence и URL-датам
    └─ Создание Telegram сообщения
 
 4. DEDUPLICATION PHASE
@@ -91,8 +93,9 @@
    └─ Логирование ошибок
 
 6. STORAGE PHASE
-   ├─ Сохранение в БД (URL, заголовок, источник, дата)
-   └─ Обновление статистики
+    ├─ Сохранение в БД (URL, заголовок, источник, даты, confidence)
+    ├─ Запись событий источников (success/error/drop_old)
+    └─ Обновление статистики
 ```
 
 ## 📊 Поток данных
@@ -143,14 +146,59 @@ CREATE TABLE published_news (
     title TEXT NOT NULL,
     source TEXT NOT NULL,      -- Источник (РИА, Лента и т.д.)
     category TEXT NOT NULL,    -- Мир, Россия, Подмосковье
-    published_at TIMESTAMP     -- Время опубликации
+    published_at TIMESTAMP,    -- Время публикации
+    published_date TEXT,
+    published_time TEXT,
+    published_confidence TEXT,
+    published_source TEXT,
+    fetched_at TIMESTAMP,
+    first_seen_at TIMESTAMP,
+    url_hash TEXT,
+    guid TEXT
+);
+
+CREATE TABLE source_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    event_type TEXT NOT NULL,      -- success | error | drop_old
+    error_code TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE source_health (
+    source TEXT PRIMARY KEY,
+    last_success_at TIMESTAMP,
+    last_error_at TIMESTAMP,
+    last_error_code TEXT,
+    last_error_message TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 Индексы:
 - url (UNIQUE) - для быстрой проверки дубликатов
 - published_at - для сортировки
 - source - для фильтрации по источнику
+- url_hash, guid - для дедупликации по ссылке и GUID
 ```
+
+## 🟢🔴 Статус источников (логика)
+
+Статус рассчитывается по событиям ingestion за последние 24 часа:
+
+- 🟢 если есть валидные новости и error_rate < 0.5
+- 🔴 если валидных новостей нет или error_rate >= 0.5
+- DROP_OLD_NEWS не считается ошибкой источника
+
+Отображается:
+- название источника
+- тип (rss | html | api | x/twitter | yahoo)
+- статус и причина (например HTTP_403, TIMEOUT, RSS_INVALID)
+
+Метрики:
+- success_count_24h
+- error_count_24h
+- drop_old_count_24h
+- last_error_code/last_error_message
 
 ## ⚙️ Асинхронная архитектура
 
@@ -201,6 +249,15 @@ except Exception as e:
 
 # Бот продолжит работу с другими источниками
 ```
+
+## 🕒 Фильтр актуальности (freshness)
+
+Правила:
+- high: окно 36ч
+- medium: окно 48ч
+- low: окно 2 дня (по published_date)
+- none: допускается по URL-дате или first_seen в пределах 48ч
+- для отдельных доменов возможно расширение окна (override)
 
 ## 📈 Масштабируемость
 

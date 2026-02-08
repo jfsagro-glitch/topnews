@@ -743,8 +743,8 @@ class NewsDatabase:
         if not source:
             return
         message = (error_message or "").strip() or None
-        if message and len(message) > 120:
-            message = message[:120]
+        if message and len(message) > 300:
+            message = message[:300]
 
         try:
             with self._write_lock:
@@ -828,18 +828,18 @@ class NewsDatabase:
                 ''',
                 tuple(sources)
             )
-            return {
-                row[0]: {
+            snapshot = {src: {} for src in sources}
+            for row in cursor.fetchall():
+                snapshot[row[0]] = {
                     'last_success_at': row[1],
                     'last_error_at': row[2],
                     'last_error_code': row[3],
                     'last_error_message': row[4],
                 }
-                for row in cursor.fetchall()
-            }
+            return snapshot
         except Exception as e:
             logger.debug(f"Error getting source health snapshot: {e}")
-            return {}
+            return {src: {} for src in sources}
 
     def get_news_id_by_url(self, url: str) -> int | None:
         """

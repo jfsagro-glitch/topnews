@@ -20,6 +20,7 @@ Successfully implemented production/sandbox architecture for TopNews bot with fu
   - Updated `/start` command to show "🧪 SANDBOX" marker when `APP_ENV=sandbox`
   - Modified `start()` method to support both polling and webhook modes based on `TG_MODE` env var
   - Webhook validation and setup
+  - Source status screen now reflects real ingestion results (24h window)
 
 - **utils/sandbox.py** (NEW):
   - Created `guard_side_effect(action_name: str) -> bool` helper function
@@ -106,6 +107,22 @@ Sandbox:    content/cache/sandbox/
 ### Visual Differentiation
 - Production: No marker in `/start` response
 - Sandbox: Shows "🧪 SANDBOX" in `/start` response
+
+## Source Health & Freshness (Sandbox)
+
+In sandbox, the source status logic is identical to production and is based on
+ingestion events recorded in the DB. This ensures the status screen reflects
+real collection behavior without manual resets.
+
+Key rules:
+- 🟢 if `success_count_24h > 0` and error_rate < 0.5
+- 🔴 if no valid news for 24h or error_rate >= 0.5
+- `DROP_OLD_NEWS` does not count as a source error
+
+Tracked fields (per source):
+- `last_success_at`, `last_error_at`
+- `success_count_24h`, `error_count_24h`, `drop_old_count_24h`
+- `last_error_code`, `last_error_message`
 
 ## Deployment Options
 
@@ -202,6 +219,9 @@ If upgrading from single-instance setup:
 - [ ] Docker Compose: both services start and isolate properly
 - [ ] systemd services: both start and auto-restart
 - [ ] Railway deployment: prod and sandbox instances run independently
+- [ ] /status screen: green only if valid news in last 24h
+- [ ] /status screen: red if only errors or no valid news
+- [ ] Drop-old news does not mark source as failed
 
 ## Future Enhancements
 

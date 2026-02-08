@@ -8,6 +8,7 @@ from typing import List, Dict
 from datetime import datetime
 from net.http_client import get_http_client
 from utils.lead_extractor import extract_lead_from_rss, extract_lead_from_html
+from utils.date_parser import parse_datetime_value, split_date_time
 
 logger = logging.getLogger(__name__)
 
@@ -75,12 +76,24 @@ class RSSParser:
             # Обрабатываем каждую запись
             for entry in feed.entries[:10]:  # Берём до 10 последних
                 lead = extract_lead_from_rss(entry, max_len=800)
+                published_info = self._parse_date_info(entry)
+                published_at = published_info.get('published_at')
+                pub_date = None
+                pub_time = None
+                if published_at:
+                    pub_date, pub_time = split_date_time(published_at)
+
                 news_item = {
                     'title': entry.get('title', 'No title'),
                     'url': entry.get('link', ''),
                     'text': lead,
                     'source': source_name,
-                    'published_at': self._parse_date(entry),
+                    'published_at': published_at.isoformat() if published_at else None,
+                    'published_date': pub_date,
+                    'published_time': pub_time,
+                    'published_confidence': published_info.get('published_confidence', 'none'),
+                    'published_source': published_info.get('published_source'),
+                    'guid': entry.get('id') or entry.get('guid') or entry.get('link', ''),
                 }
                 
                 if news_item['url']:  # Только если есть ссылка
@@ -110,36 +123,43 @@ class RSSParser:
         
         return news_items
     
-    def _parse_date(self, entry) -> str | None:
-        """Парсит дату из записи. Возвращает None если даты нет."""
+    def _parse_date_info(self, entry) -> dict:
+        """Parse date and return confidence/source metadata."""
         try:
             if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                return datetime(*entry.published_parsed[:6]).isoformat()
-            elif hasattr(entry, 'updated_parsed') and entry.updated_parsed:
-                return datetime(*entry.updated_parsed[:6]).isoformat()
+                dt = datetime(*entry.published_parsed[:6])
+                return {
+                    'published_at': parse_datetime_value(dt),
+                    'published_confidence': 'high',
+                    'published_source': 'rss:published_parsed',
+                }
+            if hasattr(entry, 'updated_parsed') and entry.updated_parsed:
+                dt = datetime(*entry.updated_parsed[:6])
+                return {
+                    'published_at': parse_datetime_value(dt),
+                    'published_confidence': 'medium',
+                    'published_source': 'rss:updated_parsed',
+                }
         except Exception as e:
             logger.debug(f"Error parsing date: {e}")
 
-        # Fallback to published/updated string fields
-        for key in ('published', 'updated'):
+        for key, confidence in (('published', 'high'), ('updated', 'medium')):
             raw = entry.get(key) if isinstance(entry, dict) else getattr(entry, key, None)
             if not raw:
                 continue
-            try:
-                from email.utils import parsedate_to_datetime
+            dt = parse_datetime_value(str(raw))
+            if dt:
+                return {
+                    'published_at': dt,
+                    'published_confidence': confidence,
+                    'published_source': f"rss:{key}",
+                }
 
-                dt = parsedate_to_datetime(str(raw))
-                if dt:
-                    return dt.replace(tzinfo=None).isoformat()
-            except Exception:
-                pass
-            try:
-                text = str(raw).strip().replace('Z', '+00:00')
-                return datetime.fromisoformat(text).replace(tzinfo=None).isoformat()
-            except Exception:
-                continue
-
-        return None
+        return {
+            'published_at': None,
+            'published_confidence': 'none',
+            'published_source': None,
+        }
 
     async def _fetch_article_preview(self, url: str) -> str:
         """Пробует получить первые предложения со страницы статьи"""

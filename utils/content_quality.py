@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from typing import Tuple
 
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
@@ -20,6 +21,24 @@ NOISE_PHRASES = (
 def compute_checksum(text: str) -> str:
     """Return sha256 checksum for text."""
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def compute_url_hash(url: str) -> str:
+    """Return sha256 checksum for normalized URL."""
+    raw = (url or "").strip()
+    if not raw:
+        return hashlib.sha256(b"").hexdigest()
+
+    parts = urlsplit(raw)
+    netloc = parts.netloc.lower()
+    path = parts.path or ""
+    query = parts.query or ""
+    if query:
+        query_pairs = parse_qsl(query, keep_blank_values=True)
+        query = urlencode(sorted(query_pairs))
+
+    normalized = urlunsplit((parts.scheme, netloc, path, query, ""))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def detect_language(text: str, title: str = "") -> str:

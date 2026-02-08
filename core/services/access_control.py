@@ -196,38 +196,38 @@ def get_llm_profile(level: int, module: str = 'summary') -> dict:
         profiles = {
             1: {
                 'model': 'deepseek-chat',
-                'max_tokens': 100,
-                'temperature': 0.3,
+                'max_tokens': 80,
+                'temperature': 0.2,
                 'top_p': 0.9,
-                'description': 'Fast hashtag generation (100 tokens)'
+                'description': 'Fast hashtag generation (80 tokens)'
             },
             2: {
                 'model': 'deepseek-chat',
-                'max_tokens': 150,
-                'temperature': 0.4,
+                'max_tokens': 100,
+                'temperature': 0.25,
                 'top_p': 0.92,
-                'description': 'Standard hashtags (150 tokens)'
+                'description': 'Standard hashtags (100 tokens)'
             },
             3: {
                 'model': 'deepseek-chat',
-                'max_tokens': 200,
-                'temperature': 0.5,
+                'max_tokens': 120,
+                'temperature': 0.3,
                 'top_p': 0.95,
-                'description': 'Balanced hashtags (200 tokens) [DEFAULT]'
+                'description': 'Balanced hashtags (120 tokens) [DEFAULT]'
             },
             4: {
                 'model': 'deepseek-chat',
-                'max_tokens': 250,
-                'temperature': 0.6,
+                'max_tokens': 120,
+                'temperature': 0.3,
                 'top_p': 0.96,
-                'description': 'Rich hashtags (250 tokens)'
+                'description': 'Rich hashtags (120 tokens)'
             },
             5: {
                 'model': 'deepseek-chat',
-                'max_tokens': 300,
-                'temperature': 0.7,
+                'max_tokens': 120,
+                'temperature': 0.3,
                 'top_p': 0.98,
-                'description': 'Comprehensive hashtags (300 tokens) [BEST QUALITY]'
+                'description': 'Comprehensive hashtags (120 tokens) [BEST QUALITY]'
             },
         }
     elif module == 'cleanup':
