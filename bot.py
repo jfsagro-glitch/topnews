@@ -922,9 +922,9 @@ class NewsBot:
             keyboard.insert(3, [InlineKeyboardButton(f"🌐 Перевод ({target_lang.upper()}): {translate_status}", callback_data="settings:translate_toggle")])
             keyboard.insert(4, [InlineKeyboardButton("📥 Экспорт новостей", callback_data="export_menu")])
 
-        # Add global collection control buttons for admins
-        if is_admin:
-            is_stopped = self.db.is_collection_stopped()
+        # Add global collection control buttons for sandbox admins only
+        if app_env == "sandbox" and is_admin:
+            is_stopped = self._is_collection_stopped_global()
             if is_stopped:
                 keyboard.append([InlineKeyboardButton("🔄 Восстановить сбор", callback_data="collection:restore")])
             else:
@@ -1003,12 +1003,15 @@ class NewsBot:
         if query.data == "collection:stop":
             # Stop global collection
             await query.answer()
+            if get_app_env() != "sandbox":
+                await query.edit_message_text("❌ Управление сбором доступно только в sandbox")
+                return
             user_id = query.from_user.id
             if not self._is_admin(user_id):
                 await query.edit_message_text("❌ Только администраторы могут остановить сбор")
                 return
             
-            self.db.set_collection_stopped(True)
+            self._set_collection_stopped_global(True)
             await query.edit_message_text(
                 "🛑 Сбор новостей остановлен глобально\n\n"
                 "Все боты перестали собирать новости.\n"
@@ -1022,12 +1025,15 @@ class NewsBot:
         if query.data == "collection:restore":
             # Restore global collection
             await query.answer()
+            if get_app_env() != "sandbox":
+                await query.edit_message_text("❌ Управление сбором доступно только в sandbox")
+                return
             user_id = query.from_user.id
             if not self._is_admin(user_id):
                 await query.edit_message_text("❌ Только администраторы могут восстановить сбор")
                 return
             
-            self.db.set_collection_stopped(False)
+            self._set_collection_stopped_global(False)
             # Unpause the user who pressed restore
             if get_app_env() == "prod":
                 self.db.set_user_paused(str(user_id), False, env="prod")
@@ -2024,7 +2030,7 @@ class NewsBot:
         Возвращает количество опубликованных новостей
         """
         # Check global collection stop flag
-        if self.db.is_collection_stopped():
+        if self._is_collection_stopped_global():
             logger.info("Collection is stopped globally, skipping")
             return 0
         
@@ -2286,14 +2292,14 @@ class NewsBot:
                 'moscow': '#Moscow',
                 'moscow_region': '#MoscowRegion',
             }
-            return mapping.get(category, '#News')
+            return mapping.get(category, '')
         mapping = {
             'world': '#Мир',
             'russia': '#Россия',
             'moscow': '#Москва',
             'moscow_region': '#Подмосковье',
         }
-        return mapping.get(category, '#Новости')
+        return mapping.get(category, '')
 
     def _normalize_hashtag(self, tag: str) -> str:
         cleaned = (tag or '').strip()
@@ -2736,6 +2742,22 @@ class NewsBot:
             return
         bucket = self.drop_counters.setdefault(domain, {})
         bucket[reason] = bucket.get(reason, 0) + 1
+
+    def _is_collection_stopped_global(self) -> bool:
+        try:
+            return self.access_db.is_collection_stopped()
+        except Exception:
+            return self.db.is_collection_stopped()
+
+    def _set_collection_stopped_global(self, stopped: bool) -> None:
+        try:
+            self.access_db.set_collection_stopped(stopped)
+        except Exception:
+            pass
+        try:
+            self.db.set_collection_stopped(stopped)
+        except Exception:
+            pass
 
     def _get_global_category_filter(self) -> str | None:
         return self.db.get_bot_setting("global_category_filter")

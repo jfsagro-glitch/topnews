@@ -310,6 +310,9 @@ async def build_hashtags(
     if r0 is None:
         r0 = "#Общество"
 
+    if g2 and g3 and g2 == g3:
+        g3 = None
+
     tags = [g0]
     if g0 == "#Россия":
         tags.append(g1)
