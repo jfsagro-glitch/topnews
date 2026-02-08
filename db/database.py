@@ -53,6 +53,12 @@ class NewsDatabase:
                     extraction_method TEXT,
                     published_date TEXT,
                     published_time TEXT,
+                    published_confidence TEXT,
+                    published_source TEXT,
+                    fetched_at TIMESTAMP,
+                    first_seen_at TIMESTAMP,
+                    url_hash TEXT,
+                    guid TEXT,
                     quality_score REAL,
                     hashtags_ru TEXT,
                     hashtags_en TEXT,
@@ -168,6 +174,31 @@ class NewsDatabase:
                 )
             ''')
 
+            # Tables for source health status
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS source_health (
+                    source TEXT PRIMARY KEY,
+                    last_success_at TIMESTAMP,
+                    last_error_at TIMESTAMP,
+                    last_error_code TEXT,
+                    last_error_message TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS source_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    error_code TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_source_events_source_time
+                ON source_events(source, created_at)
+            ''')
+
             # Table for feature flags (admin settings like AI levels)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS feature_flags (
@@ -260,6 +291,7 @@ class NewsDatabase:
 
             # Ensure new columns exist for older DBs
             self._ensure_columns(cursor)
+            self._ensure_indexes(cursor)
 
             self._conn.commit()
         except Exception as e:
@@ -297,6 +329,12 @@ class NewsDatabase:
                 extraction_method TEXT,
                 published_date TEXT,
                 published_time TEXT,
+                published_confidence TEXT,
+                published_source TEXT,
+                fetched_at TIMESTAMP,
+                first_seen_at TIMESTAMP,
+                url_hash TEXT,
+                guid TEXT,
                 quality_score REAL,
                 hashtags_ru TEXT,
                 hashtags_en TEXT,
@@ -307,6 +345,7 @@ class NewsDatabase:
             )
         ''')
         self._ensure_columns(cursor)
+        self._ensure_indexes(cursor)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS ai_summaries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -348,6 +387,12 @@ class NewsDatabase:
                 'extraction_method': 'TEXT',
                 'published_date': 'TEXT',
                 'published_time': 'TEXT',
+                'published_confidence': 'TEXT',
+                'published_source': 'TEXT',
+                'fetched_at': 'TIMESTAMP',
+                'first_seen_at': 'TIMESTAMP',
+                'url_hash': 'TEXT',
+                'guid': 'TEXT',
                 'quality_score': 'REAL',
                 'hashtags_ru': 'TEXT',
                 'hashtags_en': 'TEXT',
@@ -377,6 +422,18 @@ class NewsDatabase:
                     cursor.execute(f"ALTER TABLE user_preferences ADD COLUMN {column} {col_type}")
         except Exception as e:
             logger.debug(f"Error ensuring user_preferences columns: {e}")
+
+    def _ensure_indexes(self, cursor):
+        """Ensure indexes exist after columns are added."""
+        try:
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_url_hash ON published_news(url_hash)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_guid ON published_news(guid)
+            ''')
+        except Exception as e:
+            logger.debug(f"Error ensuring indexes: {e}")
     
     def add_news(
         self,
@@ -394,6 +451,12 @@ class NewsDatabase:
         published_at: str | None = None,
         published_date: str | None = None,
         published_time: str | None = None,
+        published_confidence: str | None = None,
+        published_source: str | None = None,
+        fetched_at: str | None = None,
+        first_seen_at: str | None = None,
+        url_hash: str | None = None,
+        guid: str | None = None,
         quality_score: float | None = None,
         hashtags_ru: str | None = None,
         hashtags_en: str | None = None,
@@ -413,14 +476,18 @@ class NewsDatabase:
                             url, title, source, category, lead_text,
                             raw_text, clean_text, checksum, language, domain,
                             extraction_method, published_at, published_date,
-                            published_time, quality_score, hashtags_ru, hashtags_en
+                            published_time, published_confidence, published_source,
+                            fetched_at, first_seen_at, url_hash, guid,
+                            quality_score, hashtags_ru, hashtags_en
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         url, title, source, category, lead_text,
                         raw_text, clean_text, checksum, language, domain,
                         extraction_method, published_at, published_date,
-                        published_time, quality_score, hashtags_ru, hashtags_en
+                        published_time, published_confidence, published_source,
+                        fetched_at, first_seen_at, url_hash, guid,
+                        quality_score, hashtags_ru, hashtags_en
                     ))
                     self._conn.commit()
                     logger.debug(f"News added: {url}")
@@ -469,6 +536,32 @@ class NewsDatabase:
             return result is not None
         except Exception as e:
             logger.error(f"Error checking published news: {e}")
+            return False
+
+    def is_seen_guid_or_url_hash(self, guid: str | None, url_hash: str | None) -> bool:
+        """Check if guid or url_hash was already seen in published_news."""
+        if not guid and not url_hash:
+            return False
+        try:
+            cursor = self._conn.cursor()
+            if guid and url_hash:
+                cursor.execute(
+                    'SELECT 1 FROM published_news WHERE guid = ? OR url_hash = ? LIMIT 1',
+                    (guid, url_hash)
+                )
+            elif guid:
+                cursor.execute(
+                    'SELECT 1 FROM published_news WHERE guid = ? LIMIT 1',
+                    (guid,)
+                )
+            else:
+                cursor.execute(
+                    'SELECT 1 FROM published_news WHERE url_hash = ? LIMIT 1',
+                    (url_hash,)
+                )
+            return cursor.fetchone() is not None
+        except Exception as e:
+            logger.error(f"Error checking guid/url_hash: {e}")
             return False
     
     def is_similar_title_published(self, title: str, threshold: float = 0.75) -> bool:
@@ -638,6 +731,114 @@ class NewsDatabase:
             return {src: cnt for src, cnt in rows}
         except Exception as e:
             logger.error(f"Error getting all sources: {e}")
+            return {}
+
+    def record_source_event(
+        self,
+        source: str,
+        event_type: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        if not source:
+            return
+        message = (error_message or "").strip() or None
+        if message and len(message) > 120:
+            message = message[:120]
+
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    "INSERT INTO source_events(source, event_type, error_code, created_at) VALUES(?, ?, ?, datetime('now'))",
+                    (source, event_type, error_code),
+                )
+                if event_type == "success":
+                    cursor.execute(
+                        """
+                        INSERT INTO source_health(source, last_success_at, updated_at)
+                        VALUES(?, datetime('now'), datetime('now'))
+                        ON CONFLICT(source) DO UPDATE SET
+                            last_success_at=excluded.last_success_at,
+                            updated_at=excluded.updated_at
+                        """,
+                        (source,),
+                    )
+                elif event_type == "error":
+                    cursor.execute(
+                        """
+                        INSERT INTO source_health(source, last_error_at, last_error_code, last_error_message, updated_at)
+                        VALUES(?, datetime('now'), ?, ?, datetime('now'))
+                        ON CONFLICT(source) DO UPDATE SET
+                            last_error_at=excluded.last_error_at,
+                            last_error_code=excluded.last_error_code,
+                            last_error_message=excluded.last_error_message,
+                            updated_at=excluded.updated_at
+                        """,
+                        (source, error_code, message),
+                    )
+                self._conn.commit()
+        except Exception as e:
+            logger.debug(f"Error recording source event for {source}: {e}")
+
+    def get_source_event_counts(self, sources: List[str], window_hours: int = 24) -> dict:
+        if not sources:
+            return {}
+        try:
+            cursor = self._conn.cursor()
+            placeholders = ','.join(['?'] * len(sources))
+            window = f"-{window_hours} hours"
+            cursor.execute(
+                f'''
+                SELECT source,
+                       SUM(CASE WHEN event_type = 'success' THEN 1 ELSE 0 END) AS success_count,
+                       SUM(CASE WHEN event_type = 'error' THEN 1 ELSE 0 END) AS error_count,
+                       SUM(CASE WHEN event_type = 'drop_old' THEN 1 ELSE 0 END) AS drop_old_count
+                FROM source_events
+                WHERE created_at >= datetime('now', ?)
+                  AND source IN ({placeholders})
+                GROUP BY source
+                ''',
+                (window, *sources)
+            )
+            rows = cursor.fetchall()
+            counts = {src: {'success_count': 0, 'error_count': 0, 'drop_old_count': 0} for src in sources}
+            for source, success_count, error_count, drop_old_count in rows:
+                counts[source] = {
+                    'success_count': success_count or 0,
+                    'error_count': error_count or 0,
+                    'drop_old_count': drop_old_count or 0,
+                }
+            return counts
+        except Exception as e:
+            logger.debug(f"Error getting source event counts: {e}")
+            return {src: {'success_count': 0, 'error_count': 0, 'drop_old_count': 0} for src in sources}
+
+    def get_source_health_snapshot(self, sources: List[str]) -> dict:
+        if not sources:
+            return {}
+        try:
+            cursor = self._conn.cursor()
+            placeholders = ','.join(['?'] * len(sources))
+            cursor.execute(
+                f'''
+                SELECT source, last_success_at, last_error_at, last_error_code, last_error_message
+                FROM source_health
+                WHERE source IN ({placeholders})
+                ''',
+                tuple(sources)
+            )
+            return {
+                row[0]: {
+                    'last_success_at': row[1],
+                    'last_error_at': row[2],
+                    'last_error_code': row[3],
+                    'last_error_message': row[4],
+                }
+                for row in cursor.fetchall()
+            }
+        except Exception as e:
+            logger.debug(f"Error getting source health snapshot: {e}")
             return {}
 
     def get_news_id_by_url(self, url: str) -> int | None:

@@ -9,7 +9,9 @@ import socket
 import hmac
 import hashlib
 import secrets
+from datetime import datetime
 from net.deepseek_client import DeepSeekClient
+from urllib.parse import urlparse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters,
@@ -35,6 +37,8 @@ except (ImportError, ValueError):
 
 from db.database import NewsDatabase
 from utils.text_cleaner import format_telegram_message
+from utils.content_quality import compute_url_hash
+from utils.date_parser import get_project_now, parse_datetime_value, parse_url_date, to_project_tz
 from sources.source_collector import SourceCollector
 from core.services.access_control import AILevelManager, get_llm_profile
 
@@ -75,6 +79,9 @@ class NewsBot:
         
         # Rate limiting for AI summarize requests (per user per minute)
         self.user_ai_requests = {}  # {user_id: [timestamp1, timestamp2, ...]}
+
+        # Drop reasons counters (domain -> reason -> count)
+        self.drop_counters = {}
         
         # Instance lock (prevent double start)
         self._instance_lock_fd = None
@@ -493,67 +500,85 @@ class NewsBot:
             f"Нажмите кнопку ниже для экспорта в документ.",
             reply_markup=keyboard
         )
+
+    def _get_configured_source_maps(self) -> tuple[dict, dict, dict]:
+        type_map: dict[str, str] = {}
+        label_map: dict[str, str] = {}
+        group_map: dict[str, str] = {}
+        for fetch_url, source_name, _category, src_type in self.collector._configured_sources:
+            if source_name in type_map:
+                continue
+            source_type = src_type
+            group = 'site'
+            if '/telegram/channel/' in fetch_url:
+                source_type = 'api'
+                group = 'telegram'
+            elif '/twitter/user/' in fetch_url:
+                source_type = 'x/twitter'
+            elif source_name in ('news.yahoo.com', 'rss.news.yahoo.com'):
+                source_type = 'yahoo'
+            elif src_type == 'rss':
+                source_type = 'rss'
+            else:
+                source_type = 'html'
+
+            label = f"@{source_name}" if group == 'telegram' else source_name
+            type_map[source_name] = source_type
+            label_map[source_name] = label
+            group_map[source_name] = group
+        return type_map, label_map, group_map
+
+    def _build_source_status_sections(self, window_hours: int = 24) -> tuple[str, str]:
+        type_map, label_map, group_map = self._get_configured_source_maps()
+        sources = sorted(type_map.keys())
+        if not sources:
+            return "", ""
+
+        counts = self.db.get_source_event_counts(sources, window_hours=window_hours)
+        health = self.db.get_source_health_snapshot(sources)
+        error_rate_threshold = 0.5
+
+        def _format_lines(group: str, title: str) -> str:
+            lines = []
+            for source in sorted(s for s in sources if group_map.get(s) == group):
+                info = counts.get(source, {})
+                success = info.get('success_count', 0)
+                error = info.get('error_count', 0)
+                drop_old = info.get('drop_old_count', 0)
+                total = success + error
+                error_rate = (error / total) if total > 0 else 0.0
+
+                is_green = success > 0 and error_rate < error_rate_threshold
+                if is_green:
+                    icon = "🟢"
+                    status = f"{success} новости (24ч)"
+                else:
+                    icon = "🔴"
+                    if error > 0:
+                        status = health.get(source, {}).get('last_error_code') or "FETCH_ERROR"
+                    elif drop_old > 0:
+                        status = "DROP_OLD_NEWS"
+                    else:
+                        status = "NO_VALID_NEWS"
+
+                source_type = type_map.get(source, 'rss')
+                label = label_map.get(source, source)
+                lines.append(f"{icon} {label} [{source_type}] — {status}")
+
+            if not lines:
+                return ""
+            return f"\n{title}:\n" + "\n".join(lines) + "\n"
+
+        channels_text = _format_lines('telegram', '📡 Каналы Telegram')
+        sites_text = _format_lines('site', '🌐 Источники')
+        return channels_text, sites_text
     
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /status"""
         stats = self.db.get_stats()
         ai_usage = self.db.get_ai_usage()
 
-        source_health = getattr(self.collector, "source_health", {})
-        last_collected = getattr(self.collector, "last_collected_counts", {})
-        def _status_icon(key: str, collected: int = None) -> str:
-            # Зеленый если источник здоров И собрал хотя бы 1 новость
-            # Или если collected > 0 независимо от health
-            if collected is not None and collected > 0:
-                return "🟢"
-            return "🟢" if source_health.get(key) else "🔴"
-
-        # Telegram channels overview
-        telegram_sources = ACTIVE_SOURCES_CONFIG.get('telegram', {}).get('sources', [])
-        channel_keys = []
-        channel_labels = []
-        for src in telegram_sources:
-            channel = src.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '').strip('/')
-            if channel:
-                # SourceCollector stores Telegram source_name as short channel (e.g. 'mash')
-                channel_keys.append(channel)
-                channel_labels.append(channel)
-        channel_counts = self.db.get_source_counts(channel_keys) if channel_keys else {}
-        channels_text = ""
-        if channel_labels:
-            lines = []
-            for channel, key in zip(channel_labels, channel_keys):
-                published_count = channel_counts.get(key, 0)
-                collected_count = last_collected.get(key, 0)
-                # Зеленый если собрано > 0, иначе красный
-                icon = "🟢" if collected_count > 0 else "🔴"
-                lines.append(f"{icon} {channel}: {collected_count}")
-            channels_text = "\n📡 Каналы Telegram:\n" + "\n".join(lines) + "\n"
-
-        # Site sources overview (all non-telegram sources)
-        # Group by domain to avoid duplicates (same domain from multiple categories)
-        site_domains = {}  # domain -> label (first occurrence)
-        for category_key, cfg in ACTIVE_SOURCES_CONFIG.items():
-            if category_key == 'telegram':
-                continue
-            for src in cfg.get('sources', []):
-                domain = src.replace('https://', '').replace('http://', '').split('/')[0]
-                if domain.endswith('t.me') or domain in site_domains:
-                    continue
-                site_domains[domain] = domain
-        
-        site_keys = list(site_domains.keys())
-        site_counts = self.db.get_source_counts(site_keys) if site_keys else {}
-        sites_text = ""
-        if site_keys:
-            lines = []
-            for key in sorted(site_keys):
-                published_count = site_counts.get(key, 0)
-                collected_count = last_collected.get(key, 0)
-                # Зеленый если собрано > 0, иначе красный
-                icon = "🟢" if collected_count > 0 else "🔴"
-                lines.append(f"{icon} {key}: {collected_count}")
-            sites_text = "\n🌐 Сайты:\n" + "\n".join(lines)
+        channels_text, sites_text = self._build_source_status_sections(window_hours=24)
         
         # Calculate realistic costs based on token counts
         # DeepSeek pricing: input $0.14/M, output $0.28/M tokens
@@ -1350,62 +1375,7 @@ class NewsBot:
             # Получить статус
             stats = self.db.get_stats()
             ai_usage = self.db.get_ai_usage()
-            source_health = getattr(self.collector, "source_health", {})
-            
-            # For Telegram channels, always show green (all are working)
-            def _status_icon(key: str) -> str:
-                # Telegram channels are always active
-                if key.startswith('t.me/') or '.t.me' in key:
-                    return "🟢"
-                return "🟢" if source_health.get(key) else "🔴"
-
-            # Telegram channels - собираем из ВСЕХ категорий конфига
-            channel_keys = []
-            channel_labels = []
-            for category_key, category_config in ACTIVE_SOURCES_CONFIG.items():
-                for src in category_config.get('sources', []):
-                    # Проверяем, является ли источник Telegram каналом
-                    if 't.me' in src.lower():
-                        channel = src.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '').strip('/')
-                        if channel and channel not in channel_labels:  # Избегаем дубликатов
-                            channel_keys.append(f"t.me/{channel}")
-                            channel_labels.append(channel)
-            
-            channel_counts = self.db.get_source_counts(channel_keys) if channel_keys else {}
-            channels_text = ""
-            if channel_labels:
-                lines = []
-                for channel, key in zip(channel_labels, channel_keys):
-                    lines.append(f"{_status_icon(key)} {channel}: {channel_counts.get(key, 0)}")
-                channels_text = "\n📡 Каналы Telegram:\n" + "\n".join(lines) + "\n"
-
-            # Собираем ВСЕ веб-источники из всех категорий конфига
-            # Используем ту же логику, что и в source_collector для извлечения source_name
-            from urllib.parse import urlparse
-            all_web_sources = set()
-            for category_key, category_config in ACTIVE_SOURCES_CONFIG.items():
-                if category_key != 'telegram':  # Пропускаем телеграм, его уже обработали
-                    for src in category_config.get('sources', []):
-                        parsed = urlparse(src)
-                        domain = parsed.netloc.lower()
-                        # Пропускаем X/Twitter (они отключены) и Telegram
-                        if not domain or any(x in domain for x in ['t.me', 'telegram', 'x.com', 'twitter.com']):
-                            continue
-                        # Используем домен как source_name (как в source_collector)
-                        all_web_sources.add(domain)
-            
-            # Получаем счетчики из БД
-            all_sources_counts = self.db.get_all_sources()
-            
-            # Формируем полный список веб-источников
-            sites_text = ""
-            if all_web_sources:
-                lines = []
-                for source in sorted(all_web_sources):
-                    count = all_sources_counts.get(source, 0)
-                    # Показываем все источники, даже если count=0
-                    lines.append(f"{_status_icon(source)} {source}: {count}")
-                sites_text = "\n🌐 Веб-источники:\n" + "\n".join(lines) + "\n"
+            channels_text, sites_text = self._build_source_status_sections(window_hours=24)
             
             # Calculate cost
             input_tokens = int(ai_usage['total_tokens'] * 0.6)
@@ -2032,9 +2002,30 @@ class NewsBot:
             
             # Публикуем каждую новость
             for news in news_items:
-                # Публикуем только новости за сегодня
-                if not self._is_today_news(news):
-                    logger.debug(f"Skipping non-today news: {news.get('title', '')[:50]}")
+                # Ensure fetched_at and url_hash are present
+                if not news.get('fetched_at'):
+                    news['fetched_at'] = datetime.utcnow().isoformat()
+                if not news.get('url_hash') and news.get('url'):
+                    news['url_hash'] = compute_url_hash(news.get('url'))
+
+                # First-seen check for confidence=none
+                if (news.get('published_confidence') or 'none').lower() == 'none':
+                    guid = news.get('guid')
+                    url_hash = news.get('url_hash')
+                    news['is_first_seen'] = not self.db.is_seen_guid_or_url_hash(guid, url_hash)
+                    if news.get('is_first_seen') and not news.get('first_seen_at'):
+                        news['first_seen_at'] = news.get('fetched_at')
+
+                ok, reason = self._should_publish_news(news)
+                if not ok:
+                    domain = self._get_domain(news)
+                    self._record_drop_reason(domain, reason)
+                    source = news.get('source', '')
+                    if reason == "DROP_OLD_PUBLISHED_AT":
+                        self.db.record_source_event(source, "drop_old")
+                    else:
+                        self.db.record_source_event(source, "error", error_code=reason)
+                    logger.debug(f"Skipping news ({reason}): {news.get('title', '')[:50]}")
                     continue
 
                 # Проверяем лимит публикаций
@@ -2089,6 +2080,12 @@ class NewsBot:
                     published_at=news.get('published_at'),
                     published_date=news.get('published_date'),
                     published_time=news.get('published_time'),
+                    published_confidence=news.get('published_confidence'),
+                    published_source=news.get('published_source'),
+                    fetched_at=news.get('fetched_at'),
+                    first_seen_at=news.get('first_seen_at') or news.get('fetched_at'),
+                    url_hash=news.get('url_hash'),
+                    guid=news.get('guid'),
                     quality_score=news.get('quality_score'),
                     hashtags_ru=hashtags_ru,
                     hashtags_en=hashtags_en,
@@ -2097,6 +2094,8 @@ class NewsBot:
                 if not news_id:
                     logger.debug(f"Skipping duplicate URL: {news.get('url')}")
                     continue
+
+                self.db.record_source_event(news.get('source', ''), "success")
 
                 # Check if we need auto-summarization for lenta.ru and ria.ru (cleanup_level=5)
                 from core.services.access_control import AILevelManager
@@ -2204,6 +2203,9 @@ class NewsBot:
                         pass
             
             logger.info(f"Collection complete. Published {published_count} new items")
+            if self.drop_counters:
+                logger.info(f"Drop reasons summary: {self.drop_counters}")
+                self.drop_counters = {}
             return published_count
         
         except Exception as e:
@@ -2253,6 +2255,8 @@ class NewsBot:
         language = news.get('language') or 'ru'
         checksum = news.get('checksum')
 
+        from utils.hashtag_candidates import extract_hashtag_candidates
+
         # Default fallback tags
         fallback_ru = self._get_category_tag(news.get('category', 'russia'), 'ru')
         fallback_en = self._get_category_tag(news.get('category', 'world'), 'en')
@@ -2265,6 +2269,8 @@ class NewsBot:
 
         tags_ru = []
         tags_en = []
+        candidates_info = extract_hashtag_candidates(title, text, language)
+        candidates = candidates_info.get('candidates', [])
 
         try:
             if language == 'en':
@@ -2273,18 +2279,32 @@ class NewsBot:
                     text=text,
                     language='en',
                     level=level,
-                    checksum=checksum
+                    checksum=checksum,
+                    candidates=candidates,
                 )
                 if usage and usage.get('total_tokens', 0) > 0:
                     cost_usd = usage.get('cost_usd', 0.0) or 0.0
                     self.db.add_ai_usage(usage['total_tokens'], cost_usd, 'hashtags')
+
+                tags_ru, usage_ru = await self.deepseek_client.generate_hashtags(
+                    title=title,
+                    text=text,
+                    language='ru',
+                    level=level,
+                    checksum=checksum,
+                    candidates=candidates,
+                )
+                if usage_ru and usage_ru.get('total_tokens', 0) > 0:
+                    cost_usd = usage_ru.get('cost_usd', 0.0) or 0.0
+                    self.db.add_ai_usage(usage_ru['total_tokens'], cost_usd, 'hashtags')
             else:
                 tags_ru, usage = await self.deepseek_client.generate_hashtags(
                     title=title,
                     text=text,
                     language='ru',
                     level=level,
-                    checksum=checksum
+                    checksum=checksum,
+                    candidates=candidates,
                 )
                 if usage and usage.get('total_tokens', 0) > 0:
                     cost_usd = usage.get('cost_usd', 0.0) or 0.0
@@ -2641,29 +2661,106 @@ class NewsBot:
         
         return filtered
 
-    def _is_today_news(self, news: dict) -> bool:
-        """Return True if news published_at is today (local date)."""
-        from datetime import datetime
-
-        published_date = news.get('published_date')
-        if published_date:
-            return str(published_date) == datetime.now().date().isoformat()
-
-        published_at = news.get('published_at') or news.get('published') or news.get('date')
-        if not published_at:
-            return False
-
+    def _get_domain(self, news: dict) -> str:
+        domain = news.get('domain')
+        if domain:
+            return str(domain).lower()
+        url = news.get('url', '')
         try:
-            if isinstance(published_at, datetime):
-                pub_dt = published_at
-            else:
-                pub_str = str(published_at).strip()
-                if pub_str.endswith('Z'):
-                    pub_str = pub_str.replace('Z', '+00:00')
-                pub_dt = datetime.fromisoformat(pub_str)
-            return pub_dt.date() == datetime.now().date()
+            return urlparse(url).netloc.lower() or "unknown"
         except Exception:
-            return False
+            return "unknown"
+
+    def _record_drop_reason(self, domain: str, reason: str | None) -> None:
+        if not reason:
+            return
+        bucket = self.drop_counters.setdefault(domain, {})
+        bucket[reason] = bucket.get(reason, 0) + 1
+
+    def _should_publish_news(self, news: dict) -> tuple[bool, str | None]:
+        """Apply freshness rules based on published_confidence."""
+        from datetime import datetime, timedelta
+
+        domain = self._get_domain(news)
+        freshness_days_override = {
+            'new-science.ru': 7,
+            'forklog.com': 3,
+        }
+        override_days = freshness_days_override.get(domain)
+        confidence = (news.get('published_confidence') or 'none').lower()
+        published_at = parse_datetime_value(news.get('published_at'))
+        now_local = get_project_now()
+
+        if published_at:
+            published_local = to_project_tz(published_at)
+            if published_local > now_local + timedelta(minutes=5):
+                return False, "DROP_BAD_TZ_FUTURE_DATE"
+
+        if confidence == 'high':
+            if not published_at:
+                return False, "DROP_PARSE_FAILED"
+            published_local = to_project_tz(published_at)
+            if override_days is not None:
+                if published_local < now_local - timedelta(days=override_days):
+                    return False, "DROP_OLD_PUBLISHED_AT"
+                return True, None
+            if published_local < now_local - timedelta(hours=36):
+                return False, "DROP_OLD_PUBLISHED_AT"
+            return True, None
+
+        if confidence == 'medium':
+            if not published_at:
+                return False, "DROP_PARSE_FAILED"
+            published_local = to_project_tz(published_at)
+            if override_days is not None:
+                if published_local < now_local - timedelta(days=override_days):
+                    return False, "DROP_OLD_PUBLISHED_AT"
+                return True, None
+            if published_local < now_local - timedelta(hours=48):
+                return False, "DROP_OLD_PUBLISHED_AT"
+            return True, None
+
+        if confidence == 'low':
+            published_date = news.get('published_date')
+            if not published_date:
+                return False, "DROP_PARSE_FAILED"
+            try:
+                pub_date = datetime.fromisoformat(str(published_date)).date()
+            except Exception:
+                return False, "DROP_PARSE_FAILED"
+            today = now_local.date()
+            if pub_date == today:
+                return True, None
+            pub_dt_local = datetime.combine(pub_date, datetime.min.time()).replace(tzinfo=now_local.tzinfo)
+            if override_days is not None:
+                if now_local - pub_dt_local <= timedelta(days=override_days):
+                    return True, None
+                return False, "DROP_OLD_PUBLISHED_AT"
+            if now_local - pub_dt_local <= timedelta(days=2):
+                return True, None
+            return False, "DROP_OLD_PUBLISHED_AT"
+
+        url_date = parse_url_date(news.get('url'))
+        if url_date and url_date == now_local.date():
+            return True, None
+
+        if news.get('is_first_seen'):
+            return True, None
+
+        first_seen_at = parse_datetime_value(news.get('first_seen_at') or news.get('fetched_at'))
+        if first_seen_at:
+            first_seen_local = to_project_tz(first_seen_at)
+            if now_local - first_seen_local <= timedelta(hours=48):
+                return True, None
+
+        if url_date:
+            return False, "DROP_NO_PUBLISHED_AT_AND_URL_DATE_MISMATCH"
+        return False, "DROP_PARSE_FAILED"
+
+    def _is_today_news(self, news: dict) -> bool:
+        """Backward-compatible wrapper for freshness logic."""
+        ok, _reason = self._should_publish_news(news)
+        return ok
 
     async def _show_ai_management(self, query):
         """Show AI levels management screen"""

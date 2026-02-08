@@ -231,6 +231,27 @@ class SourceCollector:
             'russian.rt.com',
         ))
 
+    def _classify_error(self, error: Exception) -> tuple[str, str | None]:
+        status_code = None
+        if hasattr(error, 'response'):
+            status_code = getattr(error.response, "status_code", None)
+        if status_code:
+            return f"HTTP_{status_code}", None
+        if isinstance(error, asyncio.TimeoutError):
+            return "TIMEOUT", None
+        error_str = str(error).lower()
+        if "timeout" in error_str:
+            return "TIMEOUT", None
+        if "rss" in error_str and "parse" in error_str:
+            return "RSS_INVALID", None
+        return "FETCH_ERROR", str(error)
+
+    def _record_source_error(self, source_name: str, error: Exception) -> None:
+        if not self.db or not source_name:
+            return
+        error_code, message = self._classify_error(error)
+        self.db.record_source_event(source_name, "error", error_code=error_code, error_message=message)
+
     def _coerce_datetime(self, value) -> datetime | None:
         if not value:
             return None
@@ -462,6 +483,7 @@ class SourceCollector:
                     # 503 from RSSHub Twitter/X feeds - likely API issues, short cooldown
                     self._set_cooldown(url, 300)
                     logger.warning(f"⚠️ RSSHub Twitter/X feed unavailable for {source_name} (503), will retry in 5 min")
+                self._record_source_error(source_name, e)
                 logger.error(f"Error collecting from RSS {url}: {type(e).__name__}: {e}")
                 return []
     
@@ -604,8 +626,10 @@ class SourceCollector:
                         f"HTTP {status_code} from {source_name} ({url}), "
                         f"setting cooldown for 10 minutes. NOT retrying."
                     )
+                    self._record_source_error(source_name, e)
                     return []
                 
+                self._record_source_error(source_name, e)
                 logger.error(f"Error collecting from HTML {source_name} ({url}): {e}", exc_info=False)
                 return []
 
