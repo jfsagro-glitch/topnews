@@ -684,7 +684,7 @@ class NewsBot:
     
     async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /pause - приостановить новости для пользователя"""
-        if get_app_env() == "sandbox":
+        if get_app_env() == "sandbox" and not self._is_admin(update.message.from_user.id):
             await update.message.reply_text("⛔ Access denied")
             return
         user_id = update.message.from_user.id
@@ -694,7 +694,7 @@ class NewsBot:
     
     async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /resume - возобновить новости для пользователя"""
-        if get_app_env() == "sandbox":
+        if get_app_env() == "sandbox" and not self._is_admin(update.message.from_user.id):
             await update.message.reply_text("⛔ Access denied")
             return
         user_id = update.message.from_user.id
