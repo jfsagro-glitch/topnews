@@ -124,6 +124,10 @@ WEBHOOK_PATH = env_str('WEBHOOK_PATH', '/tg/webhook')
 WEBHOOK_SECRET = env_str('WEBHOOK_SECRET', None)
 PORT = env_int('PORT', 8080)
 
+# Management API (optional, sandbox-only)
+MGMT_BIND = env_str('MGMT_BIND', '0.0.0.0')
+MGMT_PORT = env_int('MGMT_PORT', 8081)
+
 # Side effects guard (sandbox default: True)
 DISABLE_PROD_SIDE_EFFECTS = env_bool(
     'DISABLE_PROD_SIDE_EFFECTS',

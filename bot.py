@@ -42,6 +42,12 @@ from utils.content_quality import compute_url_hash
 from utils.date_parser import get_project_now, parse_datetime_value, parse_url_date, to_project_tz
 from sources.source_collector import SourceCollector
 from core.services.access_control import AILevelManager, get_llm_profile
+from core.services.collection_stop import (
+    get_global_collection_stop,
+    get_global_collection_stop_status,
+    set_global_collection_stop,
+)
+from utils.mgmt_api import start_mgmt_api, stop_mgmt_api
 
 
 class NewsBot:
@@ -924,11 +930,11 @@ class NewsBot:
 
         # Add global collection control buttons for sandbox admins only
         if app_env == "sandbox" and is_admin:
-            is_stopped = self._is_collection_stopped_global()
+            is_stopped, _ttl = get_global_collection_stop_status()
             if is_stopped:
-                keyboard.append([InlineKeyboardButton("🔄 Восстановить сбор", callback_data="collection:restore")])
+                keyboard.append([InlineKeyboardButton("▶️ Возобновить сбор", callback_data="collection:restore")])
             else:
-                keyboard.append([InlineKeyboardButton("🛑 Остановить сбор", callback_data="collection:stop")])
+                keyboard.append([InlineKeyboardButton("⏸ Остановить сбор", callback_data="collection:stop")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("⚙️ Настройки", reply_markup=reply_markup)
@@ -1010,14 +1016,14 @@ class NewsBot:
             if not self._is_admin(user_id):
                 await query.edit_message_text("❌ Только администраторы могут остановить сбор")
                 return
-            
-            self._set_collection_stopped_global(True)
+
+            set_global_collection_stop(True, ttl_sec=3600, by=str(user_id))
             await query.edit_message_text(
-                "🛑 Сбор новостей остановлен глобально\n\n"
+                "⏸ Сбор новостей остановлен глобально (sandbox)\n\n"
                 "Все боты перестали собирать новости.\n"
                 "Используйте кнопку Восстановить для запуска.",
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔄 Восстановить сбор", callback_data="collection:restore")
+                    InlineKeyboardButton("▶️ Возобновить сбор", callback_data="collection:restore")
                 ]])
             )
             return
@@ -1032,16 +1038,11 @@ class NewsBot:
             if not self._is_admin(user_id):
                 await query.edit_message_text("❌ Только администраторы могут восстановить сбор")
                 return
-            
-            self._set_collection_stopped_global(False)
-            # Unpause the user who pressed restore
-            if get_app_env() == "prod":
-                self.db.set_user_paused(str(user_id), False, env="prod")
-            
+
+            set_global_collection_stop(False, by=str(user_id))
             await query.edit_message_text(
-                "🔄 Сбор новостей восстановлен!\n\n"
-                "Боты снова собирают новости в фоне.\n"
-                "Новости возобновлены для вас."
+                "▶️ Сбор новостей восстановлен!\n\n"
+                "Боты снова собирают новости в фоне."
             )
             return
         
@@ -2030,8 +2031,8 @@ class NewsBot:
         Возвращает количество опубликованных новостей
         """
         # Check global collection stop flag
-        if self._is_collection_stopped_global():
-            logger.info("Collection is stopped globally, skipping")
+        if get_global_collection_stop():
+            logger.info("Global collection stop is ON (sandbox). Skip tick.")
             return 0
         
         if self.is_paused:
@@ -2424,6 +2425,7 @@ class NewsBot:
         
         # Запускаем периодический сбор в фоне
         collection_task = asyncio.create_task(self.run_periodic_collection())
+        mgmt_runner = None
         
         # Запускаем приложение
         await self.application.initialize()
@@ -2449,6 +2451,14 @@ class NewsBot:
         else:
             await self.application.updater.start_polling()
             logger.info("Bot started with polling")
+
+        try:
+            from config.railway_config import MGMT_BIND, MGMT_PORT
+        except (ImportError, ValueError):
+            from config.config import MGMT_BIND, MGMT_PORT
+        if MGMT_PORT:
+            mgmt_runner = await start_mgmt_api(MGMT_BIND, MGMT_PORT)
+            logger.info(f"Mgmt API started on {MGMT_BIND}:{MGMT_PORT}")
         
         try:
             await asyncio.Event().wait()  # Ждем завершения
@@ -2457,6 +2467,7 @@ class NewsBot:
         finally:
             self.is_running = False
             collection_task.cancel()
+            await stop_mgmt_api(mgmt_runner)
             await self.application.updater.stop()
             await self.application.stop()
             await self.application.shutdown()
@@ -2742,49 +2753,6 @@ class NewsBot:
             return
         bucket = self.drop_counters.setdefault(domain, {})
         bucket[reason] = bucket.get(reason, 0) + 1
-
-    def _is_collection_stopped_global(self) -> bool:
-        stop_file = self._get_global_stop_file_path()
-        if stop_file and os.path.exists(stop_file):
-            return True
-        try:
-            return self.access_db.is_collection_stopped()
-        except Exception:
-            return self.db.is_collection_stopped()
-
-    def _set_collection_stopped_global(self, stopped: bool) -> None:
-        stop_file = self._get_global_stop_file_path()
-        if stop_file:
-            if stopped:
-                try:
-                    os.makedirs(os.path.dirname(stop_file) or '.', exist_ok=True)
-                    with open(stop_file, "w", encoding="utf-8") as fh:
-                        fh.write(f"stopped_at={datetime.utcnow().isoformat()}Z\n")
-                except Exception:
-                    pass
-            else:
-                try:
-                    if os.path.exists(stop_file):
-                        os.remove(stop_file)
-                except Exception:
-                    pass
-        try:
-            self.access_db.set_collection_stopped(stopped)
-        except Exception:
-            pass
-        try:
-            self.db.set_collection_stopped(stopped)
-        except Exception:
-            pass
-
-    def _get_global_stop_file_path(self) -> str | None:
-        path = os.getenv("GLOBAL_COLLECTION_STOP_FILE")
-        if path:
-            return path
-        base_dir = os.path.dirname(getattr(self.access_db, "db_path", "") or "")
-        if not base_dir:
-            return None
-        return os.path.join(base_dir, "collection.stop")
 
     def _get_global_category_filter(self) -> str | None:
         return self.db.get_bot_setting("global_category_filter")
