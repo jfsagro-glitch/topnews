@@ -45,7 +45,7 @@ from sources.source_collector import SourceCollector
 from core.services.access_control import AILevelManager, get_llm_profile
 from core.services.ai_gate import AITickGate
 from core.services.collection_stop import (
-    get_global_collection_stop,
+    get_global_collection_stop_state,
     get_global_collection_stop_status,
     set_global_collection_stop,
 )
@@ -505,6 +505,13 @@ class NewsBot:
     
     async def cmd_sync(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /sync - принудительный сбор новостей"""
+        stop_state = get_global_collection_stop_state(app_env=get_app_env())
+        if stop_state.enabled:
+            ttl = stop_state.ttl_sec_remaining
+            ttl_text = f" (TTL: {ttl}s)" if ttl is not None else ""
+            await update.message.reply_text(f"⛔️ Сбор остановлен глобально{ttl_text}. /status покажет статус.")
+            return
+
         await update.message.reply_text("🔄 Начинаю сбор новостей...")
         
         try:
@@ -673,9 +680,15 @@ class NewsBot:
         combined_degraded = sorted(set(degraded_features + gate_disabled))
         degraded_text = ", ".join(combined_degraded) if combined_degraded else "-"
 
+        stop_state = get_global_collection_stop_state(app_env=get_app_env())
+        stop_label = "ON" if stop_state.enabled else "OFF"
+        stop_ttl = stop_state.ttl_sec_remaining
+        stop_ttl_text = f"{stop_ttl}s" if stop_ttl is not None else "-"
+
         status_text = (
             f"📊 Статус бота:\n\n"
             f"Статус: {'⏸️ PAUSED' if self.is_paused else '✅ RUNNING'}\n"
+            f"Global stop: {stop_label} (TTL: {stop_ttl_text})\n"
             f"Всего опубликовано: {stats['total']}\n"
             f"За сегодня: {stats['today']}\n"
             f"Интервал проверки: {CHECK_INTERVAL_SECONDS} сек\n"
@@ -948,9 +961,9 @@ class NewsBot:
             keyboard.insert(3, [InlineKeyboardButton(f"🌐 Перевод ({target_lang.upper()}): {translate_status}", callback_data="settings:translate_toggle")])
             keyboard.insert(4, [InlineKeyboardButton("📥 Экспорт новостей", callback_data="export_menu")])
 
-        # Add global collection control buttons for sandbox admins only
-        if app_env == "sandbox" and is_admin:
-            is_stopped, _ttl = get_global_collection_stop_status()
+        # Global collection control buttons for admins (prod + sandbox)
+        if is_admin:
+            is_stopped, _ttl = get_global_collection_stop_status(app_env=app_env)
             if is_stopped:
                 keyboard.append([InlineKeyboardButton("▶️ Возобновить сбор", callback_data="collection:restore")])
             else:
@@ -1029,9 +1042,6 @@ class NewsBot:
         if query.data == "collection:stop":
             # Stop global collection
             await query.answer()
-            if get_app_env() != "sandbox":
-                await query.edit_message_text("❌ Управление сбором доступно только в sandbox")
-                return
             user_id = query.from_user.id
             if not self._is_admin(user_id):
                 await query.edit_message_text("❌ Только администраторы могут остановить сбор")
@@ -1039,7 +1049,7 @@ class NewsBot:
 
             set_global_collection_stop(True, ttl_sec=3600, by=str(user_id))
             await query.edit_message_text(
-                "⏸ Сбор новостей остановлен глобально (sandbox)\n\n"
+                "⏸ Сбор новостей остановлен глобально\n\n"
                 "Все боты перестали собирать новости.\n"
                 "Используйте кнопку Восстановить для запуска.",
                 reply_markup=InlineKeyboardMarkup([[
@@ -1051,9 +1061,6 @@ class NewsBot:
         if query.data == "collection:restore":
             # Restore global collection
             await query.answer()
-            if get_app_env() != "sandbox":
-                await query.edit_message_text("❌ Управление сбором доступно только в sandbox")
-                return
             user_id = query.from_user.id
             if not self._is_admin(user_id):
                 await query.edit_message_text("❌ Только администраторы могут восстановить сбор")
@@ -2018,9 +2025,16 @@ class NewsBot:
         Собирает новости и публикует их
         Возвращает количество опубликованных новостей
         """
-        # Check global collection stop flag
-        if get_global_collection_stop():
-            logger.info("Global collection stop is ON (sandbox). Skip tick.")
+        # Global collection stop flag (hard stop for prod + sandbox)
+        stop_state = get_global_collection_stop_state(app_env=get_app_env())
+        if stop_state.enabled:
+            logger.info(
+                {
+                    "event": "tick_skipped_global_stop",
+                    "ttl_sec_remaining": stop_state.ttl_sec_remaining,
+                    "key": stop_state.key,
+                }
+            )
             return 0
         
         if self.is_paused:
@@ -2042,6 +2056,16 @@ class NewsBot:
         try:
             # Собираем новости
             logger.info("Starting news collection...")
+            stop_state = get_global_collection_stop_state(app_env=get_app_env())
+            if stop_state.enabled:
+                logger.info(
+                    {
+                        "event": "collect_skipped_global_stop",
+                        "ttl_sec_remaining": stop_state.ttl_sec_remaining,
+                        "key": stop_state.key,
+                    }
+                )
+                return 0
             tick_id = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
             self._begin_ai_tick(tick_id)
             cache_hits_start = 0
@@ -2067,6 +2091,10 @@ class NewsBot:
             
             # Публикуем каждую новость
             for news in news_items:
+                # Stop may be toggled while processing a tick.
+                if get_global_collection_stop_state(app_env=get_app_env()).enabled:
+                    logger.info({"event": "publish_aborted_global_stop"})
+                    break
                 # Ensure fetched_at and URL fingerprints are present
                 if not news.get('fetched_at'):
                     news['fetched_at'] = datetime.utcnow().isoformat()

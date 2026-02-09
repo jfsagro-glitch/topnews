@@ -237,9 +237,6 @@ def detect_geo_tags(title: str, text: str, language: str = "ru") -> dict:
             g3 = "#Москва"
         if g2 and not g3:
             g3 = REGION_CAPITALS.get(g2)
-        if g1 is None:
-            g1 = "#ЦФО"
-
     return {"g0": g0, "g1": g1, "g2": g2, "g3": g3, "needs_ai": False}
 
 
@@ -322,7 +319,8 @@ async def build_hashtags(
                 r0 = r0 or validated.get("r0")
 
     if g0 == "#Россия" and g1 is None:
-        g1 = "#ЦФО"
+        if g2 or g3:
+            g1 = "#ЦФО"
     if r0 is None:
         r0 = "#Общество"
 
@@ -330,7 +328,11 @@ async def build_hashtags(
         g1 = None
         g2 = None
         g3 = None
-        r0 = "#Общество"
+
+    # Only ЦФО has region/city taxonomy enabled for now.
+    if g1 != "#ЦФО":
+        g2 = None
+        g3 = None
 
     if g2 and g3 and _normalize_key(g2) == _normalize_key(g3):
         g3 = None

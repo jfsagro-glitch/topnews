@@ -5,12 +5,16 @@ OPTIMIZED: Uses caching, budget guard, optimized prompts.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 import logging
 import uuid
 from typing import Optional
 
 import httpx
+
+from core.services.collection_stop import get_global_collection_stop_state
 
 from config.config import (
     DEEPSEEK_API_ENDPOINT,
@@ -270,6 +274,15 @@ class DeepSeekClient:
 
     async def summarize(self, title: str, text: str, level: int = 3, checksum: str | None = None) -> tuple[Optional[str], dict]:
         request_id = str(uuid.uuid4())[:8]
+
+        if get_global_collection_stop_state().enabled:
+            return None, {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cache_hit": False,
+                "skipped_by_global_stop": True,
+            }
         
         # Check if AI level is 0 (disabled) - only in sandbox
         from config.config import APP_ENV
@@ -421,6 +434,9 @@ class DeepSeekClient:
         """Translate text to target language using DeepSeek."""
         token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
+        if get_global_collection_stop_state().enabled:
+            return None, {**token_usage, "skipped_by_global_stop": True}
+
         if not text:
             return None, token_usage
 
@@ -518,6 +534,9 @@ class DeepSeekClient:
     ) -> tuple[list[str], dict]:
         """Generate hashtags as JSON array for the given language."""
         token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+        if get_global_collection_stop_state().enabled:
+            return [], {**token_usage, "skipped_by_global_stop": True}
 
         if not text or not title:
             return [], token_usage
@@ -687,12 +706,42 @@ class DeepSeekClient:
         """Classify hashtags using a fixed taxonomy. Returns dict with g0/g1/g2/g3/r0."""
         token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
+        if get_global_collection_stop_state().enabled:
+            return {}, {**token_usage, "skipped_by_global_stop": True}
+
         if not text and not title:
             return {}, token_usage
 
         text = compact_text(text, AI_MAX_INPUT_CHARS_HASHTAGS)
         if not text and not title:
             return {}, token_usage
+
+        taxonomy_fp = hashlib.md5(
+            json.dumps(allowed_taxonomy or {}, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        detected_fp = hashlib.md5(
+            json.dumps(detected or {}, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+
+        if self.cache:
+            cache_key = self.cache.generate_cache_key(
+                'hashtags_classify',
+                title,
+                text,
+                level=level,
+                taxonomy=taxonomy_fp,
+                detected=detected_fp,
+            )
+            cached = self.cache.get(cache_key)
+            if cached:
+                if self.budget:
+                    self.budget.record_usage(tokens_in=0, tokens_out=0, cost_usd=0.0, calls=1, cache_hit=True)
+                return cached['response'], {
+                    "input_tokens": cached['input_tokens'],
+                    "output_tokens": cached['output_tokens'],
+                    "total_tokens": (cached['input_tokens'] or 0) + (cached['output_tokens'] or 0),
+                    "cache_hit": True,
+                }
 
         if self.budget and not self.budget.budget_ok("hashtags_ai", estimated_tokens=_estimate_tokens(text)):
             return {}, token_usage
@@ -748,6 +797,24 @@ class DeepSeekClient:
                         calls=1,
                         cache_hit=False,
                     )
+
+                if self.cache:
+                    cache_key = self.cache.generate_cache_key(
+                        'hashtags_classify',
+                        title,
+                        text,
+                        level=level,
+                        taxonomy=taxonomy_fp,
+                        detected=detected_fp,
+                    )
+                    self.cache.set(
+                        cache_key,
+                        'hashtags_classify',
+                        result,
+                        token_usage["input_tokens"],
+                        token_usage["output_tokens"],
+                        ttl_hours=72,
+                    )
                 return result, token_usage
         except Exception as e:
             logger.debug(f"Hashtag classification failed: {e}")
@@ -767,6 +834,9 @@ class DeepSeekClient:
             Tuple of (verified category name or None, token usage dict)
         """
         token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+        if get_global_collection_stop_state().enabled:
+            return None, {**token_usage, "skipped_by_global_stop": True}
         
         env_key = os.getenv('DEEPSEEK_API_KEY')
         api_key = (env_key or self.api_key or '').strip()
@@ -778,6 +848,24 @@ class DeepSeekClient:
         text = compact_text(text, 1000)
         if not text:
             return None, token_usage
+
+        if self.cache:
+            cache_key = self.cache.generate_cache_key(
+                'category_verify',
+                title,
+                text,
+                current_category=current_category,
+            )
+            cached = self.cache.get(cache_key)
+            if cached:
+                if self.budget:
+                    self.budget.record_usage(tokens_in=0, tokens_out=0, cost_usd=0.0, calls=1, cache_hit=True)
+                return cached['response'], {
+                    "input_tokens": cached['input_tokens'],
+                    "output_tokens": cached['output_tokens'],
+                    "total_tokens": (cached['input_tokens'] or 0) + (cached['output_tokens'] or 0),
+                    "cache_hit": True,
+                }
 
         if self.budget and not self.budget.budget_ok("category", estimated_tokens=_estimate_tokens(text)):
             return None, token_usage
@@ -826,6 +914,14 @@ class DeepSeekClient:
                 if category in valid_categories:
                     if category != current_category:
                         logger.info(f"AI corrected category: {current_category} -> {category}")
+                    if self.cache:
+                        cache_key = self.cache.generate_cache_key(
+                            'category_verify',
+                            title,
+                            text,
+                            current_category=current_category,
+                        )
+                        self.cache.set(cache_key, 'category_verify', category, token_usage["input_tokens"], token_usage["output_tokens"], ttl_hours=72)
                     return category, token_usage
                 else:
                     logger.warning(f"AI returned invalid category: {category}")
@@ -850,6 +946,9 @@ class DeepSeekClient:
             Tuple of (clean article text or None, token usage dict)
         """
         token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+        if get_global_collection_stop_state().enabled:
+            return None, {**token_usage, "skipped_by_global_stop": True}
         
         env_key = os.getenv('DEEPSEEK_API_KEY')
         api_key = (env_key or self.api_key or '').strip()
@@ -877,11 +976,32 @@ class DeepSeekClient:
         if not raw_text:
             return None, token_usage
 
+        model_name = profile.get('model', 'deepseek-chat')
+        effective_level = level if APP_ENV == "sandbox" else 3
+        if self.cache:
+            cache_key = self.cache.generate_cache_key(
+                'extract_clean_text',
+                title,
+                raw_text,
+                level=effective_level,
+                model=model_name,
+            )
+            cached = self.cache.get(cache_key)
+            if cached:
+                if self.budget:
+                    self.budget.record_usage(tokens_in=0, tokens_out=0, cost_usd=0.0, calls=1, cache_hit=True)
+                return cached['response'], {
+                    "input_tokens": cached['input_tokens'],
+                    "output_tokens": cached['output_tokens'],
+                    "total_tokens": (cached['input_tokens'] or 0) + (cached['output_tokens'] or 0),
+                    "cache_hit": True,
+                }
+
         if self.budget and not self.budget.budget_ok("cleanup", estimated_tokens=_estimate_tokens(raw_text)):
             return None, token_usage
 
         payload = {
-            "model": profile.get('model', 'deepseek-chat'),
+            "model": model_name,
             "messages": _build_text_extraction_messages(title, raw_text),
             "temperature": profile.get('temperature', 0.2),
             "max_tokens": profile.get('max_tokens', 500),
@@ -924,6 +1044,22 @@ class DeepSeekClient:
                 # Validate that we got meaningful text
                 if clean_text and len(clean_text) >= 50:
                     logger.debug(f"AI extracted clean text: {len(clean_text)} chars")
+                    if self.cache:
+                        cache_key = self.cache.generate_cache_key(
+                            'extract_clean_text',
+                            title,
+                            raw_text,
+                            level=effective_level,
+                            model=model_name,
+                        )
+                        self.cache.set(
+                            cache_key,
+                            'extract_clean_text',
+                            clean_text,
+                            token_usage["input_tokens"],
+                            token_usage["output_tokens"],
+                            ttl_hours=72,
+                        )
                     return clean_text, token_usage
                 else:
                     logger.debug("AI extraction returned text too short")

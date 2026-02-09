@@ -30,16 +30,18 @@ def _reload_module():
     return importlib.reload(cs)
 
 
-def test_prod_always_false(monkeypatch):
+def test_prod_global_stop(monkeypatch):
     monkeypatch.setenv("APP_ENV", "prod")
     cs = _reload_module()
     fake = FakeRedis()
     cs._redis_client = fake
 
     cs.set_global_collection_stop(True)
-    assert cs.get_global_collection_stop() is False
-    assert cs.get_global_collection_stop_status() == (False, None)
-    assert fake.store == {}
+    assert cs.get_global_collection_stop() is True
+    enabled, ttl = cs.get_global_collection_stop_status()
+    assert enabled is True
+    assert ttl == 3600
+    assert fake.store.get("jur:stop:global") == "1"
 
 
 def test_sandbox_toggle(monkeypatch):
@@ -53,6 +55,7 @@ def test_sandbox_toggle(monkeypatch):
     enabled, ttl = cs.get_global_collection_stop_status()
     assert enabled is True
     assert ttl == 600
+    assert fake.store.get("jur:stop:global") == "1"
 
     cs.set_global_collection_stop(False)
     assert cs.get_global_collection_stop() is False

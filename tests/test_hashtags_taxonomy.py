@@ -1,6 +1,6 @@
 import asyncio
 
-from utils.hashtags_taxonomy import build_hashtags
+from utils.hashtags_taxonomy import R0_TAGS, build_hashtags
 
 
 def _run(coro):
@@ -17,7 +17,13 @@ def test_world_only_two_tags():
     assert tags[0] == "#Мир"
     assert "#Россия" not in tags
     assert len(tags) == 2
-    assert tags[1] == "#Общество"
+    assert tags[1] in set(R0_TAGS)
+
+
+def test_russia_no_default_district():
+    tags = _run(build_hashtags("Экономика дня", "Рынок и инфляция", language="ru"))
+    assert tags[0] == "#Россия"
+    assert "#ЦФО" not in tags
 
 
 def test_no_hash_novosti():
