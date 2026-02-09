@@ -42,6 +42,7 @@ class HttpClient:
         retries: int = 3,
         allow_insecure: bool = True,
         skip_on_304: bool = False,
+        timeout: float | None = None,
     ) -> httpx.Response:
         """
         GET request with retry logic and SSL fallback.
@@ -65,10 +66,15 @@ class HttpClient:
 
         last_exc = None
 
+        request_timeout = None
+        if timeout is not None:
+            connect_timeout = min(10.0, float(timeout))
+            request_timeout = httpx.Timeout(float(timeout), connect=connect_timeout)
+
         # Try with SSL verification first
         for attempt in range(retries + 1):
             try:
-                resp = await self._client.get(url, headers=merged_headers)
+                resp = await self._client.get(url, headers=merged_headers, timeout=request_timeout)
 
                 # Handle 304 Not Modified - retry with cache busting
                 if resp.status_code == 304:
@@ -78,7 +84,7 @@ class HttpClient:
                     cache_bust_headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
                     cache_bust_headers['Pragma'] = 'no-cache'
                     try:
-                        resp = await self._client.get(url, headers=cache_bust_headers)
+                        resp = await self._client.get(url, headers=cache_bust_headers, timeout=request_timeout)
                         return resp
                     except Exception:
                         if skip_on_304:
@@ -102,7 +108,7 @@ class HttpClient:
                     try:
                         logger.info(f"Retrying {url} without SSL verification (insecure)")
                         resp = await self._client.get(
-                            url, headers=merged_headers, verify=False
+                            url, headers=merged_headers, verify=False, timeout=request_timeout
                         )
                         resp.raise_for_status()
                         return resp
@@ -113,7 +119,7 @@ class HttpClient:
                     last_exc = e
             except httpx.HTTPStatusError as e:
                 last_exc = e
-                wait = (2 ** attempt) + random.random()
+                wait = _get_retry_after_seconds(e.response) or ((2 ** attempt) + random.random())
                 logger.debug(
                     f"Attempt {attempt + 1}/{retries + 1} failed for {url} "
                     f"(status {e.response.status_code}), waiting {wait:.1f}s"
@@ -164,3 +170,13 @@ async def close_http_client():
     if _http_client is not None:
         await _http_client.close()
         _http_client = None
+
+
+def _get_retry_after_seconds(response: httpx.Response) -> float | None:
+    try:
+        header = response.headers.get("Retry-After")
+        if not header:
+            return None
+        return min(60.0, float(header))
+    except Exception:
+        return None

@@ -54,6 +54,28 @@ class SourceCollector:
         
         # Cooldown для источников, которые возвращают 403/429
         self._cooldown_until = {}  # url -> timestamp
+        self._source_error_streak = {}
+        self._source_error_last = {}
+
+        try:
+            from config.railway_config import (
+                SOURCE_COLLECT_TIMEOUT_SECONDS,
+                SOURCE_ERROR_STREAK_LIMIT,
+                SOURCE_ERROR_STREAK_WINDOW_SECONDS,
+                SOURCE_ERROR_COOLDOWN_SECONDS,
+            )
+        except (ImportError, ValueError):
+            from config.config import (
+                SOURCE_COLLECT_TIMEOUT_SECONDS,
+                SOURCE_ERROR_STREAK_LIMIT,
+                SOURCE_ERROR_STREAK_WINDOW_SECONDS,
+                SOURCE_ERROR_COOLDOWN_SECONDS,
+            )
+
+        self._source_collect_timeout = SOURCE_COLLECT_TIMEOUT_SECONDS
+        self._source_error_streak_limit = SOURCE_ERROR_STREAK_LIMIT
+        self._source_error_window = SOURCE_ERROR_STREAK_WINDOW_SECONDS
+        self._source_error_cooldown_seconds = SOURCE_ERROR_COOLDOWN_SECONDS
         self._rsshub_bases = self._normalize_rsshub_bases(RSSHUB_BASE_URL, RSSHUB_MIRROR_URLS)
         self._rss_fallback_blocklist = {
             'gazeta.ru',
@@ -191,6 +213,19 @@ class SourceCollector:
         self._cooldown_until[url] = time.time() + seconds
         logger.warning(f"Cooldown set for {url} for {seconds}s")
 
+    def _note_source_failure(self, url: str) -> None:
+        if not url:
+            return
+        now = time.time()
+        last = self._source_error_last.get(url, 0)
+        if now - last > self._source_error_window:
+            self._source_error_streak[url] = 0
+        self._source_error_last[url] = now
+        self._source_error_streak[url] = self._source_error_streak.get(url, 0) + 1
+        if self._source_error_streak[url] >= self._source_error_streak_limit:
+            self._set_cooldown(url, seconds=self._source_error_cooldown_seconds)
+            self._source_error_streak[url] = 0
+
     def _normalize_rsshub_bases(self, base_url: str | None, mirrors: list[str] | None) -> list[str]:
         bases = []
         for raw in [base_url] + (mirrors or []):
@@ -321,12 +356,20 @@ class SourceCollector:
             # Используем сконфигурированные источники, автоматически классифицированные
             for fetch_url, source_name, category, src_type in self._configured_sources:
                 if src_type == 'rss':
-                    tasks.append((source_name, self._collect_from_rss(fetch_url, source_name, category)))
+                    tasks.append((
+                        source_name,
+                        fetch_url,
+                        self._collect_with_timeout(fetch_url, source_name, self._collect_from_rss(fetch_url, source_name, category)),
+                    ))
                 else:
-                    tasks.append((source_name, self._collect_from_html(fetch_url, source_name, category)))
+                    tasks.append((
+                        source_name,
+                        fetch_url,
+                        self._collect_with_timeout(fetch_url, source_name, self._collect_from_html(fetch_url, source_name, category)),
+                    ))
             
             # Запускаем все параллельно
-            results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
+            results = await asyncio.gather(*[t[2] for t in tasks], return_exceptions=True)
 
             # Reset last collection stats
             self.last_collected_counts = {}
@@ -337,7 +380,7 @@ class SourceCollector:
                 self.last_collected_counts[source_name] = 0
             
             # Собираем результаты
-            for (source_name, _task), result in zip(tasks, results):
+            for (source_name, fetch_url, _task), result in zip(tasks, results):
                 if isinstance(result, list):
                     count = len(result)
                     self.last_collected_counts[source_name] = count
@@ -350,6 +393,7 @@ class SourceCollector:
                 elif isinstance(result, Exception):
                     logger.error(f"{source_name}: {type(result).__name__}: {result}")
                     self.source_health[source_name] = False
+                    self._note_source_failure(fetch_url)
                     # Ensure we still record 0 for failed sources so they show in status
                     self.last_collected_counts[source_name] = 0
             
@@ -524,6 +568,7 @@ class SourceCollector:
                     # 503 from RSSHub Twitter/X feeds - likely API issues, short cooldown
                     self._set_cooldown(url, 300)
                     logger.warning(f"⚠️ RSSHub Twitter/X feed unavailable for {source_name} (503), will retry in 5 min")
+                self._note_source_failure(url)
                 self._record_source_error(source_name, e)
                 logger.error(f"Error collecting from RSS {url}: {type(e).__name__}: {e}")
                 return []
@@ -678,11 +723,22 @@ class SourceCollector:
                         f"setting cooldown for 10 minutes. NOT retrying."
                     )
                     self._record_source_error(source_name, e)
+                    self._note_source_failure(url)
                     return []
                 
+                self._note_source_failure(url)
                 self._record_source_error(source_name, e)
                 logger.error(f"Error collecting from HTML {source_name} ({url}): {e}", exc_info=False)
                 return []
+
+    async def _collect_with_timeout(self, url: str, source_name: str, coro) -> List[Dict]:
+        try:
+            return await asyncio.wait_for(coro, timeout=self._source_collect_timeout)
+        except asyncio.TimeoutError as e:
+            logger.warning(f"Timeout collecting from {source_name} ({url})")
+            self._note_source_failure(url)
+            self._record_source_error(source_name, e)
+            return []
 
     async def _try_fallback_rss(self, url: str, source_name: str, category: str) -> List[Dict]:
         """Try common RSS endpoints when HTML parsing yields no items."""
