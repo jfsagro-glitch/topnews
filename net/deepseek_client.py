@@ -13,17 +13,19 @@ from typing import Optional
 import httpx
 
 from config.config import (
-    DEEPSEEK_API_ENDPOINT, 
+    DEEPSEEK_API_ENDPOINT,
     AI_SUMMARY_TIMEOUT,
+    AI_MAX_INPUT_CHARS,
+    AI_MAX_INPUT_CHARS_HASHTAGS,
+    AI_SUMMARY_MIN_CHARS,
     DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD,
-    DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD
+    DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD,
 )
-from utils.text_cleaner import truncate_text
+from utils.text_cleaner import clean_html, truncate_text
 
 logger = logging.getLogger(__name__)
 
-MAX_INPUT_CHARS = 3500
-HASHTAG_PROMPT_VERSION = 2
+HASHTAG_PROMPT_VERSION = 3
 
 COMMON_HASHTAGS_RU = {
     "#мир", "#россия", "#москва", "#подмосковье", "#новости", "#политика",
@@ -35,12 +37,42 @@ COMMON_HASHTAGS_EN = {
 }
 
 
-def _truncate_input(text: str, max_chars: int = MAX_INPUT_CHARS) -> str:
+def compact_text(text: str, max_chars: int, strategy: str = "start_mid_end") -> str:
     if not text:
         return ""
-    if len(text) <= max_chars:
-        return text
-    return truncate_text(text, max_chars)
+    cleaned = clean_html(text) if "<" in text and ">" in text else text
+    if len(cleaned) <= max_chars:
+        return cleaned
+    if strategy != "start_mid_end":
+        if max_chars <= 0:
+            return ""
+        safe = max(0, int(max_chars) - 3)
+        if safe <= 0:
+            return "..."[: max(0, int(max_chars))]
+        return truncate_text(cleaned, max_length=safe)
+
+    if max_chars <= 0:
+        return ""
+    sep_len = len("\n...\n") * 2  # head->mid and mid->tail
+    chunk = max(1, (int(max_chars) - sep_len) // 3)
+
+    while True:
+        head = cleaned[:chunk]
+        tail = cleaned[-chunk:]
+        middle_start = max(0, (len(cleaned) // 2) - (chunk // 2))
+        middle = cleaned[middle_start:middle_start + chunk]
+        joined = f"{head}\n...\n{middle}\n...\n{tail}"
+        if len(joined) <= max_chars or chunk <= 1:
+            break
+        chunk -= 1
+
+    if len(joined) <= max_chars:
+        return joined
+
+    safe = max(0, int(max_chars) - 3)
+    if safe <= 0:
+        return "..."[: max(0, int(max_chars))]
+    return truncate_text(cleaned, max_length=safe)
 
 
 def _estimate_tokens(text: str) -> int:
@@ -50,24 +82,11 @@ def _estimate_tokens(text: str) -> int:
 
 
 def _build_messages(title: str, text: str) -> list[dict]:
-    # Ты — редактор радионовостей (полный промпт с гарантией качества)
     system_prompt = (
-        "Ты — редактор радионовостей.\n\n"
-        "Перепиши новость, строго соблюдая правила:\n"
-        "1. Начни с одной короткой фразы до 7 слов, передающей суть\n"
-        "2. Используй только информацию из исходного текста\n"
-        "3. Ничего не додумывай и не добавляй от себя\n"
-        "4. Удали повторы, ссылки и второстепенные детали\n"
-        "5. Объём: 100–150 слов (30–40 секунд при чтении вслух)\n"
-        "6. Каждое предложение — не длиннее 12 слов\n"
-        "7. Предложения должны легко произноситься вслух\n"
-        "8. Не используй деепричастия, причастия и пассивный залог\n"
-        "9. Не используй канцеляризмы и формализмы\n"
-        "10. Стиль — сухой, информационный, радионовости\n"
-        "11. Не используй оценку. Только факты\n"
-        "12. Прямые цитаты, если есть, приводи дословно в кавычках\n"
-        "13. В конце укажи источник текстом (без ссылки)\n\n"
-        "Если информации недостаточно — сделай максимально краткий пересказ без домыслов."
+        "Кратко перескажи новость для радионовостей. "
+        "Только факты из текста, без домыслов. "
+        "1-2 абзаца, предложения до 12 слов. "
+        "В конце укажи источник текстом."
     )
     user_content = f"Заголовок: {title}\n\nТекст: {text}"
     return [
@@ -100,16 +119,11 @@ def _build_category_messages(title: str, text: str, current_category: str) -> li
 def _build_text_extraction_messages(title: str, raw_text: str) -> list[dict]:
     """Build messages for AI text extraction (removing navigation/garbage)"""
     system_prompt = (
-        "Ты помощник для извлечения чистого текста новости из HTML.\n\n"
-        "Твоя задача: извлечь ТОЛЬКО основной текст самой новости, удалив:\n"
-        "- Списки городов (Балашиха Богородский Воскресенск...)\n"
-        "- Навигационные меню (Культура Все Кино Сериалы, Истории Эфир...)\n"
-        "- Заголовки других новостей (Шокирующие откровения...)\n"
-        "- Дублирование заголовка (если заголовок повторяется 2-3 раза)\n"
-        "- Рекламу и ссылки\n\n"
-        "Верни 1-2 абзаца с фактами о событии, указанном в заголовке. Не добавляй пояснений."
+        "Извлеки только основной текст новости. "
+        "Удали меню, списки, рекламу, ссылки и дубли заголовка. "
+        "Верни 1-2 абзаца фактов без пояснений."
     )
-    user_content = f"Заголовок: {title}\n\nИзвлеченный текст:\n{raw_text[:3500]}"
+    user_content = f"Заголовок: {title}\n\nИзвлеченный текст:\n{raw_text}"
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
@@ -118,18 +132,14 @@ def _build_text_extraction_messages(title: str, raw_text: str) -> list[dict]:
 
 def _build_hashtags_messages(title: str, text: str, language: str, candidates: list[str]) -> list[dict]:
     system_prompt = (
-        "Ты выбираешь лучшие хештеги для новости. "
-        "Верни СТРОГО JSON объект вида {\"hashtags\":[\"#...\",...]}. "
-        "Без комментариев и без текста вне JSON. "
-        "Выбери 6-8 тегов, избегай общих и пустых тегов. "
-        "Если текст длинный, обязательно включи 2-3 конкретных сущности, "
-        "предпочтительно из списка кандидатов. "
-        "Язык хештегов: {lang}."
+        "Верни СТРОГО JSON объект {\"hashtags\":[\"#...\",...]}. "
+        "Без текста вне JSON. Выбери 6-8 тегов из кандидатов, "
+        "язык хештегов: {lang}."
     )
     candidates_block = ", ".join(candidates[:20]) if candidates else ""
     user_content = (
         f"Заголовок: {title}\n\n"
-        f"Текст: {text[:1800]}\n\n"
+        f"Текст: {text}\n\n"
         f"Кандидаты: {candidates_block}"
     )
     return [
@@ -159,17 +169,15 @@ def _build_hashtags_classify_messages(
         f"r0: {detected.get('r0')}",
     ]
     system_prompt = (
-        "Ты классифицируешь новость по иерархии хештегов. "
         "Верни ТОЛЬКО JSON объект вида "
-        "{\"g0\":\"#Россия|#Мир\",\"g1\":\"#ЦФО|...|null\","
+        "{\"g0\":\"#Россия|#Мир\",\"g1\":\"#ЦФО|...|null\"," 
         "\"g2\":\"#...|null\",\"g3\":\"#...|null\",\"r0\":\"#Политика|...\"}. "
-        "Значения должны быть только из allow-list ниже (или null). "
-        "Если g0 = #Мир, то g1/g2/g3 должны быть null. "
-        "Учитывай уже обнаруженные значения, если они корректны."
+        "Значения только из allow-list или null. "
+        "Если g0 = #Мир, то g1/g2/g3 должны быть null."
     )
     user_content = (
         f"Заголовок: {title}\n\n"
-        f"Текст: {text[:1200]}\n\n"
+        f"Текст: {text}\n\n"
         "Allow-list:\n"
         + "\n".join(allowed_lines)
         + "\n\nDetected:\n"
@@ -244,9 +252,10 @@ class DeepSeekClient:
         self.budget = None
         if db:
             try:
-                from net.llm_cache import LLMCacheManager, BudgetGuard
+                from net.llm_cache import LLMCacheManager
+                from core.services.ai_budget import AIBudgetManager
                 self.cache = LLMCacheManager(db)
-                self.budget = BudgetGuard(db, daily_limit_usd=float(os.getenv('DAILY_LLM_BUDGET_USD', '1.0')))
+                self.budget = AIBudgetManager(db)
                 logger.info("LLM cache and budget guard enabled")
             except Exception as e:
                 logger.warning(f"Failed to initialize LLM cache/budget: {e}")
@@ -278,24 +287,6 @@ class DeepSeekClient:
             profile = get_llm_profile(3, 'summary')
             logger.debug(f"[{request_id}] Prod mode: Using default level 3")
         
-        # Check budget limit
-        if self.budget and not self.budget.can_make_request():
-            logger.warning(f"[{request_id}] Daily budget exceeded, skipping LLM call")
-            return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False, "budget_exceeded": True}
-        
-        # Check cache
-        if self.cache:
-            cache_key = self.cache.generate_cache_key('summarize', title, text, level=level, checksum=checksum)
-            cached = self.cache.get(cache_key)
-            if cached:
-                logger.info(f"[{request_id}] Cache HIT for summarize")
-                return cached['response'], {
-                    "input_tokens": cached['input_tokens'],
-                    "output_tokens": cached['output_tokens'],
-                    "total_tokens": cached['input_tokens'] + cached['output_tokens'],
-                    "cache_hit": True
-                }
-        
         # Always try to read API key from environment first (for Railway support)
         env_key = os.getenv('DEEPSEEK_API_KEY')
         api_key = (env_key or self.api_key or '').strip()
@@ -310,13 +301,35 @@ class DeepSeekClient:
             )
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False}
 
-        text = _truncate_input(text)
-        if not text:
+        cleaned = compact_text(text, AI_MAX_INPUT_CHARS)
+        if not cleaned:
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False}
+        if len(cleaned) < AI_SUMMARY_MIN_CHARS:
+            return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False, "too_short": True}
+
+        # Check cache
+        if self.cache:
+            cache_key = self.cache.generate_cache_key('summarize', title, cleaned, level=level, checksum=checksum)
+            cached = self.cache.get(cache_key)
+            if cached:
+                logger.info(f"[{request_id}] Cache HIT for summarize")
+                if self.budget:
+                    self.budget.record_usage(tokens_in=0, tokens_out=0, cost_usd=0.0, calls=1, cache_hit=True)
+                return cached['response'], {
+                    "input_tokens": cached['input_tokens'],
+                    "output_tokens": cached['output_tokens'],
+                    "total_tokens": cached['input_tokens'] + cached['output_tokens'],
+                    "cache_hit": True
+                }
+
+        estimated_tokens = _estimate_tokens(cleaned)
+        if self.budget and not self.budget.budget_ok("summary", estimated_tokens=estimated_tokens):
+            logger.warning(f"[{request_id}] Daily budget exceeded, skipping LLM call")
+            return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False, "budget_exceeded": True}
 
         payload = {
             "model": profile.get('model', 'deepseek-chat'),
-            "messages": _build_messages(title, text),
+            "messages": _build_messages(title, cleaned),
             "temperature": profile.get('temperature', 0.7),
             "max_tokens": profile.get('max_tokens', 800),
         }
@@ -347,7 +360,7 @@ class DeepSeekClient:
                     total_tokens = int(usage.get("total_tokens", 0) or 0)
                     
                     if total_tokens == 0:
-                        total_tokens = _estimate_tokens(text)
+                        total_tokens = _estimate_tokens(cleaned)
                         input_tokens = total_tokens
                         output_tokens = 0
                     
@@ -356,14 +369,20 @@ class DeepSeekClient:
                                 output_tokens * DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD / 1000)
                     
                     if self.budget:
-                        self.budget.add_cost(cost_usd)
+                        self.budget.record_usage(
+                            tokens_in=input_tokens,
+                            tokens_out=output_tokens,
+                            cost_usd=cost_usd,
+                            calls=1,
+                            cache_hit=False,
+                        )
                     
                     logger.info(f"[{request_id}] summarize: {input_tokens}+{output_tokens}={total_tokens} tokens, ${cost_usd:.4f}")
                     
                     # Store in cache
                     result_text = truncate_text(summary.strip(), max_length=800)
                     if self.cache:
-                        cache_key = self.cache.generate_cache_key('summarize', title, text, level=level, checksum=checksum)
+                        cache_key = self.cache.generate_cache_key('summarize', title, cleaned, level=level, checksum=checksum)
                         self.cache.set(cache_key, 'summarize', result_text, input_tokens, output_tokens, ttl_hours=72)
                     
                     # Return summary and token usage dict
@@ -405,20 +424,21 @@ class DeepSeekClient:
         if not text:
             return None, token_usage
 
-        # Check budget limit
-        if self.budget and not self.budget.can_make_request():
-            return None, token_usage
-
         if self.cache:
             cache_key = self.cache.generate_cache_key('translate', '', text, target_lang=target_lang, checksum=checksum)
             cached = self.cache.get(cache_key)
             if cached:
+                if self.budget:
+                    self.budget.record_usage(tokens_in=0, tokens_out=0, cost_usd=0.0, calls=1, cache_hit=True)
                 return cached['response'], {
                     "input_tokens": cached['input_tokens'],
                     "output_tokens": cached['output_tokens'],
                     "total_tokens": cached['input_tokens'] + cached['output_tokens'],
                     "cache_hit": True,
                 }
+        if self.budget and not self.budget.budget_ok("translate", estimated_tokens=_estimate_tokens(text)):
+            return None, token_usage
+
 
         env_key = os.getenv('DEEPSEEK_API_KEY')
         api_key = (env_key or self.api_key or '').strip()
@@ -462,7 +482,13 @@ class DeepSeekClient:
                 cost_usd = (input_tokens * DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD / 1000 +
                             output_tokens * DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD / 1000)
                 if self.budget:
-                    self.budget.add_cost(cost_usd)
+                    self.budget.record_usage(
+                        tokens_in=input_tokens,
+                        tokens_out=output_tokens,
+                        cost_usd=cost_usd,
+                        calls=1,
+                        cache_hit=False,
+                    )
 
                 if self.cache:
                     cache_key = self.cache.generate_cache_key('translate', '', text, target_lang=target_lang, checksum=checksum)
@@ -496,10 +522,7 @@ class DeepSeekClient:
         if not text or not title:
             return [], token_usage
 
-        text = _truncate_input(text, max_chars=1800)
-
-        if self.budget and not self.budget.can_make_request():
-            return [], token_usage
+        text = compact_text(text, AI_MAX_INPUT_CHARS_HASHTAGS)
 
         candidates = candidates or []
         candidates_key = ",".join(candidates[:20])
@@ -517,12 +540,17 @@ class DeepSeekClient:
             )
             cached = self.cache.get(cache_key)
             if cached:
+                if self.budget:
+                    self.budget.record_usage(tokens_in=0, tokens_out=0, cost_usd=0.0, calls=1, cache_hit=True)
                 return cached['response'], {
                     "input_tokens": cached['input_tokens'],
                     "output_tokens": cached['output_tokens'],
                     "total_tokens": cached['input_tokens'] + cached['output_tokens'],
                     "cache_hit": True,
                 }
+        if self.budget and not self.budget.budget_ok("hashtags_ai", estimated_tokens=_estimate_tokens(text)):
+            return [], token_usage
+
 
         env_key = os.getenv('DEEPSEEK_API_KEY')
         api_key = (env_key or self.api_key or '').strip()
@@ -615,7 +643,13 @@ class DeepSeekClient:
                 cost_usd = (input_tokens * DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD / 1000 +
                             output_tokens * DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD / 1000)
                 if self.budget:
-                    self.budget.add_cost(cost_usd)
+                    self.budget.record_usage(
+                        tokens_in=input_tokens,
+                        tokens_out=output_tokens,
+                        cost_usd=cost_usd,
+                        calls=1,
+                        cache_hit=False,
+                    )
 
                 if self.cache:
                     cache_key = self.cache.generate_cache_key(
@@ -654,6 +688,13 @@ class DeepSeekClient:
         token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
         if not text and not title:
+            return {}, token_usage
+
+        text = compact_text(text, AI_MAX_INPUT_CHARS_HASHTAGS)
+        if not text and not title:
+            return {}, token_usage
+
+        if self.budget and not self.budget.budget_ok("hashtags_ai", estimated_tokens=_estimate_tokens(text)):
             return {}, token_usage
 
         env_key = os.getenv('DEEPSEEK_API_KEY')
@@ -695,6 +736,18 @@ class DeepSeekClient:
                     "output_tokens": int(usage.get("completion_tokens", 0) or 0),
                     "total_tokens": int(usage.get("total_tokens", 0) or 0),
                 }
+                if self.budget:
+                    cost_usd = (
+                        token_usage["input_tokens"] * DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD / 1000
+                        + token_usage["output_tokens"] * DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD / 1000
+                    )
+                    self.budget.record_usage(
+                        tokens_in=token_usage["input_tokens"],
+                        tokens_out=token_usage["output_tokens"],
+                        cost_usd=cost_usd,
+                        calls=1,
+                        cache_hit=False,
+                    )
                 return result, token_usage
         except Exception as e:
             logger.debug(f"Hashtag classification failed: {e}")
@@ -722,8 +775,11 @@ class DeepSeekClient:
             logger.debug("DeepSeek API key not configured, skipping AI category verification")
             return None, token_usage
 
-        text = _truncate_input(text, max_chars=1000)
+        text = compact_text(text, 1000)
         if not text:
+            return None, token_usage
+
+        if self.budget and not self.budget.budget_ok("category", estimated_tokens=_estimate_tokens(text)):
             return None, token_usage
 
         payload = {
@@ -752,6 +808,18 @@ class DeepSeekClient:
                     "output_tokens": usage.get("completion_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0)
                 }
+                if self.budget:
+                    cost_usd = (
+                        token_usage["input_tokens"] * DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD / 1000
+                        + token_usage["output_tokens"] * DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD / 1000
+                    )
+                    self.budget.record_usage(
+                        tokens_in=token_usage["input_tokens"],
+                        tokens_out=token_usage["output_tokens"],
+                        cost_usd=cost_usd,
+                        calls=1,
+                        cache_hit=False,
+                    )
                 
                 # Validate response
                 valid_categories = ['moscow', 'moscow_region', 'world', 'russia']
@@ -805,6 +873,13 @@ class DeepSeekClient:
 
         profile = get_llm_profile(level if APP_ENV == "sandbox" else 3, 'cleanup')
 
+        raw_text = compact_text(raw_text, AI_MAX_INPUT_CHARS)
+        if not raw_text:
+            return None, token_usage
+
+        if self.budget and not self.budget.budget_ok("cleanup", estimated_tokens=_estimate_tokens(raw_text)):
+            return None, token_usage
+
         payload = {
             "model": profile.get('model', 'deepseek-chat'),
             "messages": _build_text_extraction_messages(title, raw_text),
@@ -833,6 +908,18 @@ class DeepSeekClient:
                     "output_tokens": usage.get("completion_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0)
                 }
+                if self.budget:
+                    cost_usd = (
+                        token_usage["input_tokens"] * DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD / 1000
+                        + token_usage["output_tokens"] * DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD / 1000
+                    )
+                    self.budget.record_usage(
+                        tokens_in=token_usage["input_tokens"],
+                        tokens_out=token_usage["output_tokens"],
+                        cost_usd=cost_usd,
+                        calls=1,
+                        cache_hit=False,
+                    )
                 
                 # Validate that we got meaningful text
                 if clean_text and len(clean_text) >= 50:

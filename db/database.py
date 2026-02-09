@@ -153,6 +153,18 @@ class NewsDatabase:
                 VALUES (1, 0, 0, 0.0)
             ''')
 
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ai_usage_daily (
+                    date TEXT PRIMARY KEY,
+                    tokens_in INTEGER NOT NULL DEFAULT 0,
+                    tokens_out INTEGER NOT NULL DEFAULT 0,
+                    cost_usd REAL NOT NULL DEFAULT 0.0,
+                    calls INTEGER NOT NULL DEFAULT 0,
+                    cache_hits INTEGER NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             # Table for news sources
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS sources (
@@ -386,6 +398,17 @@ class NewsDatabase:
         cursor.execute('''
             INSERT OR IGNORE INTO ai_usage (id, total_requests, total_tokens, total_cost_usd)
             VALUES (1, 0, 0, 0.0)
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ai_usage_daily (
+                date TEXT PRIMARY KEY,
+                tokens_in INTEGER NOT NULL DEFAULT 0,
+                tokens_out INTEGER NOT NULL DEFAULT 0,
+                cost_usd REAL NOT NULL DEFAULT 0.0,
+                calls INTEGER NOT NULL DEFAULT 0,
+                cache_hits INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
         ''')
         conn.commit()
         conn.close()
@@ -1303,6 +1326,87 @@ class NewsDatabase:
         except Exception as e:
             logger.error(f"Error updating AI usage: {e}")
             return False
+
+    def add_ai_usage_daily(
+        self,
+        tokens_in: int,
+        tokens_out: int,
+        cost_usd: float,
+        calls: int = 1,
+        cache_hit: bool = False,
+    ) -> bool:
+        try:
+            today = datetime.now().date().isoformat()
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    '''SELECT tokens_in, tokens_out, cost_usd, calls, cache_hits
+                       FROM ai_usage_daily WHERE date = ?''',
+                    (today,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    tokens_in_total = (row[0] or 0) + tokens_in
+                    tokens_out_total = (row[1] or 0) + tokens_out
+                    cost_total = (row[2] or 0.0) + cost_usd
+                    calls_total = (row[3] or 0) + calls
+                    cache_hits_total = (row[4] or 0) + (1 if cache_hit else 0)
+                    cursor.execute(
+                        '''UPDATE ai_usage_daily
+                           SET tokens_in = ?, tokens_out = ?, cost_usd = ?, calls = ?, cache_hits = ?,
+                               updated_at = CURRENT_TIMESTAMP
+                           WHERE date = ?''',
+                        (tokens_in_total, tokens_out_total, cost_total, calls_total, cache_hits_total, today)
+                    )
+                else:
+                    cursor.execute(
+                        '''INSERT INTO ai_usage_daily(date, tokens_in, tokens_out, cost_usd, calls, cache_hits)
+                           VALUES(?, ?, ?, ?, ?, ?)''',
+                        (today, tokens_in, tokens_out, cost_usd, calls, 1 if cache_hit else 0)
+                    )
+                self._conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error updating daily AI usage: {e}")
+            return False
+
+    def get_ai_usage_daily(self, date: str | None = None) -> dict:
+        try:
+            target_date = date or datetime.now().date().isoformat()
+            cursor = self._conn.cursor()
+            cursor.execute(
+                '''SELECT tokens_in, tokens_out, cost_usd, calls, cache_hits
+                   FROM ai_usage_daily WHERE date = ?''',
+                (target_date,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return {
+                    'date': target_date,
+                    'tokens_in': 0,
+                    'tokens_out': 0,
+                    'cost_usd': 0.0,
+                    'calls': 0,
+                    'cache_hits': 0,
+                }
+            return {
+                'date': target_date,
+                'tokens_in': row[0] or 0,
+                'tokens_out': row[1] or 0,
+                'cost_usd': row[2] or 0.0,
+                'calls': row[3] or 0,
+                'cache_hits': row[4] or 0,
+            }
+        except Exception as e:
+            logger.error(f"Error getting daily AI usage: {e}")
+            return {
+                'date': date or datetime.now().date().isoformat(),
+                'tokens_in': 0,
+                'tokens_out': 0,
+                'cost_usd': 0.0,
+                'calls': 0,
+                'cache_hits': 0,
+            }
 
     def get_ai_usage(self) -> dict:
         """Get comprehensive AI usage totals (persistent)."""

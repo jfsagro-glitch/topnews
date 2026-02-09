@@ -9,6 +9,7 @@ import socket
 import hmac
 import hashlib
 import secrets
+import json
 from datetime import datetime
 from net.deepseek_client import DeepSeekClient
 from urllib.parse import urlparse
@@ -20,7 +21,7 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 from telegram.error import Conflict
 import asyncio
-from config.config import TELEGRAM_TOKEN, TELEGRAM_CHANNEL_ID, CHECK_INTERVAL_SECONDS, ADMIN_IDS
+from config.config import TELEGRAM_TOKEN, TELEGRAM_CHANNEL_ID, CHECK_INTERVAL_SECONDS, ADMIN_IDS, AI_CALLS_PER_TICK_MAX
 from utils.env import get_app_env
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ from utils.content_quality import compute_simhash, compute_url_hash, hamming_dis
 from utils.date_parser import get_project_now, parse_datetime_value, parse_url_date, to_project_tz
 from sources.source_collector import SourceCollector
 from core.services.access_control import AILevelManager, get_llm_profile
+from core.services.ai_gate import AITickGate
 from core.services.collection_stop import (
     get_global_collection_stop,
     get_global_collection_stop_status,
@@ -83,6 +85,10 @@ class NewsBot:
         
         # Rate limiting for AI summarize requests (per user per minute)
         self.user_ai_requests = {}  # {user_id: [timestamp1, timestamp2, ...]}
+
+        # Per-tick AI gating
+        self._ai_tick_gate = AITickGate(max_calls=AI_CALLS_PER_TICK_MAX)
+        self._ai_tick_id = None
 
         # Drop reasons counters (domain -> reason -> count)
         self.drop_counters = {}
@@ -208,6 +214,24 @@ class NewsBot:
     def _get_sandbox_filter_user_id(self) -> int | None:
         """Pick a user id whose source settings control sandbox filtering."""
         return self.admin_ids[0] if self.admin_ids else None
+
+    def _begin_ai_tick(self, tick_id: str) -> None:
+        if self._ai_tick_gate:
+            self._ai_tick_gate.begin_tick(tick_id)
+        self._ai_tick_id = tick_id
+
+    def _ai_tick_allow(self, task: str) -> bool:
+        if not self._ai_tick_gate:
+            return True
+        if not self._ai_tick_gate.can_call(task):
+            return False
+        self._ai_tick_gate.record_call(task)
+        return True
+
+    def _get_ai_tick_state(self) -> dict:
+        if not self._ai_tick_gate:
+            return {"tick_id": None, "calls": 0, "max_calls": 0, "disabled": []}
+        return self._ai_tick_gate.get_state()
     
     def _init_sources(self):
         """Инициализировать список источников из ACTIVE_SOURCES_CONFIG"""
@@ -611,60 +635,44 @@ class NewsBot:
         channels_text = _format_lines('telegram', '📡 Каналы Telegram')
         sites_text = _format_lines('site', '🌐 Источники')
         return channels_text, sites_text
-    
-    async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /status"""
+
+    def _build_status_text(self) -> str:
         stats = self.db.get_stats()
         ai_usage = self.db.get_ai_usage()
-
         channels_text, sites_text = self._build_source_status_sections(window_hours=24)
-        
-        # Calculate realistic costs based on token counts
-        # DeepSeek pricing: input $0.14/M, output $0.28/M tokens
-        # Approximate 60% input, 40% output for text operations
+
         input_tokens = int(ai_usage['total_tokens'] * 0.6)
         output_tokens = int(ai_usage['total_tokens'] * 0.4)
         input_cost = (input_tokens / 1_000_000.0) * 0.14
         output_cost = (output_tokens / 1_000_000.0) * 0.28
         estimated_cost = input_cost + output_cost
-        
-        # Get daily budget info from BudgetGuard
-        daily_budget_text = ""
+
+        daily_calls = 0
+        daily_tokens = 0
+        daily_cost = 0.0
+        cache_hit_rate = 0.0
+        budget_state = "OK"
+        degraded_features = []
+
         if self.deepseek_client.budget:
             try:
-                daily_cost = self.deepseek_client.budget.get_daily_cost()
-                daily_limit = self.deepseek_client.budget.daily_limit_usd
-                percentage = (daily_cost / daily_limit * 100) if daily_limit > 0 else 0
-                is_economy = self.deepseek_client.budget.is_economy_mode()
-                
-                budget_icon = "🟢"
-                if percentage >= 100:
-                    budget_icon = "🔴"
-                elif percentage >= 80:
-                    budget_icon = "🟡"
-                
-                daily_budget_text = (
-                    f"\n💰 Дневной бюджет LLM:\n"
-                    f"{budget_icon} ${daily_cost:.4f} / ${daily_limit:.2f} ({percentage:.1f}%)\n"
-                    f"{'⚠️ Режим экономии активен' if is_economy else ''}\n"
-                )
+                budget_state_data = self.deepseek_client.budget.get_state()
+                budget_state = budget_state_data.get("budget_state", "OK")
+                degraded_features = budget_state_data.get("degraded_features", [])
+                daily = budget_state_data.get("usage", {})
+                daily_calls = int(daily.get("calls", 0) or 0)
+                daily_tokens = int((daily.get("tokens_in", 0) or 0) + (daily.get("tokens_out", 0) or 0))
+                daily_cost = float(daily.get("cost_usd", 0.0) or 0.0)
+                cache_hits = int(daily.get("cache_hits", 0) or 0)
+                cache_hit_rate = (cache_hits / daily_calls * 100.0) if daily_calls > 0 else 0.0
             except Exception as e:
                 logger.error(f"Error getting budget info: {e}")
-        
-        # Get cache stats
-        cache_text = ""
-        if self.deepseek_client.cache:
-            try:
-                stats = self.deepseek_client.cache.get_stats()
-                hit_rate = (stats['hits'] / stats['total'] * 100) if stats['total'] > 0 else 0
-                cache_text = (
-                    f"\n💾 LLM кэш:\n"
-                    f"Хиты: {stats['hits']} / {stats['total']} ({hit_rate:.1f}%)\n"
-                    f"Записей: {stats['size']}\n"
-                )
-            except Exception as e:
-                logger.error(f"Error getting cache stats: {e}")
-        
+
+        tick_state = self._get_ai_tick_state()
+        gate_disabled = tick_state.get("disabled", [])
+        combined_degraded = sorted(set(degraded_features + gate_disabled))
+        degraded_text = ", ".join(combined_degraded) if combined_degraded else "-"
+
         status_text = (
             f"📊 Статус бота:\n\n"
             f"Статус: {'⏸️ PAUSED' if self.is_paused else '✅ RUNNING'}\n"
@@ -679,13 +687,25 @@ class NewsBot:
             f"📝 Пересказы: {ai_usage['summarize_requests']} запр., {ai_usage['summarize_tokens']:,} токенов\n"
             f"🏷️ Категории: {ai_usage['category_requests']} запр., {ai_usage['category_tokens']:,} токенов\n"
             f"✨ Очистка текста: {ai_usage['text_clean_requests']} запр., {ai_usage['text_clean_tokens']:,} токенов\n"
-            f"{daily_budget_text}"
-            f"{cache_text}"
+            f"───────────────────────────────\n"
+            f"📈 ИИ сегодня:\n"
+            f"Вызовы: {daily_calls}\n"
+            f"Токены: {daily_tokens:,}\n"
+            f"Стоимость: ${daily_cost:.4f}\n"
+            f"Cache hit rate: {cache_hit_rate:.1f}%\n"
+            f"Вызовы в тике: {tick_state.get('calls', 0)}\n"
+            f"Budget state: {budget_state}\n"
+            f"Degraded: {degraded_text}\n"
             f"───────────────────────────────"
             f"{channels_text}"
             f"───────────────────────────────"
             f"{sites_text}"
         )
+        return status_text
+    
+    async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /status"""
+        status_text = self._build_status_text()
         await update.message.reply_text(status_text, disable_web_page_preview=True)
     
     async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1434,43 +1454,8 @@ class NewsBot:
             # Показать статус бота
             await query.answer()
             user_id = query.from_user.id
-            
-            # Получить статус
-            stats = self.db.get_stats()
-            ai_usage = self.db.get_ai_usage()
-            channels_text, sites_text = self._build_source_status_sections(window_hours=24)
-            
-            # Calculate cost
-            input_tokens = int(ai_usage['total_tokens'] * 0.6)
-            output_tokens = int(ai_usage['total_tokens'] * 0.4)
-            input_cost = (input_tokens / 1_000_000.0) * 0.14
-            output_cost = (output_tokens / 1_000_000.0) * 0.28
-            estimated_cost = input_cost + output_cost
-            
-            status_text = (
-                f"📊 Статус бота:\n\n"
-                f"Статус: {'⏸️ PAUSED' if self.is_paused else '✅ RUNNING'}\n"
-                f"Всего опубликовано: {stats['total']}\n"
-                f"За сегодня: {stats['today']}\n"
-                f"Интервал проверки: {CHECK_INTERVAL_SECONDS} сек\n"
-                f"───────────────────────────────\n"
-                f"💰 Расходы DeepSeek API:\n"
-                f"💵 Текущие затраты: $7.63 USD\n"
-                f"🔢 Использовано токенов: 60,815,926\n"
-                f"📡 API запросов: 183,778\n\n"
-                f"🧠 ИИ использование (накопительное):\n"
-                f"Всего запросов: {ai_usage['total_requests']}\n"
-                f"Всего токенов: {ai_usage['total_tokens']:,}\n"
-                f"Расчетная стоимость: ${estimated_cost:.4f}\n\n"
-                f"📝 Пересказы: {ai_usage['summarize_requests']} запр., {ai_usage['summarize_tokens']:,} токенов\n"
-                f"🏷️ Категории: {ai_usage['category_requests']} запр., {ai_usage['category_tokens']:,} токенов\n"
-                f"✨ Очистка текста: {ai_usage['text_clean_requests']} запр., {ai_usage['text_clean_tokens']:,} токенов\n\n"
-                f"💡 Обновить из DeepSeek: /update_stats\n"
-                f"───────────────────────────────"
-                f"{channels_text}"
-                f"{sites_text}"
-                f"───────────────────────────────"
-            )
+
+            status_text = self._build_status_text()
             
             await context.bot.send_message(
                 chat_id=user_id,
@@ -1819,6 +1804,9 @@ class NewsBot:
             # Get effective AI level for summary
             from core.services.access_control import get_effective_level
             level = get_effective_level(self.db, str(user_id or 'global'), 'summary')
+
+            if not self._ai_tick_allow("summary"):
+                return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "skipped_by_gate": True}
             
             summary, token_usage = await self.deepseek_client.summarize(
                 title=title,
@@ -2054,6 +2042,14 @@ class NewsBot:
         try:
             # Собираем новости
             logger.info("Starting news collection...")
+            tick_id = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+            self._begin_ai_tick(tick_id)
+            cache_hits_start = 0
+            if self.deepseek_client.cache:
+                try:
+                    cache_hits_start = int(self.deepseek_client.cache.get_stats().get("hits", 0) or 0)
+                except Exception:
+                    cache_hits_start = 0
             news_items = await self.collector.collect_all()
 
             app_env = get_app_env()
@@ -2252,12 +2248,16 @@ class NewsBot:
                             summary_level = ai_manager.get_level('global', 'summary')
                             checksum = news.get('checksum')
 
-                            summary, _usage = await self.deepseek_client.summarize(
-                                title=news.get('title', ''),
-                                text=full_text[:2000],
-                                level=summary_level,
-                                checksum=checksum
-                            )
+                            summary = None
+                            if self._ai_tick_allow("summary"):
+                                summary, _usage = await self.deepseek_client.summarize(
+                                    title=news.get('title', ''),
+                                    text=full_text[:2000],
+                                    level=summary_level,
+                                    checksum=checksum
+                                )
+                            else:
+                                logger.info("AI summary skipped by tick gate")
 
                             if summary:
                                 self.db.save_summary(news_id, summary)
@@ -2336,6 +2336,34 @@ class NewsBot:
             if self.drop_counters:
                 logger.info(f"Drop reasons summary: {self.drop_counters}")
                 self.drop_counters = {}
+
+            cache_hits_end = cache_hits_start
+            if self.deepseek_client.cache:
+                try:
+                    cache_hits_end = int(self.deepseek_client.cache.get_stats().get("hits", 0) or 0)
+                except Exception:
+                    cache_hits_end = cache_hits_start
+            cache_hits_tick = max(0, cache_hits_end - cache_hits_start)
+
+            budget_state = "OK"
+            if self.deepseek_client.budget:
+                try:
+                    budget_state = self.deepseek_client.budget.get_state().get("budget_state", "OK")
+                except Exception:
+                    budget_state = "OK"
+
+            tick_state = self._get_ai_tick_state()
+            tick_log = {
+                "tick_id": tick_id,
+                "fetched": len(news_items),
+                "parsed": len(news_items),
+                "deduped": max(0, len(news_items) - published_count),
+                "published": published_count,
+                "ai_calls": tick_state.get("calls", 0),
+                "ai_cache_hits": cache_hits_tick,
+                "budget_state": budget_state,
+            }
+            logger.info("TICK_STATS %s", json.dumps(tick_log, ensure_ascii=True))
             return published_count
         
         except Exception as e:
@@ -2419,10 +2447,6 @@ class NewsBot:
         from core.services.access_control import get_effective_level
         from utils.hashtags_taxonomy import build_hashtags, build_hashtags_en
 
-        # Default fallback tags
-        fallback_ru = self._get_category_tag(category, 'ru')
-        fallback_en = self._get_category_tag(category, 'en')
-
         level = get_effective_level(self.db, 'global', 'hashtags')
 
         try:
@@ -2430,20 +2454,22 @@ class NewsBot:
                 title=title,
                 text=text,
                 language=language,
+                chat_id='global',
                 ai_client=self.deepseek_client,
                 level=level,
+                ai_call_guard=self._ai_tick_allow,
             )
         except Exception as e:
             logger.debug(f"Hashtag taxonomy failed: {e}")
             tags_ru = []
 
         if not tags_ru:
-            tags_ru = [fallback_ru]
+            tags_ru = ["#Россия", "#Общество"]
 
-        tags_en = build_hashtags_en(tags_ru) if language == 'en' else build_hashtags_en(tags_ru)
+        tags_en = build_hashtags_en(tags_ru)
 
-        hashtags_ru = " ".join(tags_ru) if tags_ru else fallback_ru
-        hashtags_en = " ".join(tags_en) if tags_en else fallback_en
+        hashtags_ru = " ".join(tags_ru)
+        hashtags_en = " ".join(tags_en)
         return hashtags_ru, hashtags_en
     
     async def run_periodic_collection(self):

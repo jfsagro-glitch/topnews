@@ -54,3 +54,5 @@ htmlcov/
 # Temporary
 *.tmp
 .temp/
+*.lnk
+topnews_all.txt

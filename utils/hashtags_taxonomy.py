@@ -182,6 +182,12 @@ def normalize_tag(text: str) -> str:
     return cleaned
 
 
+def _normalize_key(tag: str) -> str:
+    normalized = normalize_tag(tag)
+    normalized = normalized.casefold().replace("ё", "е")
+    return normalized
+
+
 def _find_alias(text_lower: str, aliases: dict[str, list[str]]) -> Optional[str]:
     for tag, names in aliases.items():
         for name in names:
@@ -208,15 +214,12 @@ def detect_geo_tags(title: str, text: str, language: str = "ru") -> dict:
     if region_tag or city_tag:
         is_russia = True
 
-    if language != "ru" and not is_russia:
+    if is_world and not is_russia:
         g0 = "#Мир"
+    elif is_russia and not is_world:
+        g0 = "#Россия"
     else:
-        if is_russia and not is_world:
-            g0 = "#Россия"
-        elif is_world and not is_russia:
-            g0 = "#Мир"
-        else:
-            g0 = "#Россия" if language == "ru" else "#Мир"
+        g0 = "#Россия" if language == "ru" else "#Мир"
 
     if g0 == "#Россия":
         if region_tag or city_tag:
@@ -237,14 +240,7 @@ def detect_geo_tags(title: str, text: str, language: str = "ru") -> dict:
         if g1 is None:
             g1 = "#ЦФО"
 
-    needs_ai = False
-    if g0 == "#Россия":
-        if g1 is None:
-            needs_ai = True
-        elif g1 == "#ЦФО" and (g2 is None or g3 is None):
-            needs_ai = True
-
-    return {"g0": g0, "g1": g1, "g2": g2, "g3": g3, "needs_ai": needs_ai}
+    return {"g0": g0, "g1": g1, "g2": g2, "g3": g3, "needs_ai": False}
 
 
 def detect_rubric_tags(title: str, text: str) -> dict:
@@ -253,7 +249,7 @@ def detect_rubric_tags(title: str, text: str) -> dict:
         for keyword in keywords:
             if keyword in combined:
                 return {"r0": tag, "needs_ai": False}
-    return {"r0": "#Общество", "needs_ai": True}
+    return {"r0": "#Общество", "needs_ai": False}
 
 
 def get_allowlist() -> dict:
@@ -273,12 +269,31 @@ def _validate_allowed(tag: Optional[str], allow: list[str]) -> Optional[str]:
     return tag if tag in allow else None
 
 
+def _validate_ai_result(ai_result: dict, allow: dict) -> dict | None:
+    if not isinstance(ai_result, dict):
+        return None
+    validated = {}
+    for key in ("g0", "g1", "g2", "g3", "r0"):
+        raw = ai_result.get(key)
+        if raw is None:
+            validated[key] = None
+            continue
+        allowed = allow.get(key, [])
+        cleaned = normalize_tag(raw)
+        if cleaned not in allowed:
+            return None
+        validated[key] = cleaned
+    return validated
+
+
 async def build_hashtags(
     title: str,
     text: str,
     language: str = "ru",
+    chat_id: str | None = None,
     ai_client=None,
     level: int = 0,
+    ai_call_guard=None,
 ) -> list[str]:
     geo = detect_geo_tags(title, text, language=language)
     rubric = detect_rubric_tags(title, text)
@@ -290,27 +305,34 @@ async def build_hashtags(
     g3 = _validate_allowed(geo.get("g3"), allow["g3"])
     r0 = _validate_allowed(rubric.get("r0"), allow["r0"])
 
-    needs_ai = bool(geo.get("needs_ai") or rubric.get("needs_ai"))
+    needs_ai = bool(g0 is None or r0 is None)
 
     if ai_client and level >= 1 and needs_ai:
-        detected = {"g0": g0, "g1": g1, "g2": g2, "g3": g3, "r0": r0}
-        ai_result, _usage = await ai_client.classify_hashtags(title, text, allow, detected, level=level)
-        g0 = g0 or _validate_allowed(ai_result.get("g0"), allow["g0"])
-        g1 = g1 or _validate_allowed(ai_result.get("g1"), allow["g1"])
-        g2 = g2 or _validate_allowed(ai_result.get("g2"), allow["g2"])
-        g3 = g3 or _validate_allowed(ai_result.get("g3"), allow["g3"])
-        r0 = r0 or _validate_allowed(ai_result.get("r0"), allow["r0"])
+        if ai_call_guard and not ai_call_guard("hashtags_ai"):
+            needs_ai = False
+        if needs_ai:
+            detected = {"g0": g0, "g1": g1, "g2": g2, "g3": g3, "r0": r0}
+            ai_result, _usage = await ai_client.classify_hashtags(title, text, allow, detected, level=level)
+            validated = _validate_ai_result(ai_result, allow)
+            if validated:
+                g0 = g0 or validated.get("g0")
+                g1 = g1 or validated.get("g1")
+                g2 = g2 or validated.get("g2")
+                g3 = g3 or validated.get("g3")
+                r0 = r0 or validated.get("r0")
 
     if g0 == "#Россия" and g1 is None:
         g1 = "#ЦФО"
-    if g0 == "#Россия" and g1 == "#ЦФО" and g2 is None:
-        g2 = "#Москва"
-    if g0 == "#Россия" and g1 == "#ЦФО" and g3 is None:
-        g3 = "#Москва"
     if r0 is None:
         r0 = "#Общество"
 
-    if g2 and g3 and g2 == g3:
+    if g0 == "#Мир":
+        g1 = None
+        g2 = None
+        g3 = None
+        r0 = "#Общество"
+
+    if g2 and g3 and _normalize_key(g2) == _normalize_key(g3):
         g3 = None
 
     tags = [g0]
@@ -320,15 +342,39 @@ async def build_hashtags(
             tags.extend([g2, g3])
     tags.append(r0)
 
-    return [tag for tag in tags if tag]
+    deduped = []
+    seen = set()
+    for tag in tags:
+        if not tag:
+            continue
+        key = _normalize_key(tag)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(tag)
+
+    return deduped
 
 
 def build_hashtags_en(tags_ru: list[str]) -> list[str]:
-    g0 = "#World"
-    r0 = "#News"
+    en_map = {
+        "#Россия": "#Russia",
+        "#Мир": "#World",
+        "#Москва": "#Moscow",
+        "#МосковскаяОбласть": "#MoscowRegion",
+        **EN_RUBRIC_MAP,
+    }
+
+    converted = []
+    seen = set()
     for tag in tags_ru:
-        if tag == "#Россия":
-            g0 = "#Russia"
-        if tag in EN_RUBRIC_MAP:
-            r0 = EN_RUBRIC_MAP[tag]
-    return [g0, r0]
+        if not tag:
+            continue
+        normalized = normalize_tag(tag)
+        mapped = en_map.get(normalized, normalized)
+        key = _normalize_key(mapped)
+        if key in seen:
+            continue
+        seen.add(key)
+        converted.append(mapped)
+    return converted

@@ -847,6 +847,10 @@ class SourceCollector:
                 if not AI_CATEGORY_VERIFICATION_ENABLED:
                     return None
             
+            if self.bot and hasattr(self.bot, "_ai_tick_allow"):
+                if not self.bot._ai_tick_allow("cleanup"):
+                    return None
+
             # AI cleaning for HTML sources only
             clean_text, token_usage = await self.ai_client.extract_clean_text(title, text, level=cleanup_level)
             

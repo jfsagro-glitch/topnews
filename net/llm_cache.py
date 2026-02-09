@@ -23,6 +23,8 @@ class LLMCacheManager:
         """
         self.db = db
         self._ensure_cache_table()
+        self._hits = 0
+        self._misses = 0
     
     def _ensure_cache_table(self):
         """Ensure llm_cache table exists"""
@@ -108,6 +110,7 @@ class LLMCacheManager:
             
             if row:
                 logger.debug(f"LLM cache HIT: {cache_key[:16]}...")
+                self._hits += 1
                 return {
                     'response': json.loads(row[0]),
                     'input_tokens': row[1],
@@ -117,6 +120,7 @@ class LLMCacheManager:
                 }
             
             logger.debug(f"LLM cache MISS: {cache_key[:16]}...")
+            self._misses += 1
             return None
         except Exception as e:
             logger.debug(f"Error getting LLM cache: {e}")
@@ -180,19 +184,19 @@ class LLMCacheManager:
                     'size': row[1] or 0,  # Active entries
                     'total': row[0] or 0,
                     'expired': row[2] or 0,
-                    'hits': 0,  # Hit/miss tracking requires app-level counter
-                    'misses': 0
+                    'hits': self._hits,
+                    'misses': self._misses
                 }
-            return {'size': 0, 'total': 0, 'expired': 0, 'hits': 0, 'misses': 0}
+            return {'size': 0, 'total': 0, 'expired': 0, 'hits': self._hits, 'misses': self._misses}
         except Exception as e:
             logger.debug(f"Error getting cache stats: {e}")
-            return {'size': 0, 'total': 0, 'expired': 0, 'hits': 0, 'misses': 0}
+            return {'size': 0, 'total': 0, 'expired': 0, 'hits': self._hits, 'misses': self._misses}
 
 
 class BudgetGuard:
     """Manages daily LLM budget limits"""
     
-    def __init__(self, db, daily_limit_usd: float = 1.0):
+    def __init__(self, db, daily_limit_usd: float = 1.0, daily_limit_tokens: int = 0):
         """
         Initialize budget guard.
         
@@ -202,60 +206,57 @@ class BudgetGuard:
         """
         self.db = db
         self.daily_limit_usd = daily_limit_usd
+        self.daily_limit_tokens = daily_limit_tokens
     
     def get_daily_cost(self) -> float:
         """Get today's LLM cost in USD"""
         try:
-            today = datetime.now().date().isoformat()
-            cursor = self.db._conn.cursor()
-            cursor.execute('SELECT daily_cost_usd, daily_cost_date FROM ai_usage WHERE id = 1')
-            row = cursor.fetchone()
-            
-            if row and row[1] == today:
-                return row[0] or 0.0
-            return 0.0
+            daily = self.db.get_ai_usage_daily()
+            return daily.get('cost_usd', 0.0) or 0.0
         except Exception as e:
             logger.debug(f"Error getting daily cost: {e}")
             return 0.0
+
+    def get_daily_tokens(self) -> int:
+        try:
+            daily = self.db.get_ai_usage_daily()
+            return int((daily.get('tokens_in', 0) or 0) + (daily.get('tokens_out', 0) or 0))
+        except Exception as e:
+            logger.debug(f"Error getting daily tokens: {e}")
+            return 0
     
     def add_cost(self, cost_usd: float):
-        """Add to today's cost"""
+        """Add to today's cost (legacy wrapper)."""
         try:
-            today = datetime.now().date().isoformat()
-            
-            with self.db._write_lock:
-                cursor = self.db._conn.cursor()
-                cursor.execute('SELECT daily_cost_usd, daily_cost_date FROM ai_usage WHERE id = 1')
-                row = cursor.fetchone()
-                
-                if row and row[1] == today:
-                    new_cost = (row[0] or 0.0) + cost_usd
-                else:
-                    new_cost = cost_usd
-                
-                cursor.execute('''
-                    UPDATE ai_usage
-                    SET daily_cost_usd = ?,
-                        daily_cost_date = ?,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = 1
-                ''', (new_cost, today))
-                self.db._conn.commit()
-                
+            self.db.add_ai_usage_daily(tokens_in=0, tokens_out=0, cost_usd=cost_usd, calls=0)
+            if self.daily_limit_usd > 0:
+                new_cost = self.get_daily_cost()
                 if new_cost >= self.daily_limit_usd * 0.9:
-                    logger.warning(f"⚠️ Daily LLM budget at {new_cost/self.daily_limit_usd*100:.1f}% (${new_cost:.4f}/${self.daily_limit_usd})")
+                    logger.warning(
+                        f"⚠️ Daily LLM budget at {new_cost/self.daily_limit_usd*100:.1f}% "
+                        f"(${new_cost:.4f}/${self.daily_limit_usd})"
+                    )
         except Exception as e:
             logger.debug(f"Error adding cost: {e}")
     
-    def can_make_request(self) -> bool:
+    def can_make_request(self, tokens_estimate: int = 0) -> bool:
         """Check if request is within budget"""
         current = self.get_daily_cost()
-        if current >= self.daily_limit_usd:
+        if self.daily_limit_usd > 0 and current >= self.daily_limit_usd:
             logger.warning(f"❌ Daily LLM budget exceeded: ${current:.4f} >= ${self.daily_limit_usd}")
             return False
+        if self.daily_limit_tokens > 0:
+            current_tokens = self.get_daily_tokens()
+            if current_tokens + max(0, tokens_estimate) >= self.daily_limit_tokens:
+                logger.warning(
+                    f"❌ Daily LLM token budget exceeded: {current_tokens} >= {self.daily_limit_tokens}"
+                )
+                return False
         return True
     
     def is_economy_mode(self) -> bool:
         """Check if should use economy mode (>80% budget)"""
+        if self.daily_limit_usd <= 0:
+            return False
         current = self.get_daily_cost()
         return current >= (self.daily_limit_usd * 0.8)

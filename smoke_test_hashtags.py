@@ -25,8 +25,7 @@ async def _run() -> None:
     assert tags[0] == "#Россия"
     assert tags[1] == "#ЦФО"
     assert tags[2] == "#Москва"
-    assert tags[3] == "#Москва"
-    assert tags[4].startswith("#")
+    assert tags[3].startswith("#")
     assert_allowed(tags)
 
     tags = await build_hashtags("В Тверской области обновили трассу", "В Тверской области завершили ремонт.")
