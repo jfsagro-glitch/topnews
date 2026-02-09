@@ -38,7 +38,7 @@ except (ImportError, ValueError):
 
 from db.database import NewsDatabase
 from utils.text_cleaner import format_telegram_message
-from utils.content_quality import compute_url_hash
+from utils.content_quality import compute_simhash, compute_url_hash, hamming_distance, normalize_url
 from utils.date_parser import get_project_now, parse_datetime_value, parse_url_date, to_project_tz
 from sources.source_collector import SourceCollector
 from core.services.access_control import AILevelManager, get_llm_profile
@@ -2062,16 +2062,27 @@ class NewsBot:
             published_count = 0
             max_publications = 40  # Лимит публикаций за цикл (защита от rate limiting)
             
-            # Кэш заголовков в текущей сессии (защита от дубликатов за весь цикл сбора)
+            # Кэш дубликатов в текущей сессии (защита от повторов в одном цикле)
             session_titles = set()  # normalized titles for duplicate detection
+            session_url_hashes = set()
+            session_checksums = set()
+            session_url_normalized = set()
+            recent_simhashes = self.db.get_recent_simhashes(hours=48, limit=1500)
             
             # Публикуем каждую новость
             for news in news_items:
-                # Ensure fetched_at and url_hash are present
+                # Ensure fetched_at and URL fingerprints are present
                 if not news.get('fetched_at'):
                     news['fetched_at'] = datetime.utcnow().isoformat()
+                if not news.get('url_normalized') and news.get('url'):
+                    news['url_normalized'] = normalize_url(news.get('url'))
                 if not news.get('url_hash') and news.get('url'):
-                    news['url_hash'] = compute_url_hash(news.get('url'))
+                    url_for_hash = news.get('url_normalized') or news.get('url')
+                    news['url_hash'] = compute_url_hash(url_for_hash)
+                if not news.get('simhash'):
+                    title_for_hash = news.get('title', '')
+                    text_for_hash = news.get('clean_text') or news.get('text', '')
+                    news['simhash'] = compute_simhash(text_for_hash, title=title_for_hash)
 
                 # First-seen check for confidence=none
                 if (news.get('published_confidence') or 'none').lower() == 'none':
@@ -2118,6 +2129,51 @@ class NewsBot:
                     logger.debug(f"Skipping duplicate in session: {title[:50]}")
                     continue
                 session_titles.add(normalized)
+
+                url_hash = news.get('url_hash') or ''
+                if url_hash and url_hash in session_url_hashes:
+                    logger.debug(f"Skipping duplicate url_hash in session: {title[:50]}")
+                    continue
+                if url_hash:
+                    session_url_hashes.add(url_hash)
+
+                checksum = news.get('checksum') or ''
+                if checksum and checksum in session_checksums:
+                    logger.debug(f"Skipping duplicate checksum in session: {title[:50]}")
+                    continue
+                if checksum:
+                    session_checksums.add(checksum)
+
+                url_normalized = news.get('url_normalized') or ''
+                if url_normalized and url_normalized in session_url_normalized:
+                    logger.debug(f"Skipping duplicate url_normalized in session: {title[:50]}")
+                    continue
+                if url_normalized:
+                    session_url_normalized.add(url_normalized)
+
+                # Проверка дубликатов по URL hash / guid / URL canonical
+                if self.db.is_seen_guid_or_url_hash(news.get('guid'), url_hash):
+                    logger.debug(f"Skipping duplicate guid/url_hash: {title[:50]}")
+                    continue
+                if url_normalized and self.db.is_url_normalized_seen(url_normalized):
+                    logger.debug(f"Skipping duplicate url_normalized: {title[:50]}")
+                    continue
+
+                # Проверка дубликатов по checksum (контент) в окне 48 часов
+                if checksum and self.db.is_checksum_recent(checksum, hours=48):
+                    logger.debug(f"Skipping duplicate checksum: {title[:50]}")
+                    continue
+
+                # Проверка near-duplicate по simhash
+                simhash = news.get('simhash')
+                if isinstance(simhash, int) and recent_simhashes:
+                    for existing in recent_simhashes:
+                        if hamming_distance(simhash, existing) <= 6:
+                            logger.debug(f"Skipping near-duplicate simhash: {title[:50]}")
+                            simhash = None
+                            break
+                if simhash is None and news.get('simhash') is not None:
+                    continue
                 
                 # Проверяем дубликат по заголовку в БД (защита от одной новости на разных источниках)
                 if self.db.is_similar_title_published(title, threshold=0.85):  # Increased threshold to 0.85
@@ -2152,7 +2208,9 @@ class NewsBot:
                     fetched_at=news.get('fetched_at'),
                     first_seen_at=news.get('first_seen_at') or news.get('fetched_at'),
                     url_hash=news.get('url_hash'),
+                    url_normalized=news.get('url_normalized'),
                     guid=news.get('guid'),
+                    simhash=news.get('simhash'),
                     quality_score=news.get('quality_score'),
                     hashtags_ru=hashtags_ru,
                     hashtags_en=hashtags_en,
@@ -2161,6 +2219,9 @@ class NewsBot:
                 if not news_id:
                     logger.debug(f"Skipping duplicate URL: {news.get('url')}")
                     continue
+
+                if isinstance(news.get('simhash'), int):
+                    recent_simhashes.insert(0, news['simhash'])
 
                 self.db.record_source_event(news.get('source', ''), "success")
 
@@ -2233,6 +2294,8 @@ class NewsBot:
                     'category': news_category,
                     'clean_text': news.get('clean_text') or news_text,
                     'checksum': news.get('checksum'),
+                    'url_normalized': news.get('url_normalized'),
+                    'simhash': news.get('simhash'),
                     'language': news.get('language'),
                     'published_date': news.get('published_date'),
                     'published_time': news.get('published_time'),

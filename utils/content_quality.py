@@ -23,17 +23,26 @@ def compute_checksum(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
-def compute_url_hash(url: str) -> str:
-    """Return sha256 checksum for normalized URL."""
+def normalize_url(url: str) -> str:
+    """Return a canonicalized URL string for deduplication."""
     raw = (url or "").strip()
     if not raw:
-        return hashlib.sha256(b"").hexdigest()
+        return ""
 
     parts = urlsplit(raw)
     scheme = (parts.scheme or "").lower()
     netloc = (parts.netloc or "").lower()
     path = parts.path or ""
     query = parts.query or ""
+
+    if ":" in netloc:
+        host, port = netloc.rsplit(":", 1)
+        if (scheme == "http" and port == "80") or (scheme == "https" and port == "443"):
+            netloc = host
+
+    if path != "/":
+        path = path.rstrip("/")
+
     if query:
         query_pairs = parse_qsl(query, keep_blank_values=True)
         filtered = []
@@ -46,8 +55,46 @@ def compute_url_hash(url: str) -> str:
             filtered.append((key, value))
         query = urlencode(sorted(filtered)) if filtered else ""
 
-    normalized = urlunsplit((scheme, netloc, path, query, ""))
+    return urlunsplit((scheme, netloc, path, query, ""))
+
+
+def compute_url_hash(url: str) -> str:
+    """Return sha256 checksum for normalized URL."""
+    normalized = normalize_url(url)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _tokenize_for_simhash(text: str) -> list[str]:
+    tokens = re.findall(r"[A-Za-z0-9А-Яа-яЁё]+", text or "")
+    return [t.lower() for t in tokens if len(t) >= 3]
+
+
+def compute_simhash(text: str, title: str = "") -> int | None:
+    """Return 64-bit simhash for near-duplicate detection."""
+    combined = f"{title} {text}".strip()
+    tokens = _tokenize_for_simhash(combined)
+    if not tokens:
+        return None
+
+    weights = [0] * 64
+    for token in tokens:
+        digest = hashlib.sha1(token.encode("utf-8")).digest()
+        value = int.from_bytes(digest[:8], "big")
+        for bit in range(64):
+            if value & (1 << bit):
+                weights[bit] += 1
+            else:
+                weights[bit] -= 1
+
+    fingerprint = 0
+    for bit, weight in enumerate(weights):
+        if weight > 0:
+            fingerprint |= (1 << bit)
+    return fingerprint
+
+
+def hamming_distance(a: int, b: int) -> int:
+    return (a ^ b).bit_count()
 
 
 def detect_language(text: str, title: str = "") -> str:

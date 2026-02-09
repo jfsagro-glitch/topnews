@@ -16,7 +16,15 @@ from parsers.rss_parser import RSSParser
 from parsers.html_parser import HTMLParser
 from urllib.parse import urlparse
 from utils.content_classifier import ContentClassifier
-from utils.content_quality import content_quality_score, compute_checksum, detect_language, is_low_quality
+from utils.content_quality import (
+    content_quality_score,
+    compute_checksum,
+    compute_simhash,
+    compute_url_hash,
+    detect_language,
+    is_low_quality,
+    normalize_url,
+)
 from utils.date_parser import parse_published_info, split_date_time
 from utils.article_extractor import extract_article_text
 from utils.site_extractors import extract_lenta, extract_ria
@@ -444,6 +452,9 @@ class SourceCollector:
 
                     lang = detect_language(clean_text, title)
                     checksum = compute_checksum(clean_text)
+                    simhash = compute_simhash(clean_text, title=title)
+                    normalized_url = normalize_url(item_url) if item_url else ""
+                    url_hash = compute_url_hash(normalized_url) if normalized_url else ""
                     if not published_at:
                         fallback_dt = self._coerce_datetime(item.get('fetched_at')) or datetime.utcnow()
                         published_at = fallback_dt
@@ -473,6 +484,7 @@ class SourceCollector:
                     item['raw_text'] = raw_text
                     item['clean_text'] = clean_text
                     item['checksum'] = checksum
+                    item['simhash'] = simhash
                     item['language'] = lang
                     item['published_at'] = pub_iso
                     item['published_date'] = published_date
@@ -485,6 +497,8 @@ class SourceCollector:
                     item['quality_score'] = score
                     if item_url:
                         item['domain'] = urlparse(item_url).netloc.lower()
+                        item['url_normalized'] = normalized_url
+                        item['url_hash'] = url_hash
                     item['text'] = clean_text
                     filtered_news.append(item)
                 return filtered_news
@@ -601,6 +615,9 @@ class SourceCollector:
 
                     lang = detect_language(clean_text, title)
                     checksum = compute_checksum(clean_text)
+                    simhash = compute_simhash(clean_text, title=title)
+                    normalized_url = normalize_url(item_url) if item_url else ""
+                    url_hash = compute_url_hash(normalized_url) if normalized_url else ""
                     if not published_at:
                         fallback_dt = self._coerce_datetime(item.get('fetched_at')) or datetime.utcnow()
                         published_at = fallback_dt
@@ -629,6 +646,7 @@ class SourceCollector:
                     item['raw_text'] = raw_text
                     item['clean_text'] = clean_text
                     item['checksum'] = checksum
+                    item['simhash'] = simhash
                     item['language'] = lang
                     item['published_at'] = pub_iso
                     item['published_date'] = published_date
@@ -641,6 +659,8 @@ class SourceCollector:
                     item['quality_score'] = score
                     if item_url:
                         item['domain'] = urlparse(item_url).netloc.lower()
+                        item['url_normalized'] = normalized_url
+                        item['url_hash'] = url_hash
                     item['text'] = clean_text
                     filtered_news.append(item)
                 return filtered_news

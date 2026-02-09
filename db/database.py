@@ -4,7 +4,7 @@
 import sqlite3
 import time
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Tuple, Optional
 import logging
 import os
@@ -58,7 +58,9 @@ class NewsDatabase:
                     fetched_at TIMESTAMP,
                     first_seen_at TIMESTAMP,
                     url_hash TEXT,
+                    url_normalized TEXT,
                     guid TEXT,
+                    simhash INTEGER,
                     quality_score REAL,
                     hashtags_ru TEXT,
                     hashtags_en TEXT,
@@ -349,7 +351,9 @@ class NewsDatabase:
                 fetched_at TIMESTAMP,
                 first_seen_at TIMESTAMP,
                 url_hash TEXT,
+                url_normalized TEXT,
                 guid TEXT,
+                simhash INTEGER,
                 quality_score REAL,
                 hashtags_ru TEXT,
                 hashtags_en TEXT,
@@ -407,7 +411,9 @@ class NewsDatabase:
                 'fetched_at': 'TIMESTAMP',
                 'first_seen_at': 'TIMESTAMP',
                 'url_hash': 'TEXT',
+                'url_normalized': 'TEXT',
                 'guid': 'TEXT',
+                'simhash': 'INTEGER',
                 'quality_score': 'REAL',
                 'hashtags_ru': 'TEXT',
                 'hashtags_en': 'TEXT',
@@ -479,7 +485,16 @@ class NewsDatabase:
                 CREATE INDEX IF NOT EXISTS idx_url_hash ON published_news(url_hash)
             ''')
             cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_url_normalized ON published_news(url_normalized)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_simhash ON published_news(simhash)
+            ''')
+            cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_guid ON published_news(guid)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_checksum ON published_news(checksum)
             ''')
         except Exception as e:
             logger.debug(f"Error ensuring indexes: {e}")
@@ -505,7 +520,9 @@ class NewsDatabase:
         fetched_at: str | None = None,
         first_seen_at: str | None = None,
         url_hash: str | None = None,
+        url_normalized: str | None = None,
         guid: str | None = None,
+        simhash: int | None = None,
         quality_score: float | None = None,
         hashtags_ru: str | None = None,
         hashtags_en: str | None = None,
@@ -514,6 +531,8 @@ class NewsDatabase:
         Добавляет новость в БД.
         Возвращает news_id если добавлена, иначе None.
         """
+        if published_at is None:
+            published_at = datetime.now(timezone.utc).isoformat()
         # Retry loop to handle transient "database is locked" errors
         attempts = 3
         for attempt in range(1, attempts + 1):
@@ -526,16 +545,16 @@ class NewsDatabase:
                             raw_text, clean_text, checksum, language, domain,
                             extraction_method, published_at, published_date,
                             published_time, published_confidence, published_source,
-                            fetched_at, first_seen_at, url_hash, guid,
+                            fetched_at, first_seen_at, url_hash, url_normalized, guid, simhash,
                             quality_score, hashtags_ru, hashtags_en
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         url, title, source, category, lead_text,
                         raw_text, clean_text, checksum, language, domain,
                         extraction_method, published_at, published_date,
                         published_time, published_confidence, published_source,
-                        fetched_at, first_seen_at, url_hash, guid,
+                        fetched_at, first_seen_at, url_hash, url_normalized, guid, simhash,
                         quality_score, hashtags_ru, hashtags_en
                     ))
                     self._conn.commit()
@@ -612,6 +631,52 @@ class NewsDatabase:
         except Exception as e:
             logger.error(f"Error checking guid/url_hash: {e}")
             return False
+
+    def is_url_normalized_seen(self, url_normalized: str | None) -> bool:
+        if not url_normalized:
+            return False
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute('SELECT 1 FROM published_news WHERE url_normalized = ? LIMIT 1', (url_normalized,))
+            return cursor.fetchone() is not None
+        except Exception as e:
+            logger.error(f"Error checking url_normalized: {e}")
+            return False
+
+    def is_checksum_recent(self, checksum: str | None, hours: int = 48) -> bool:
+        if not checksum:
+            return False
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT 1 FROM published_news
+                WHERE checksum = ? AND published_at > datetime('now', '-{int(hours)} hour')
+                LIMIT 1
+                """,
+                (checksum,)
+            )
+            return cursor.fetchone() is not None
+        except Exception as e:
+            logger.error(f"Error checking checksum: {e}")
+            return False
+
+    def get_recent_simhashes(self, hours: int = 48, limit: int = 1000) -> List[int]:
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT simhash FROM published_news
+                WHERE simhash IS NOT NULL AND published_at > datetime('now', '-{int(hours)} hour')
+                ORDER BY published_at DESC
+                LIMIT ?
+                """,
+                (limit,)
+            )
+            return [row[0] for row in cursor.fetchall() if row and row[0] is not None]
+        except Exception as e:
+            logger.error(f"Error fetching simhashes: {e}")
+            return []
     
     def is_similar_title_published(self, title: str, threshold: float = 0.75) -> bool:
         """Проверяет, есть ли в БД новость с похожим заголовком за последние 24 часа"""
@@ -941,11 +1006,11 @@ class NewsDatabase:
         try:
             cursor = self._conn.cursor()
             cursor.execute('''
-                SELECT id, url, title, source, category, lead_text, clean_text, raw_text,
-                       checksum, language, domain, extraction_method,
-                       ai_summary, ai_summary_created_at, published_at,
-                       published_date, published_time, quality_score,
-                       hashtags_ru, hashtags_en
+                  SELECT id, url, title, source, category, lead_text, clean_text, raw_text,
+                      checksum, language, domain, extraction_method,
+                      ai_summary, ai_summary_created_at, published_at,
+                      published_date, published_time, quality_score,
+                      hashtags_ru, hashtags_en, url_normalized, simhash
                 FROM published_news WHERE id = ?
             ''', (news_id,))
             row = cursor.fetchone()
@@ -972,6 +1037,8 @@ class NewsDatabase:
                 'quality_score': row[17],
                 'hashtags_ru': row[18] or "",
                 'hashtags_en': row[19] or "",
+                'url_normalized': row[20],
+                'simhash': row[21],
             }
         except Exception as e:
             logger.error(f"Error getting news by id: {e}")

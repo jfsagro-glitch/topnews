@@ -79,12 +79,16 @@
     ├─ Определение категории
     ├─ Парсинг даты публикации (confidence: high/medium/low/none)
     └─ Фильтр актуальности по confidence и URL-датам
-   └─ Создание Telegram сообщения
+    ├─ Каноникализация URL (url_normalized) и hash
+    ├─ Контент-фингерпринт (checksum) и simhash
+    └─ Создание Telegram сообщения
 
 4. DEDUPLICATION PHASE
-   ├─ Проверка URL в БД
-   ├─ Пропуск если уже публиковалась
-   └─ Разрешение повторов для обновлений (новый текст/ссылка)
+    ├─ Проверка url_hash/guid/url_normalized
+    ├─ Проверка checksum (окно 48 часов)
+    ├─ Проверка simhash (near-duplicate)
+    ├─ Проверка похожих заголовков
+    └─ Пропуск если уже публиковалась
 
 5. PUBLISHING PHASE
    ├─ Отправка в Telegram канал
@@ -146,6 +150,7 @@ CREATE TABLE published_news (
     title TEXT NOT NULL,
     source TEXT NOT NULL,      -- Источник (РИА, Лента и т.д.)
     category TEXT NOT NULL,    -- Мир, Россия, Подмосковье
+    checksum TEXT,
     published_at TIMESTAMP,    -- Время публикации
     published_date TEXT,
     published_time TEXT,
@@ -154,7 +159,9 @@ CREATE TABLE published_news (
     fetched_at TIMESTAMP,
     first_seen_at TIMESTAMP,
     url_hash TEXT,
-    guid TEXT
+    url_normalized TEXT,
+    guid TEXT,
+    simhash INTEGER
 );
 
 CREATE TABLE source_events (
@@ -179,6 +186,8 @@ CREATE TABLE source_health (
 - published_at - для сортировки
 - source - для фильтрации по источнику
 - url_hash, guid - для дедупликации по ссылке и GUID
+- url_normalized - для canonical URL
+- checksum/simhash - для контент-дедупликации
 ```
 
 ## 🟢🔴 Статус источников (логика)
