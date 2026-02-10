@@ -15,7 +15,8 @@ class FakeRedis:
 
     def set(self, key, val, ex=None):
         self.k[key] = val
-        self._ttl[key] = ex
+        if ex is not None:
+            self._ttl[key] = ex
 
     def delete(self, key):
         self.k.pop(key, None)

@@ -1,4 +1,4 @@
-"""Minimal management API for collection stop (sandbox-only)."""
+"""Minimal management API for collection stop. Global stop is supported for both envs via Telegram UI (admin-gated)."""
 from __future__ import annotations
 
 from aiohttp import web

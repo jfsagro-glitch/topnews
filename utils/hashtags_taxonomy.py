@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Optional
 
 G0_TAGS = ["#Россия", "#Мир"]
@@ -11,11 +12,24 @@ R0_TAGS = [
     "#Общество",
     "#Экономика",
     "#Спорт",
+    "#Технологии_медиа",
     "#ТехнологииМедиа",
     "#Образование",
     "#Искусство",
     "#Авто",
 ]
+# Canonical r0 set; #Новости is NEVER allowed
+R0_ALLOWED = {
+    "#Политика",
+    "#Общество",
+    "#Экономика",
+    "#Спорт",
+    "#Технологии_медиа",
+    "#ТехнологииМедиа",
+    "#Образование",
+    "#Искусство",
+    "#Авто",
+}
 
 CFO_REGIONS = [
     "#Москва",
@@ -249,6 +263,16 @@ def detect_rubric_tags(title: str, text: str) -> dict:
     return {"r0": "#Общество", "needs_ai": False}
 
 
+@dataclass
+class TagPack:
+    """Canonical hashtag pack: g0 (always), g1/g2/g3 (optional), r0 (always)."""
+    g0: str
+    g1: Optional[str] = None
+    g2: Optional[str] = None
+    g3: Optional[str] = None
+    r0: str = "#Общество"
+
+
 def get_allowlist() -> dict:
     return {
         "g0": list(G0_TAGS),
@@ -257,6 +281,59 @@ def get_allowlist() -> dict:
         "g3": list(CFO_CITIES),
         "r0": list(R0_TAGS),
     }
+
+
+def make_allowlist(config=None) -> dict:
+    """Return allowlist as dict of sets; optional config for TAX_G2/TAX_G3."""
+    base = get_allowlist()
+    out = {k: set(v) for k, v in base.items()}
+    out["r0"] = set(R0_ALLOWED)  # ensure #Новости never in
+    if config is not None and hasattr(config, "TAX_G2"):
+        out["g2"] = set(getattr(config, "TAX_G2", []))
+    if config is not None and hasattr(config, "TAX_G3"):
+        out["g3"] = set(getattr(config, "TAX_G3", []))
+    return out
+
+
+def validate_allowlist(tp: TagPack, allow: dict) -> TagPack:
+    """Drop any tag outside allowlist; if g2==g3 (normalized), drop g3. Never allow #Новости."""
+    g0 = tp.g0 if tp.g0 in allow.get("g0", set()) else "#Мир"
+    r0 = tp.r0 if tp.r0 in allow.get("r0", set()) else "#Общество"
+    g1 = tp.g1 if tp.g1 is None or tp.g1 in allow.get("g1", set()) else None
+    g2 = tp.g2 if tp.g2 is None or tp.g2 in allow.get("g2", set()) else None
+    g3 = tp.g3 if tp.g3 is None or tp.g3 in allow.get("g3", set()) else None
+    if g2 and g3 and _normalize_key(g2) == _normalize_key(g3):
+        g3 = None
+    return TagPack(g0=g0, g1=g1, g2=g2, g3=g3, r0=r0)
+
+
+def build_ordered_hashtags(tp: TagPack) -> list[str]:
+    """Strict ordering: g0, [g1?, g2?, g3?], r0. For #Мир only [g0, r0]. Dedup normalized."""
+    if tp.g0 == "#Мир":
+        return _dedup_ordered([tp.g0, tp.r0])
+    tags = [tp.g0]
+    if tp.g1:
+        tags.append(tp.g1)
+    if tp.g2:
+        tags.append(tp.g2)
+    if tp.g3:
+        tags.append(tp.g3)
+    tags.append(tp.r0)
+    return _dedup_ordered(tags)
+
+
+def _dedup_ordered(tags: list[str]) -> list[str]:
+    seen = set()
+    out = []
+    for t in tags:
+        if not t:
+            continue
+        nt = _normalize_key(t)
+        if nt in seen:
+            continue
+        seen.add(nt)
+        out.append(t)
+    return out
 
 
 def _validate_allowed(tag: Optional[str], allow: list[str]) -> Optional[str]:
@@ -321,7 +398,7 @@ async def build_hashtags(
     if g0 == "#Россия" and g1 is None:
         if g2 or g3:
             g1 = "#ЦФО"
-    if r0 is None:
+    if r0 is None or r0 not in R0_ALLOWED:
         r0 = "#Общество"
 
     if g0 == "#Мир":
@@ -337,25 +414,11 @@ async def build_hashtags(
     if g2 and g3 and _normalize_key(g2) == _normalize_key(g3):
         g3 = None
 
-    tags = [g0]
-    if g0 == "#Россия":
-        tags.append(g1)
-        if g1 == "#ЦФО":
-            tags.extend([g2, g3])
-    tags.append(r0)
-
-    deduped = []
-    seen = set()
-    for tag in tags:
-        if not tag:
-            continue
-        key = _normalize_key(tag)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(tag)
-
-    return deduped
+    tp = TagPack(g0=g0, g1=g1, g2=g2, g3=g3, r0=r0)
+    allow = {k: set(v) for k, v in get_allowlist().items()}
+    allow["r0"] = R0_ALLOWED
+    tp = validate_allowlist(tp, allow)
+    return build_ordered_hashtags(tp)
 
 
 def build_hashtags_en(tags_ru: list[str]) -> list[str]:

@@ -25,6 +25,7 @@ from config.config import (
     DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD,
     DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD,
 )
+from config.config import SUMMARY_MIN_CHARS
 from utils.text_cleaner import clean_html, truncate_text
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,12 @@ def compact_text(text: str, max_chars: int, strategy: str = "start_mid_end") -> 
     if safe <= 0:
         return "..."[: max(0, int(max_chars))]
     return truncate_text(cleaned, max_length=safe)
+
+
+def _fingerprint(text: str) -> str:
+    """Stable hash of text for cache key normalization (better hit rate)."""
+    t = (text or "").strip().encode("utf-8", "ignore")
+    return hashlib.sha256(t).hexdigest()
 
 
 def _estimate_tokens(text: str) -> int:
@@ -283,6 +290,16 @@ class DeepSeekClient:
                 "cache_hit": False,
                 "skipped_by_global_stop": True,
             }
+
+        # Length gate: skip summary for short items (saves tokens, minimal quality impact)
+        if text and len(text.strip()) < SUMMARY_MIN_CHARS:
+            return None, {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cache_hit": False,
+                "too_short": True,
+            }
         
         # Check if AI level is 0 (disabled) - only in sandbox
         from config.config import APP_ENV
@@ -320,9 +337,13 @@ class DeepSeekClient:
         if len(cleaned) < AI_SUMMARY_MIN_CHARS:
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False, "too_short": True}
 
+        # Cache key by fingerprint of compacted text for better hit rate
+        fp = _fingerprint(cleaned)
+        cache_checksum = checksum if checksum else fp
+
         # Check cache
         if self.cache:
-            cache_key = self.cache.generate_cache_key('summarize', title, cleaned, level=level, checksum=checksum)
+            cache_key = self.cache.generate_cache_key('summarize', title, cleaned, level=level, checksum=cache_checksum)
             cached = self.cache.get(cache_key)
             if cached:
                 logger.info(f"[{request_id}] Cache HIT for summarize")
@@ -395,7 +416,7 @@ class DeepSeekClient:
                     # Store in cache
                     result_text = truncate_text(summary.strip(), max_length=800)
                     if self.cache:
-                        cache_key = self.cache.generate_cache_key('summarize', title, cleaned, level=level, checksum=checksum)
+                        cache_key = self.cache.generate_cache_key('summarize', title, cleaned, level=level, checksum=cache_checksum)
                         self.cache.set(cache_key, 'summarize', result_text, input_tokens, output_tokens, ttl_hours=72)
                     
                     # Return summary and token usage dict

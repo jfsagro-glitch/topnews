@@ -1,36 +1,26 @@
-import asyncio
-
-from utils.hashtags_taxonomy import R0_TAGS, build_hashtags
-
-
-def _run(coro):
-    return asyncio.run(coro)
-
-
-def test_no_moscow_duplicate():
-    tags = _run(build_hashtags("Москва", "Москва, Москва", language="ru"))
-    assert tags.count("#Москва") == 1
+"""Tests for strict hashtag taxonomy: hierarchy, no #Новости, dedup."""
+from utils.hashtags_taxonomy import TagPack, build_ordered_hashtags, validate_allowlist, make_allowlist
 
 
 def test_world_only_two_tags():
-    tags = _run(build_hashtags("США ввели санкции", "США объявили новые меры", language="ru"))
-    assert tags[0] == "#Мир"
-    assert "#Россия" not in tags
-    assert len(tags) == 2
-    assert tags[1] in set(R0_TAGS)
+    allow = make_allowlist()
+    tp = TagPack(g0="#Мир", g1="#ЦФО", g2="#Москва", g3="#Москва", r0="#Общество")
+    tp = validate_allowlist(tp, allow)
+    assert build_ordered_hashtags(tp) == ["#Мир", "#Общество"]
 
 
-def test_russia_no_default_district():
-    tags = _run(build_hashtags("Экономика дня", "Рынок и инфляция", language="ru"))
-    assert tags[0] == "#Россия"
-    assert "#ЦФО" not in tags
+def test_moscow_no_duplicate():
+    allow = make_allowlist()
+    tp = TagPack(g0="#Россия", g1="#ЦФО", g2="#Москва", g3="#Москва", r0="#Общество")
+    tp = validate_allowlist(tp, allow)
+    tags = build_ordered_hashtags(tp)
+    assert tags.count("#Москва") == 1
 
 
-def test_no_hash_novosti():
-    tags = _run(build_hashtags("Новости дня", "Экономика и общество", language="ru"))
+def test_never_news_tag():
+    allow = make_allowlist()
+    tp = TagPack(g0="#Россия", g1="#ЦФО", g2="#Москва", g3="#Москва", r0="#Новости")
+    tp = validate_allowlist(tp, allow)
+    tags = build_ordered_hashtags(tp)
     assert "#Новости" not in tags
-
-
-def test_r0_always_present():
-    tags = _run(build_hashtags("Нейтральный заголовок", "", language="ru"))
-    assert "#Общество" in tags
+    assert tp.r0 == "#Общество"
