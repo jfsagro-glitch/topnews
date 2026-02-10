@@ -946,8 +946,6 @@ class NewsBot:
     
     async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """⚙️ Меню настроек"""
-    async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """⚙️ Меню настроек"""
         user_id = update.message.from_user.id
         is_admin = self._is_admin(user_id)
         app_env = get_app_env()
@@ -964,8 +962,8 @@ class NewsBot:
             keyboard.insert(3, [InlineKeyboardButton(f"🌐 Перевод ({target_lang.upper()}): {translate_status}", callback_data="settings:translate_toggle")])
             keyboard.insert(4, [InlineKeyboardButton("📥 Экспорт новостей", callback_data="export_menu")])
 
-        # Global collection control buttons for admins (prod + sandbox)
-        if is_admin:
+        # Global stop/restore only in sandbox (stops both bots). In prod — only local pause/resume (⏸️/▶️).
+        if app_env == "sandbox" and is_admin:
             is_stopped, _ttl = get_global_collection_stop_status(app_env=app_env)
             if is_stopped:
                 keyboard.append([InlineKeyboardButton("▶️ Возобновить сбор", callback_data="collection:restore")])
@@ -1041,10 +1039,12 @@ class NewsBot:
                 await query.answer("⛔ Access denied", show_alert=True)
                 return
         
-        # ==================== COLLECTION CONTROL CALLBACKS ====================
+        # ==================== COLLECTION CONTROL CALLBACKS (sandbox only: global stop for both bots) ====================
         if query.data == "collection:stop":
-            # Stop global collection
             await query.answer()
+            if get_app_env() != "sandbox":
+                await query.edit_message_text("❌ Остановка/возобновление сбора доступны только в боте sandbox.")
+                return
             user_id = query.from_user.id
             if not self._is_admin(user_id):
                 await query.edit_message_text("❌ Только администраторы могут остановить сбор")
@@ -1062,8 +1062,10 @@ class NewsBot:
             return
         
         if query.data == "collection:restore":
-            # Restore global collection
             await query.answer()
+            if get_app_env() != "sandbox":
+                await query.edit_message_text("❌ Остановка/возобновление сбора доступны только в боте sandbox.")
+                return
             user_id = query.from_user.id
             if not self._is_admin(user_id):
                 await query.edit_message_text("❌ Только администраторы могут восстановить сбор")
