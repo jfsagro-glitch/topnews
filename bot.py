@@ -1709,12 +1709,11 @@ class NewsBot:
                         )
                         return
 
-                    lead_text = (
-                        news.get('clean_text')
-                        or news.get('lead_text')
-                        or news.get('text', '')
-                        or news.get('title', '')
-                    )
+                    # Use longest available body so we don't pass short excerpt when full text exists
+                    clean = (news.get('clean_text') or '').strip()
+                    lead = (news.get('lead_text') or '').strip()
+                    raw = (news.get('text') or '').strip()
+                    lead_text = max((clean, lead, raw), key=len, default='') or (news.get('title') or '')
                     from config.config import DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD, DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD
 
                     checksum = news.get('checksum')
@@ -1842,7 +1841,8 @@ class NewsBot:
                 title=title,
                 text=text,
                 level=level,
-                checksum=checksum
+                checksum=checksum,
+                allow_short=True,
             )
             if summary:
                 logger.debug(f"DeepSeek summary created (level={level}): {summary[:50]}...")

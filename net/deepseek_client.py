@@ -310,7 +310,14 @@ class DeepSeekClient:
         open_ = self._cb_open_until > 0 and time.time() < self._cb_open_until
         return {"open": open_, "failures": self._cb_failures or 0, "open_until_ts": self._cb_open_until}
 
-    async def summarize(self, title: str, text: str, level: int = 3, checksum: str | None = None) -> tuple[Optional[str], dict]:
+    async def summarize(
+        self,
+        title: str,
+        text: str,
+        level: int = 3,
+        checksum: str | None = None,
+        allow_short: bool = False,
+    ) -> tuple[Optional[str], dict]:
         request_id = str(uuid.uuid4())[:8]
 
         if get_global_collection_stop_state().enabled:
@@ -322,8 +329,8 @@ class DeepSeekClient:
                 "skipped_by_global_stop": True,
             }
 
-        # Length gate: skip summary for short items (saves tokens, minimal quality impact)
-        if text and len(text.strip()) < SUMMARY_MIN_CHARS:
+        # Length gate for auto-pipeline only; manual "ИИ" button uses allow_short=True
+        if not allow_short and text and len(text.strip()) < SUMMARY_MIN_CHARS:
             return None, {
                 "input_tokens": 0,
                 "output_tokens": 0,
@@ -365,7 +372,8 @@ class DeepSeekClient:
         cleaned = compact_text(text, AI_MAX_INPUT_CHARS)
         if not cleaned:
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False}
-        if len(cleaned) < AI_SUMMARY_MIN_CHARS:
+        min_chars = 50 if allow_short else AI_SUMMARY_MIN_CHARS
+        if len(cleaned) < min_chars:
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False, "too_short": True}
 
         # Cache key by fingerprint of compacted text for better hit rate
