@@ -1976,14 +1976,14 @@ class NewsBot:
                 language = news_data.get('language') or 'ru'
                 tag_language = 'ru' if (translate_enabled and language == 'en') else ('en' if language == 'en' else 'ru')
                 base_tag = self._get_category_tag(news_data.get('category', 'russia'), tag_language)
-                # Prefer full hierarchical hashtags (g0, g1?, g2?, g3?, r0)
+                # Prefer full hierarchical hashtags (g0, g1?, g2?, g3?, r0) as-is from taxonomy;
+                # do not reorder by category tag, only add emoji.
                 extra_tags = (
                     news_data.get('hashtags')
                     or (news_data.get('hashtags_ru') if tag_language == 'ru' else news_data.get('hashtags_en'))
                     or ''
                 )
-                if base_tag and base_tag in extra_tags:
-                    extra_tags = extra_tags.replace(base_tag, '').strip()
+                extra_tags = extra_tags.strip()
 
                 message_to_send = format_telegram_message(
                     title=title,
@@ -2490,7 +2490,10 @@ class NewsBot:
         }
         emoji = emoji_map.get(category, '🗞')
         base_tag = self._get_category_tag(category, language)
-        tags = f"{base_tag} {extra_tags}".strip() if extra_tags else base_tag
+        # IMPORTANT: hashtags order must follow taxonomy (g0, g1?, g2?, g3?, r0).
+        # extra_tags is already a full hierarchical string from build_hashtags_for_item.
+        # We only add emoji and do NOT prepend category tag to avoid reordering/duplication.
+        tags = (extra_tags or '').strip() or base_tag
         return f"{emoji} {tags}".strip()
 
     async def _generate_hashtags_snapshot(self, news: dict) -> tuple[str, str]:
