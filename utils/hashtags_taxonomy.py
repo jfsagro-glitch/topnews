@@ -273,6 +273,54 @@ class TagPack:
     r0: str = "#Общество"
 
 
+# g0: Russia only on strong signals; else #Мир. Crypto/tech global bias -> #Мир.
+_RUSSIA_STRONG = re.compile(
+    r"\b(росси(я|и|ю|ей)|рф|москва|санкт[-\s]?петербург|петербург|кремл(ь|я)|госдума|совфед|цб\s*рф|"
+    r"минфин|роскомнадзор|фсб|мвд|суд\s*рф|россиянин|московск(ая|ой)|петербургск(ая|ой))\b",
+    re.IGNORECASE,
+)
+_CRYPTO_TECH_GLOBAL = re.compile(
+    r"\b(ethereum|eth|bitcoin|btc|solana|ton|web3|blockchain|дефай|defi|nft|vitalik|бутерин|sec|binance|"
+    r"openai|ai|ии|ml|llm|нейросет)\b",
+    re.IGNORECASE,
+)
+
+
+def _detect_r0(title: str, text: str) -> str:
+    t = (title or "") + "\n" + (text or "")
+    t = t.lower()
+    r0 = "#Общество"
+    if re.search(r"\b(выбор|санкц|президент|правитель|парламент)\b", t):
+        r0 = "#Политика"
+    elif re.search(r"\b(рынок|инфляц|рубл|доллар|эконом)\b", t):
+        r0 = "#Экономика"
+    elif re.search(r"\b(матч|гол|лига|чемпион)\b", t):
+        r0 = "#Спорт"
+    elif re.search(r"\b(ии|ai|openai|технолог|медиа|интернет)\b", t):
+        r0 = "#Технологии_медиа"
+    elif re.search(r"\b(школ|университет|образован)\b", t):
+        r0 = "#Образование"
+    elif re.search(r"\b(выставк|театр|кино|искусств)\b", t):
+        r0 = "#Искусство"
+    elif re.search(r"\b(авто|tesla|bmw|mercedes|toyota)\b", t):
+        r0 = "#Авто"
+    return r0
+
+
+def _detect_g0_strict(title: str, text: str, r0: str) -> str:
+    """Default #Мир; #Россия only on strong Russia markers. Crypto/tech without Russia -> #Мир."""
+    payload = (title or "") + "\n" + (text or "")
+    if not payload.strip():
+        return "#Мир"
+    has_russia = _RUSSIA_STRONG.search(payload) is not None
+    has_crypto_tech = _CRYPTO_TECH_GLOBAL.search(payload) is not None
+    if has_crypto_tech and not has_russia:
+        return "#Мир"
+    if has_russia:
+        return "#Россия"
+    return "#Мир"
+
+
 def get_allowlist() -> dict:
     return {
         "g0": list(G0_TAGS),
@@ -322,6 +370,33 @@ def build_ordered_hashtags(tp: TagPack) -> list[str]:
     return _dedup_ordered(tags)
 
 
+def build_hashtags_for_item(title: str, text: str, config=None) -> list[str]:
+    """
+    Single public API for hashtags: use everywhere (store, display, export).
+    Returns full hierarchical list: g0, [g1?, g2?, g3?], r0.
+    #Мир => [g0, r0]; #Россия => [g0, g1?, g2?, g3?, r0]. r0 always present, never #Новости.
+    """
+    r0 = _detect_r0(title or "", text or "")
+    if r0 not in R0_ALLOWED:
+        r0 = "#Общество"
+    g0 = _detect_g0_strict(title or "", text or "", r0)
+    g1, g2, g3 = None, None, None
+    if g0 == "#Россия":
+        geo = detect_geo_tags(title or "", text or "")
+        allow_list = get_allowlist()
+        g1 = _validate_allowed(geo.get("g1"), allow_list["g1"])
+        g2 = _validate_allowed(geo.get("g2"), allow_list["g2"])
+        g3 = _validate_allowed(geo.get("g3"), allow_list["g3"])
+        if g2 and g3 and _normalize_key(g2) == _normalize_key(g3):
+            g3 = None
+        if g1 is None and (g2 or g3):
+            g1 = "#ЦФО"
+    tp = TagPack(g0=g0, g1=g1, g2=g2, g3=g3, r0=r0)
+    allow = make_allowlist(config)
+    tp = validate_allowlist(tp, allow)
+    return build_ordered_hashtags(tp)
+
+
 def _dedup_ordered(tags: list[str]) -> list[str]:
     seen = set()
     out = []
@@ -369,15 +444,17 @@ async def build_hashtags(
     level: int = 0,
     ai_call_guard=None,
 ) -> list[str]:
-    geo = detect_geo_tags(title, text, language=language)
     rubric = detect_rubric_tags(title, text)
-
     allow = get_allowlist()
-    g0 = _validate_allowed(geo.get("g0"), allow["g0"])
+    r0 = _validate_allowed(rubric.get("r0"), allow["r0"]) or "#Общество"
+    if r0 not in R0_ALLOWED:
+        r0 = "#Общество"
+    g0 = _detect_g0_strict(title, text, r0)
+    g0 = _validate_allowed(g0, allow["g0"]) or "#Мир"
+    geo = detect_geo_tags(title, text, language=language)
     g1 = _validate_allowed(geo.get("g1"), allow["g1"])
     g2 = _validate_allowed(geo.get("g2"), allow["g2"])
     g3 = _validate_allowed(geo.get("g3"), allow["g3"])
-    r0 = _validate_allowed(rubric.get("r0"), allow["r0"])
 
     needs_ai = bool(g0 is None or r0 is None)
 

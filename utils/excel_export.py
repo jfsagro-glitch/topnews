@@ -23,7 +23,7 @@ def generate_excel_file_for_period(news_items: List[dict]) -> str | None:
             "Ссылка",
             "Заголовок",
             "Содержание новости",
-            "Хештэг",
+            "Хештеги",
         ]
         ws.append(headers)
 
@@ -37,7 +37,9 @@ def generate_excel_file_for_period(news_items: List[dict]) -> str | None:
         for news in news_items:
             content = news.get('ai_summary') or news.get('clean_text') or news.get('lead_text') or ""
             content = str(content).strip()
-            tag = category_map.get(news.get('category', 'russia'), '#Россия')
+            # Full hierarchical list (g0, g1?, g2?, g3?, r0); prefer stored hashtags
+            tags_full = (news.get('hashtags') or news.get('hashtags_ru') or news.get('hashtags_en') or "").strip()
+            tag = tags_full or category_map.get(news.get('category', 'russia'), '#Россия')
             published_date = news.get('published_date')
             published_time = news.get('published_time')
             if not published_date and news.get('published_at'):

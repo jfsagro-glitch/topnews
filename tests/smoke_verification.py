@@ -90,7 +90,7 @@ def test_excel_columns() -> None:
     wb = load_workbook(path)
     ws = wb.active
     headers = [cell.value for cell in ws[1]]
-    expected = ["Дата", "Время", "Источник", "Ссылка", "Заголовок", "Содержание новости", "Хештэг"]
+    expected = ["Дата", "Время", "Источник", "Ссылка", "Заголовок", "Содержание новости", "Хештеги"]
     _assert(headers == expected, "excel headers should match expected columns")
     wb.close()
     os.remove(path)

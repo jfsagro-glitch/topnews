@@ -9,8 +9,14 @@ import hashlib
 import json
 import os
 import logging
+import time
 import uuid
 from typing import Optional
+
+# Circuit breaker: after N consecutive failures, open for cooldown; no retries when open
+CB_FAILURE_THRESHOLD = int(os.getenv("AI_CIRCUIT_FAILURE_THRESHOLD", "3"))
+CB_COOLDOWN_SEC = int(os.getenv("AI_CIRCUIT_COOLDOWN_SEC", "300"))
+CB_MAX_RETRIES = 2
 
 import httpx
 
@@ -271,6 +277,9 @@ class DeepSeekClient:
             except Exception as e:
                 logger.warning(f"Failed to initialize LLM cache/budget: {e}")
         
+        self._cb_failures = 0
+        self._cb_open_until = 0.0
+
         env_key_at_init = os.getenv('DEEPSEEK_API_KEY')
         logger.info(
             f"DeepSeekClient initialized. "
@@ -278,6 +287,28 @@ class DeepSeekClient:
             f"Env var length: {len(env_key_at_init) if env_key_at_init else 0}, "
             f"Cache: {self.cache is not None}, Budget guard: {self.budget is not None}"
         )
+
+    def _circuit_open(self) -> bool:
+        if self._cb_open_until <= 0:
+            return False
+        if time.time() < self._cb_open_until:
+            return True
+        self._cb_open_until = 0.0
+        self._cb_failures = 0
+        return False
+
+    def _record_success(self) -> None:
+        self._cb_failures = 0
+
+    def _record_failure(self) -> None:
+        self._cb_failures = (self._cb_failures or 0) + 1
+        if self._cb_failures >= CB_FAILURE_THRESHOLD:
+            self._cb_open_until = time.time() + CB_COOLDOWN_SEC
+            logger.warning(f"AI circuit breaker OPEN for {CB_COOLDOWN_SEC}s (failures={self._cb_failures})")
+
+    def get_circuit_state(self) -> dict:
+        open_ = self._cb_open_until > 0 and time.time() < self._cb_open_until
+        return {"open": open_, "failures": self._cb_failures or 0, "open_until_ts": self._cb_open_until}
 
     async def summarize(self, title: str, text: str, level: int = 3, checksum: str | None = None) -> tuple[Optional[str], dict]:
         request_id = str(uuid.uuid4())[:8]
@@ -356,6 +387,12 @@ class DeepSeekClient:
                     "cache_hit": True
                 }
 
+        if self._circuit_open():
+            return None, {
+                "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+                "cache_hit": False, "circuit_open": True,
+            }
+
         estimated_tokens = _estimate_tokens(cleaned)
         if self.budget and not self.budget.budget_ok("summary", estimated_tokens=estimated_tokens):
             logger.warning(f"[{request_id}] Daily budget exceeded, skipping LLM call")
@@ -375,7 +412,7 @@ class DeepSeekClient:
         logger.info(f"[{request_id}] API call: summarize (level={level}, max_tokens={payload['max_tokens']})")
 
         backoff = 0.8
-        for attempt in range(1, 4):
+        for attempt in range(1, CB_MAX_RETRIES + 1):
             try:
                 async with httpx.AsyncClient(timeout=AI_SUMMARY_TIMEOUT) as client:
                     response = await client.post(
@@ -419,7 +456,7 @@ class DeepSeekClient:
                         cache_key = self.cache.generate_cache_key('summarize', title, cleaned, level=level, checksum=cache_checksum)
                         self.cache.set(cache_key, 'summarize', result_text, input_tokens, output_tokens, ttl_hours=72)
                     
-                    # Return summary and token usage dict
+                    self._record_success()
                     token_usage = {
                         "input_tokens": input_tokens,
                         "output_tokens": output_tokens,
@@ -449,6 +486,7 @@ class DeepSeekClient:
             await asyncio.sleep(backoff)
             backoff *= 2
 
+        self._record_failure()
         return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
     async def translate_text(self, text: str, target_lang: str = 'ru', checksum: str | None = None) -> tuple[Optional[str], dict]:
@@ -476,6 +514,8 @@ class DeepSeekClient:
         if self.budget and not self.budget.budget_ok("translate", estimated_tokens=_estimate_tokens(text)):
             return None, token_usage
 
+        if self._circuit_open():
+            return None, {**token_usage, "circuit_open": True}
 
         env_key = os.getenv('DEEPSEEK_API_KEY')
         api_key = (env_key or self.api_key or '').strip()
@@ -531,6 +571,7 @@ class DeepSeekClient:
                     cache_key = self.cache.generate_cache_key('translate', '', text, target_lang=target_lang, checksum=checksum)
                     self.cache.set(cache_key, 'translate', translated, input_tokens, output_tokens, ttl_hours=72)
 
+                self._record_success()
                 return translated, {
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
@@ -542,6 +583,7 @@ class DeepSeekClient:
         except Exception as e:
             logger.debug(f"Translate failed: {e}")
 
+        self._record_failure()
         return None, token_usage
 
     async def generate_hashtags(
@@ -591,6 +633,8 @@ class DeepSeekClient:
         if self.budget and not self.budget.budget_ok("hashtags_ai", estimated_tokens=_estimate_tokens(text)):
             return [], token_usage
 
+        if self._circuit_open():
+            return [], {**token_usage, "circuit_open": True}
 
         env_key = os.getenv('DEEPSEEK_API_KEY')
         api_key = (env_key or self.api_key or '').strip()
@@ -704,6 +748,7 @@ class DeepSeekClient:
                     )
                     self.cache.set(cache_key, 'hashtags', tags, input_tokens, output_tokens, ttl_hours=72)
 
+                self._record_success()
                 return tags, {
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
@@ -714,6 +759,7 @@ class DeepSeekClient:
         except Exception as e:
             logger.debug(f"Hashtags failed: {e}")
 
+        self._record_failure()
         return [], token_usage
 
     async def classify_hashtags(
@@ -766,6 +812,9 @@ class DeepSeekClient:
 
         if self.budget and not self.budget.budget_ok("hashtags_ai", estimated_tokens=_estimate_tokens(text)):
             return {}, token_usage
+
+        if self._circuit_open():
+            return {}, {**token_usage, "circuit_open": True}
 
         env_key = os.getenv('DEEPSEEK_API_KEY')
         api_key = (env_key or self.api_key or '').strip()
@@ -836,10 +885,12 @@ class DeepSeekClient:
                         token_usage["output_tokens"],
                         ttl_hours=72,
                     )
+                self._record_success()
                 return result, token_usage
         except Exception as e:
             logger.debug(f"Hashtag classification failed: {e}")
 
+        self._record_failure()
         return {}, token_usage
 
     async def verify_category(self, title: str, text: str, current_category: str) -> tuple[Optional[str], dict]:
@@ -890,6 +941,9 @@ class DeepSeekClient:
 
         if self.budget and not self.budget.budget_ok("category", estimated_tokens=_estimate_tokens(text)):
             return None, token_usage
+
+        if self._circuit_open():
+            return None, {**token_usage, "circuit_open": True}
 
         payload = {
             "model": "deepseek-chat",
@@ -943,6 +997,7 @@ class DeepSeekClient:
                             current_category=current_category,
                         )
                         self.cache.set(cache_key, 'category_verify', category, token_usage["input_tokens"], token_usage["output_tokens"], ttl_hours=72)
+                    self._record_success()
                     return category, token_usage
                 else:
                     logger.warning(f"AI returned invalid category: {category}")
@@ -953,6 +1008,7 @@ class DeepSeekClient:
         except Exception as e:
             logger.debug(f"AI category verification failed: {e}")
         
+        self._record_failure()
         return None, token_usage
     
     async def extract_clean_text(self, title: str, raw_text: str, level: int = 3) -> tuple[Optional[str], dict]:
@@ -1021,6 +1077,9 @@ class DeepSeekClient:
         if self.budget and not self.budget.budget_ok("cleanup", estimated_tokens=_estimate_tokens(raw_text)):
             return None, token_usage
 
+        if self._circuit_open():
+            return None, {**token_usage, "circuit_open": True}
+
         payload = {
             "model": model_name,
             "messages": _build_text_extraction_messages(title, raw_text),
@@ -1081,6 +1140,7 @@ class DeepSeekClient:
                             token_usage["output_tokens"],
                             ttl_hours=72,
                         )
+                    self._record_success()
                     return clean_text, token_usage
                 else:
                     logger.debug("AI extraction returned text too short")
@@ -1091,4 +1151,5 @@ class DeepSeekClient:
         except Exception as e:
             logger.debug(f"AI text extraction failed: {e}")
         
+        self._record_failure()
         return None, token_usage

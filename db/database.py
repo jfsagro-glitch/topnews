@@ -794,6 +794,8 @@ class NewsDatabase:
             rows = cursor.fetchall()
             results = []
             for row in rows:
+                hashtags_ru = row[12] or ""
+                hashtags_en = row[13] or ""
                 results.append({
                     'id': row[0],
                     'url': row[1],
@@ -807,8 +809,9 @@ class NewsDatabase:
                     'published_date': row[9],
                     'published_time': row[10],
                     'language': row[11],
-                    'hashtags_ru': row[12] or "",
-                    'hashtags_en': row[13] or "",
+                    'hashtags_ru': hashtags_ru,
+                    'hashtags_en': hashtags_en,
+                    'hashtags': hashtags_ru or hashtags_en,
                 })
             return results
         except Exception as e:
@@ -1039,6 +1042,8 @@ class NewsDatabase:
             row = cursor.fetchone()
             if not row:
                 return None
+            hashtags_ru = row[18] or ""
+            hashtags_en = row[19] or ""
             return {
                 'id': row[0],
                 'url': row[1],
@@ -1058,8 +1063,9 @@ class NewsDatabase:
                 'published_date': row[15],
                 'published_time': row[16],
                 'quality_score': row[17],
-                'hashtags_ru': row[18] or "",
-                'hashtags_en': row[19] or "",
+                'hashtags_ru': hashtags_ru,
+                'hashtags_en': hashtags_en,
+                'hashtags': hashtags_ru or hashtags_en,
                 'url_normalized': row[20],
                 'simhash': row[21],
             }
@@ -2328,6 +2334,7 @@ class NewsDatabase:
             rows = cursor.fetchall()
             results = []
             for row in rows:
+                hr, he = row[11] or "", row[12] or ""
                 results.append({
                     'id': row[0],
                     'url': row[1],
@@ -2340,8 +2347,9 @@ class NewsDatabase:
                     'published_at': row[8],
                     'published_date': row[9],
                     'published_time': row[10],
-                    'hashtags_ru': row[11] or "",
-                    'hashtags_en': row[12] or "",
+                    'hashtags_ru': hr,
+                    'hashtags_en': he,
+                    'hashtags': hr or he,
                 })
             return results
         except Exception as e:

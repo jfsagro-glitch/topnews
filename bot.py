@@ -684,11 +684,14 @@ class NewsBot:
         stop_label = "ON" if stop_state.enabled else "OFF"
         stop_ttl = stop_state.ttl_sec_remaining
         stop_ttl_text = f"{stop_ttl}s" if stop_ttl is not None else "-"
+        cb = self.deepseek_client.get_circuit_state()
+        cb_label = "OPEN" if cb.get("open") else "OK"
 
         status_text = (
             f"📊 Статус бота:\n\n"
             f"Статус: {'⏸️ PAUSED' if self.is_paused else '✅ RUNNING'}\n"
             f"Global stop: {stop_label} (TTL: {stop_ttl_text})\n"
+            f"Circuit breaker: {cb_label}\n"
             f"Всего опубликовано: {stats['total']}\n"
             f"За сегодня: {stats['today']}\n"
             f"Интервал проверки: {CHECK_INTERVAL_SECONDS} сек\n"
@@ -1667,6 +1670,20 @@ class NewsBot:
                     timestamps.append(now)
                     self.user_ai_requests[user_id] = timestamps
 
+                    cb = self.deepseek_client.get_circuit_state()
+                    if cb.get("open"):
+                        await query.answer("ИИ временно недоступен", show_alert=True)
+                        try:
+                            await context.bot.send_message(
+                                chat_id=user_id,
+                                text="ИИ временно недоступен. Попробуйте позже.",
+                                disable_web_page_preview=True,
+                                disable_notification=True,
+                            )
+                        except Exception:
+                            pass
+                        return
+
                     await query.answer("⏳ Генерирую пересказ...", show_alert=False)
                     logger.info(f"AI summarize requested for news_id={news_id} by user={user_id}")
 
@@ -1734,10 +1751,17 @@ class NewsBot:
                             ]])
                         )
                     else:
-                        logger.warning(f"AI summarize failed for news_id={news_id}, no summary returned")
+                        reason = token_usage.get('circuit_open') and 'circuit_open' or token_usage.get('too_short') and 'too_short' or 'unknown'
+                        logger.warning(
+                            f"AI summarize failed for news_id={news_id}, no summary returned (reason={reason})"
+                        )
+                        if token_usage.get('too_short'):
+                            msg = "Текст новости слишком короткий для пересказа."
+                        else:
+                            msg = "ИИ временно недоступен. Попробуйте позже."
                         await context.bot.send_message(
                             chat_id=user_id,
-                            text="ИИ временно недоступен. Попробуйте позже.",
+                            text=msg,
                             disable_web_page_preview=True,
                             disable_notification=True
                         )
@@ -1808,13 +1832,10 @@ class NewsBot:
         try:
             from config.config import APP_ENV
             
-            # Get effective AI level for summary
+            # Get effective AI level for summary (manual button request — no tick gate)
             from core.services.access_control import get_effective_level
             level = get_effective_level(self.db, str(user_id or 'global'), 'summary')
 
-            if not self._ai_tick_allow("summary"):
-                return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "skipped_by_gate": True}
-            
             summary, token_usage = await self.deepseek_client.summarize(
                 title=title,
                 text=text,
@@ -1953,8 +1974,12 @@ class NewsBot:
                 language = news_data.get('language') or 'ru'
                 tag_language = 'ru' if (translate_enabled and language == 'en') else ('en' if language == 'en' else 'ru')
                 base_tag = self._get_category_tag(news_data.get('category', 'russia'), tag_language)
-                extra_tags = news_data.get('hashtags_ru') if tag_language == 'ru' else news_data.get('hashtags_en')
-                extra_tags = extra_tags or ''
+                # Prefer full hierarchical hashtags (g0, g1?, g2?, g3?, r0)
+                extra_tags = (
+                    news_data.get('hashtags')
+                    or (news_data.get('hashtags_ru') if tag_language == 'ru' else news_data.get('hashtags_en'))
+                    or ''
+                )
                 if base_tag and base_tag in extra_tags:
                     extra_tags = extra_tags.replace(base_tag, '').strip()
 
@@ -2467,38 +2492,20 @@ class NewsBot:
         return f"{emoji} {tags}".strip()
 
     async def _generate_hashtags_snapshot(self, news: dict) -> tuple[str, str]:
-        """Generate and return (hashtags_ru, hashtags_en) strings."""
-        title = news.get('title', '')
-        text = news.get('clean_text') or news.get('text', '') or ''
-        language = news.get('language') or 'ru'
-        category = news.get('category', 'russia')
-        from core.services.access_control import get_effective_level
-        from utils.hashtags_taxonomy import build_hashtags, build_hashtags_en
-
-        level = get_effective_level(self.db, 'global', 'hashtags')
-
+        """Generate (hashtags_ru, hashtags_en) via strict taxonomy: g0 only on strong Russia, no #Новости."""
+        title = news.get('title', '') or ''
+        text = (news.get('clean_text') or news.get('text', '') or '')
         try:
-            tags_ru = await build_hashtags(
-                title=title,
-                text=text,
-                language=language,
-                chat_id='global',
-                ai_client=self.deepseek_client,
-                level=level,
-                ai_call_guard=self._ai_tick_allow,
-            )
+            from utils.hashtags_taxonomy import build_hashtags_for_item, build_hashtags_en
+            config = getattr(self, 'config', None)
+            tags_ru = build_hashtags_for_item(title, text, config=config)
         except Exception as e:
             logger.debug(f"Hashtag taxonomy failed: {e}")
             tags_ru = []
-
         if not tags_ru:
-            tags_ru = ["#Россия", "#Общество"]
-
+            tags_ru = ["#Мир", "#Общество"]
         tags_en = build_hashtags_en(tags_ru)
-
-        hashtags_ru = " ".join(tags_ru)
-        hashtags_en = " ".join(tags_en)
-        return hashtags_ru, hashtags_en
+        return " ".join(tags_ru), " ".join(tags_en)
     
     async def run_periodic_collection(self):
         """Запускает периодический сбор новостей"""
