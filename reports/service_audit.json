@@ -1,0 +1,633 @@
+{
+  "overall_status": "Критический",
+  "generated_at": "2026-02-13T12:56:30.534736Z",
+  "environment": {
+    "app_env": "prod",
+    "config_source": "config",
+    "railway": false,
+    "docker": false,
+    "public_base_url": null,
+    "api_base_used": "localhost:8080"
+  },
+  "tokens": {
+    "selected_from": "BOT_TOKEN",
+    "effective_present": false,
+    "sources_present": {
+      "BOT_TOKEN": true,
+      "TELEGRAM_TOKEN": true,
+      "BOT_TOKEN_PROD": false,
+      "BOT_TOKEN_SANDBOX": false
+    }
+  },
+  "services": [
+    {
+      "name": "API backend /health (localhost:8080)",
+      "status": "ERROR",
+      "response_time": "2863ms",
+      "errors": "503 http://localhost:8080/health"
+    },
+    {
+      "name": "API backend /ready (localhost:8080)",
+      "status": "ERROR",
+      "response_time": "2805ms",
+      "errors": "503 http://localhost:8080/ready"
+    },
+    {
+      "name": "Mgmt API /mgmt/collection/stop",
+      "status": "SKIPPED",
+      "response_time": "-",
+      "errors": "not applicable in prod"
+    },
+    {
+      "name": "Redis",
+      "status": "UNKNOWN",
+      "response_time": "-",
+      "errors": "REDIS_URL not set"
+    },
+    {
+      "name": "Database db/news.db",
+      "status": "OK",
+      "response_time": "-",
+      "errors": "-"
+    },
+    {
+      "name": "Access DB db/access.db",
+      "status": "OK",
+      "response_time": "-",
+      "errors": "-"
+    }
+  ],
+  "bots": [
+    {
+      "name": "effective",
+      "telegram_ok": "UNKNOWN",
+      "handlers_ok": "OK",
+      "ai_ok": "UNKNOWN",
+      "notes": "effective token missing/placeholder"
+    }
+  ],
+  "ai": {
+    "providers": [
+      {
+        "provider": "DeepSeek",
+        "status": "UNKNOWN",
+        "avg_ms": "3447ms",
+        "timeout": "10s"
+      }
+    ],
+    "budget_usd": 4.0,
+    "budget_tokens": 0
+  },
+  "database": {
+    "path": "db/news.db",
+    "checks": [
+      {
+        "check": "Required tables",
+        "status": "OK",
+        "notes": "present"
+      },
+      {
+        "check": "Indexes",
+        "status": "OK",
+        "notes": "present"
+      },
+      {
+        "check": "Orphan records",
+        "status": "OK",
+        "notes": "user_source_settings=0, user_news_selections=0, ai_summaries=0"
+      }
+    ],
+    "counts": {
+      "published_news": 0,
+      "sources": 31,
+      "ai_usage": 1,
+      "source_events": 0,
+      "approved_users": 0
+    },
+    "tables": [
+      "ai_summaries",
+      "ai_usage",
+      "ai_usage_daily",
+      "approved_users",
+      "bot_lock",
+      "bot_settings",
+      "delivery_log",
+      "feature_flags",
+      "invites",
+      "llm_cache",
+      "published_news",
+      "rss_cache",
+      "rss_state",
+      "source_events",
+      "source_health",
+      "sources",
+      "sqlite_sequence",
+      "system_settings",
+      "translation_cache",
+      "translation_cache_v2",
+      "user_news_selections",
+      "user_preferences",
+      "user_source_settings"
+    ]
+  },
+  "parsing": [
+    {
+      "source": "https://ria.ru/world/",
+      "kind": "html",
+      "resolved": "https://ria.ru/world/",
+      "status": "OK",
+      "status_code": 200,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": "https://ria.ru/world/"
+    },
+    {
+      "source": "https://lenta.ru/tags/geo/",
+      "kind": "html",
+      "resolved": "https://lenta.ru/tags/geo/",
+      "status": "WARNING",
+      "status_code": 404,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": "https://lenta.ru/tags/geo/"
+    },
+    {
+      "source": "https://tass.ru/rss/index.xml",
+      "kind": "rss",
+      "resolved": "https://tass.ru/rss/index.xml",
+      "status": "WARNING",
+      "status_code": 403,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": "https://tass.ru/rss/index.xml"
+    },
+    {
+      "source": "https://www.gazeta.ru/news/",
+      "kind": "html",
+      "resolved": "https://www.gazeta.ru/news/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://rg.ru/world/",
+      "kind": "html",
+      "resolved": "https://rg.ru/world/",
+      "status": "WARNING",
+      "status_code": 401,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": "https://rg.ru/world/"
+    },
+    {
+      "source": "https://www.rbc.ru/v10/static/rss/rbc_news.rss",
+      "kind": "rss",
+      "resolved": "https://www.rbc.ru/v10/static/rss/rbc_news.rss",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://russian.rt.com/rss/",
+      "kind": "rss",
+      "resolved": "https://russian.rt.com/rss/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://www.interfax.ru/world/",
+      "kind": "html",
+      "resolved": "https://www.interfax.ru/world/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://iz.ru/xml/rss/all.xml",
+      "kind": "rss",
+      "resolved": "https://iz.ru/xml/rss/all.xml",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://ren.tv/news",
+      "kind": "html",
+      "resolved": "https://ren.tv/news",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://ria.ru/",
+      "kind": "html",
+      "resolved": "https://ria.ru/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://lenta.ru/",
+      "kind": "html",
+      "resolved": "https://lenta.ru/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://www.gazeta.ru/news/",
+      "kind": "html",
+      "resolved": "https://www.gazeta.ru/news/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://tass.ru/rss/v2.xml",
+      "kind": "rss",
+      "resolved": "https://tass.ru/rss/v2.xml",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://rg.ru/",
+      "kind": "html",
+      "resolved": "https://rg.ru/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://ren.tv/news",
+      "kind": "html",
+      "resolved": "https://ren.tv/news",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://iz.ru/xml/rss/all.xml",
+      "kind": "rss",
+      "resolved": "https://iz.ru/xml/rss/all.xml",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://russian.rt.com/rss/",
+      "kind": "rss",
+      "resolved": "https://russian.rt.com/rss/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://www.rbc.ru/v10/static/rss/rbc_news.rss",
+      "kind": "rss",
+      "resolved": "https://www.rbc.ru/v10/static/rss/rbc_news.rss",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://rss.kommersant.ru/K40/",
+      "kind": "rss",
+      "resolved": "https://rss.kommersant.ru/K40/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://www.interfax.ru/rss",
+      "kind": "rss",
+      "resolved": "https://www.interfax.ru/rss",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://t.me/mash",
+      "kind": "rsshub",
+      "resolved": "https://rsshub-production-a367.up.railway.app/telegram/channel/mash",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://t.me/bazabazon",
+      "kind": "rsshub",
+      "resolved": "https://rsshub-production-a367.up.railway.app/telegram/channel/bazabazon",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://t.me/shot_shot",
+      "kind": "rsshub",
+      "resolved": "https://rsshub-production-a367.up.railway.app/telegram/channel/shot_shot",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://t.me/mod_russia",
+      "kind": "rsshub",
+      "resolved": "https://rsshub-production-a367.up.railway.app/telegram/channel/mod_russia",
+      "status": "OK",
+      "status_code": 200,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": "https://rsshub-production-a367.up.railway.app/telegram/channel/mod_russia"
+    },
+    {
+      "source": "https://ria.ru/location_Moskovskaja_oblast/",
+      "kind": "html",
+      "resolved": "https://ria.ru/location_Moskovskaja_oblast/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://lenta.ru/tags/geo/moskovskaya-oblast/",
+      "kind": "html",
+      "resolved": "https://lenta.ru/tags/geo/moskovskaya-oblast/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://iz.ru/tag/moskovskaia-oblast",
+      "kind": "html",
+      "resolved": "https://iz.ru/tag/moskovskaia-oblast",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://tass.ru/moskovskaya-oblast",
+      "kind": "html",
+      "resolved": "https://tass.ru/moskovskaya-oblast",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://rg.ru/region/cfo/podmoskovie",
+      "kind": "html",
+      "resolved": "https://rg.ru/region/cfo/podmoskovie",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://360.ru/rubriki/mosobl/",
+      "kind": "html",
+      "resolved": "https://360.ru/rubriki/mosobl/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://mosreg.ru/sobytiya/novosti",
+      "kind": "html",
+      "resolved": "https://mosreg.ru/sobytiya/novosti",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://riamo.ru/tag/podmoskove/",
+      "kind": "html",
+      "resolved": "https://riamo.ru/tag/podmoskove/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://mosregtoday.ru/news/",
+      "kind": "html",
+      "resolved": "https://mosregtoday.ru/news/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://www.interfax-russia.ru/center/novosti-podmoskovya",
+      "kind": "html",
+      "resolved": "https://www.interfax-russia.ru/center/novosti-podmoskovya",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://regions.ru/news",
+      "kind": "html",
+      "resolved": "https://regions.ru/news",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://news.yahoo.com/rss/",
+      "kind": "rss",
+      "resolved": "https://news.yahoo.com/rss/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://news.yahoo.com/rss/world",
+      "kind": "rss",
+      "resolved": "https://news.yahoo.com/rss/world",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://naked-science.ru/",
+      "kind": "html",
+      "resolved": "https://naked-science.ru/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://new-science.ru/category/news/",
+      "kind": "html",
+      "resolved": "https://new-science.ru/category/news/",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://forklog.com/news",
+      "kind": "html",
+      "resolved": "https://forklog.com/news",
+      "status": "ERROR",
+      "status_code": null,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": null
+    },
+    {
+      "source": "https://t.me/ruptlyalert",
+      "kind": "rsshub",
+      "resolved": "https://rsshub-production-a367.up.railway.app/telegram/channel/ruptlyalert",
+      "status": "OK",
+      "status_code": 200,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": "https://rsshub-production-a367.up.railway.app/telegram/channel/ruptlyalert"
+    },
+    {
+      "source": "https://t.me/tass_agency",
+      "kind": "rsshub",
+      "resolved": "https://rsshub-production-a367.up.railway.app/telegram/channel/tass_agency",
+      "status": "OK",
+      "status_code": 200,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": "https://rsshub-production-a367.up.railway.app/telegram/channel/tass_agency"
+    },
+    {
+      "source": "https://t.me/rian_ru",
+      "kind": "rsshub",
+      "resolved": "https://rsshub-production-a367.up.railway.app/telegram/channel/rian_ru",
+      "status": "ERROR",
+      "status_code": 503,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": "https://rsshub-production-a367.up.railway.app/telegram/channel/rian_ru"
+    },
+    {
+      "source": "https://t.me/mod_russia",
+      "kind": "rsshub",
+      "resolved": "https://rsshub-production-a367.up.railway.app/telegram/channel/mod_russia",
+      "status": "OK",
+      "status_code": 200,
+      "last_loaded": "-",
+      "errors": "",
+      "final_url": "https://rsshub-production-a367.up.railway.app/telegram/channel/mod_russia"
+    }
+  ],
+  "security": [
+    {
+      "check": "Webhook secret configured",
+      "status": "OK"
+    },
+    {
+      "check": "Webhook base URL set",
+      "status": "OK"
+    },
+    {
+      "check": "Admin-only sandbox policy",
+      "status": "UNKNOWN"
+    }
+  ],
+  "performance": {
+    "Memory usage": "UNKNOWN",
+    "CPU spikes (30d)": "UNKNOWN",
+    "Slow queries > 1s": "UNKNOWN",
+    "Slow query log": "UNKNOWN"
+  },
+  "critical_issues": [
+    {
+      "level": "КРИТИЧЕСКИЙ",
+      "message": "Effective TELEGRAM/BOT token missing or placeholder"
+    }
+  ],
+  "counts": {
+    "errors": 46,
+    "warnings": 74
+  },
+  "logs": {
+    "files": [
+      {
+        "path": "logs\\bot_prod.log",
+        "exists": true,
+        "errors": 5,
+        "warnings": 37
+      },
+      {
+        "path": "logs\\bot_sandbox.log",
+        "exists": true,
+        "errors": 2,
+        "warnings": 34
+      }
+    ],
+    "errors": 7,
+    "warnings": 71
+  }
+}
