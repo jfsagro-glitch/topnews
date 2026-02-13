@@ -193,6 +193,40 @@ SOURCES_CONFIG = {
             'https://ren.tv/news',
         ]
     },
+    'yahoo_world_extended': {
+        'category': 'world',
+        'sources': [
+            # World
+            'https://news.yahoo.com/rss/world',
+            'https://news.yahoo.com/rss/world/europe',
+            'https://news.yahoo.com/rss/world/asia',
+            'https://news.yahoo.com/rss/world/middle-east',
+
+            # US
+            'https://news.yahoo.com/rss/us',
+            'https://news.yahoo.com/rss/us/politics',
+            'https://news.yahoo.com/rss/us/elections',
+
+            # Politics
+            'https://news.yahoo.com/rss/politics',
+            'https://news.yahoo.com/rss/politics/congress',
+            'https://news.yahoo.com/rss/politics/white-house',
+
+            # Business
+            'https://news.yahoo.com/rss/business',
+            'https://news.yahoo.com/rss/finance',
+            'https://news.yahoo.com/rss/markets',
+            'https://news.yahoo.com/rss/crypto',
+
+            # Science and tech
+            'https://news.yahoo.com/rss/tech',
+            'https://news.yahoo.com/rss/science',
+            'https://news.yahoo.com/rss/climate',
+
+            # Health
+            'https://news.yahoo.com/rss/health',
+        ]
+    },
     'russia': {
         'category': 'russia',
         'sources': [
@@ -237,10 +271,6 @@ SOURCES_CONFIG = {
     'additional': {
         'category': 'world',
         'sources': [
-            # Yahoo News - официальные RSS фиды (стабильно, без consent/JS)
-            # Преимущества: не упираемся в consent, меньше банов, стабильный парсинг
-            'https://news.yahoo.com/rss/',
-            'https://news.yahoo.com/rss/world',
             'https://naked-science.ru/',
             'https://new-science.ru/category/news/',
             'https://forklog.com/news',

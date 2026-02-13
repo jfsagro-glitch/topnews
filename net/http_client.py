@@ -19,6 +19,10 @@ DEFAULT_HEADERS = {
 }
 
 RETRY_STATUSES = {403, 429, 500, 502, 503, 504}
+_YAHOO_HOSTS = (
+    "news.yahoo.com",
+    "rss.news.yahoo.com",
+)
 
 
 class HttpClient:
@@ -70,6 +74,8 @@ class HttpClient:
         if timeout is not None:
             connect_timeout = min(10.0, float(timeout))
             request_timeout = httpx.Timeout(float(timeout), connect=connect_timeout)
+        elif _is_yahoo_url(url):
+            request_timeout = httpx.Timeout(8.0, connect=10.0)
 
         # Try with SSL verification first
         for attempt in range(retries + 1):
@@ -90,6 +96,9 @@ class HttpClient:
                         if skip_on_304:
                             return None
                         raise
+
+                if resp.status_code in (301, 302):
+                    return resp
 
                 if resp.status_code in RETRY_STATUSES:
                     raise httpx.HTTPStatusError(
@@ -180,3 +189,10 @@ def _get_retry_after_seconds(response: httpx.Response) -> float | None:
         return min(60.0, float(header))
     except Exception:
         return None
+
+
+def _is_yahoo_url(url: str) -> bool:
+    try:
+        return any(host in url for host in _YAHOO_HOSTS)
+    except Exception:
+        return False
