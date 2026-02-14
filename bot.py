@@ -684,14 +684,11 @@ class NewsBot:
         stop_label = "ON" if stop_state.enabled else "OFF"
         stop_ttl = stop_state.ttl_sec_remaining
         stop_ttl_text = f"{stop_ttl}s" if stop_ttl is not None else "-"
-        cb = self.deepseek_client.get_circuit_state()
-        cb_label = "OPEN" if cb.get("open") else "OK"
 
         status_text = (
             f"📊 Статус бота:\n\n"
             f"Статус: {'⏸️ PAUSED' if self.is_paused else '✅ RUNNING'}\n"
             f"Global stop: {stop_label} (TTL: {stop_ttl_text})\n"
-            f"Circuit breaker: {cb_label}\n"
             f"Всего опубликовано: {stats['total']}\n"
             f"За сегодня: {stats['today']}\n"
             f"Интервал проверки: {CHECK_INTERVAL_SECONDS} сек\n"
@@ -946,6 +943,8 @@ class NewsBot:
     
     async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """⚙️ Меню настроек"""
+    async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """⚙️ Меню настроек"""
         user_id = update.message.from_user.id
         is_admin = self._is_admin(user_id)
         app_env = get_app_env()
@@ -962,8 +961,8 @@ class NewsBot:
             keyboard.insert(3, [InlineKeyboardButton(f"🌐 Перевод ({target_lang.upper()}): {translate_status}", callback_data="settings:translate_toggle")])
             keyboard.insert(4, [InlineKeyboardButton("📥 Экспорт новостей", callback_data="export_menu")])
 
-        # Global stop/restore only in sandbox (stops both bots). In prod — only local pause/resume (⏸️/▶️).
-        if app_env == "sandbox" and is_admin:
+        # Global collection control buttons for admins (prod + sandbox)
+        if is_admin:
             is_stopped, _ttl = get_global_collection_stop_status(app_env=app_env)
             if is_stopped:
                 keyboard.append([InlineKeyboardButton("▶️ Возобновить сбор", callback_data="collection:restore")])
@@ -1039,12 +1038,10 @@ class NewsBot:
                 await query.answer("⛔ Access denied", show_alert=True)
                 return
         
-        # ==================== COLLECTION CONTROL CALLBACKS (sandbox only: global stop for both bots) ====================
+        # ==================== COLLECTION CONTROL CALLBACKS ====================
         if query.data == "collection:stop":
+            # Stop global collection
             await query.answer()
-            if get_app_env() != "sandbox":
-                await query.edit_message_text("❌ Остановка/возобновление сбора доступны только в боте sandbox.")
-                return
             user_id = query.from_user.id
             if not self._is_admin(user_id):
                 await query.edit_message_text("❌ Только администраторы могут остановить сбор")
@@ -1062,10 +1059,8 @@ class NewsBot:
             return
         
         if query.data == "collection:restore":
+            # Restore global collection
             await query.answer()
-            if get_app_env() != "sandbox":
-                await query.edit_message_text("❌ Остановка/возобновление сбора доступны только в боте sandbox.")
-                return
             user_id = query.from_user.id
             if not self._is_admin(user_id):
                 await query.edit_message_text("❌ Только администраторы могут восстановить сбор")
@@ -1672,20 +1667,6 @@ class NewsBot:
                     timestamps.append(now)
                     self.user_ai_requests[user_id] = timestamps
 
-                    cb = self.deepseek_client.get_circuit_state()
-                    if cb.get("open"):
-                        await query.answer("ИИ временно недоступен", show_alert=True)
-                        try:
-                            await context.bot.send_message(
-                                chat_id=user_id,
-                                text="ИИ временно недоступен. Попробуйте позже.",
-                                disable_web_page_preview=True,
-                                disable_notification=True,
-                            )
-                        except Exception:
-                            pass
-                        return
-
                     await query.answer("⏳ Генерирую пересказ...", show_alert=False)
                     logger.info(f"AI summarize requested for news_id={news_id} by user={user_id}")
 
@@ -1709,11 +1690,12 @@ class NewsBot:
                         )
                         return
 
-                    # Use longest available body so we don't pass short excerpt when full text exists
-                    clean = (news.get('clean_text') or '').strip()
-                    lead = (news.get('lead_text') or '').strip()
-                    raw = (news.get('text') or '').strip()
-                    lead_text = max((clean, lead, raw), key=len, default='') or (news.get('title') or '')
+                    lead_text = (
+                        news.get('clean_text')
+                        or news.get('lead_text')
+                        or news.get('text', '')
+                        or news.get('title', '')
+                    )
                     from config.config import DEEPSEEK_INPUT_COST_PER_1K_TOKENS_USD, DEEPSEEK_OUTPUT_COST_PER_1K_TOKENS_USD
 
                     checksum = news.get('checksum')
@@ -1752,17 +1734,10 @@ class NewsBot:
                             ]])
                         )
                     else:
-                        reason = token_usage.get('circuit_open') and 'circuit_open' or token_usage.get('too_short') and 'too_short' or 'unknown'
-                        logger.warning(
-                            f"AI summarize failed for news_id={news_id}, no summary returned (reason={reason})"
-                        )
-                        if token_usage.get('too_short'):
-                            msg = "Текст новости слишком короткий для пересказа."
-                        else:
-                            msg = "ИИ временно недоступен. Попробуйте позже."
+                        logger.warning(f"AI summarize failed for news_id={news_id}, no summary returned")
                         await context.bot.send_message(
                             chat_id=user_id,
-                            text=msg,
+                            text="ИИ временно недоступен. Попробуйте позже.",
                             disable_web_page_preview=True,
                             disable_notification=True
                         )
@@ -1833,16 +1808,18 @@ class NewsBot:
         try:
             from config.config import APP_ENV
             
-            # Get effective AI level for summary (manual button request — no tick gate)
+            # Get effective AI level for summary
             from core.services.access_control import get_effective_level
             level = get_effective_level(self.db, str(user_id or 'global'), 'summary')
 
+            if not self._ai_tick_allow("summary"):
+                return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "skipped_by_gate": True}
+            
             summary, token_usage = await self.deepseek_client.summarize(
                 title=title,
                 text=text,
                 level=level,
-                checksum=checksum,
-                allow_short=True,
+                checksum=checksum
             )
             if summary:
                 logger.debug(f"DeepSeek summary created (level={level}): {summary[:50]}...")
@@ -1976,14 +1953,10 @@ class NewsBot:
                 language = news_data.get('language') or 'ru'
                 tag_language = 'ru' if (translate_enabled and language == 'en') else ('en' if language == 'en' else 'ru')
                 base_tag = self._get_category_tag(news_data.get('category', 'russia'), tag_language)
-                # Prefer full hierarchical hashtags (g0, g1?, g2?, g3?, r0) as-is from taxonomy;
-                # do not reorder by category tag, only add emoji.
-                extra_tags = (
-                    news_data.get('hashtags')
-                    or (news_data.get('hashtags_ru') if tag_language == 'ru' else news_data.get('hashtags_en'))
-                    or ''
-                )
-                extra_tags = extra_tags.strip()
+                extra_tags = news_data.get('hashtags_ru') if tag_language == 'ru' else news_data.get('hashtags_en')
+                extra_tags = extra_tags or ''
+                if base_tag and base_tag in extra_tags:
+                    extra_tags = extra_tags.replace(base_tag, '').strip()
 
                 message_to_send = format_telegram_message(
                     title=title,
@@ -2490,27 +2463,42 @@ class NewsBot:
         }
         emoji = emoji_map.get(category, '🗞')
         base_tag = self._get_category_tag(category, language)
-        # IMPORTANT: hashtags order must follow taxonomy (g0, g1?, g2?, g3?, r0).
-        # extra_tags is already a full hierarchical string from build_hashtags_for_item.
-        # We only add emoji and do NOT prepend category tag to avoid reordering/duplication.
-        tags = (extra_tags or '').strip() or base_tag
+        tags = f"{base_tag} {extra_tags}".strip() if extra_tags else base_tag
         return f"{emoji} {tags}".strip()
 
     async def _generate_hashtags_snapshot(self, news: dict) -> tuple[str, str]:
-        """Generate (hashtags_ru, hashtags_en) via strict taxonomy: g0 only on strong Russia, no #Новости."""
-        title = news.get('title', '') or ''
-        text = (news.get('clean_text') or news.get('text', '') or '')
+        """Generate and return (hashtags_ru, hashtags_en) strings."""
+        title = news.get('title', '')
+        text = news.get('clean_text') or news.get('text', '') or ''
+        language = news.get('language') or 'ru'
+        category = news.get('category', 'russia')
+        from core.services.access_control import get_effective_level
+        from utils.hashtags_taxonomy import build_hashtags, build_hashtags_en
+
+        level = get_effective_level(self.db, 'global', 'hashtags')
+
         try:
-            from utils.hashtags_taxonomy import build_hashtags_for_item, build_hashtags_en
-            config = getattr(self, 'config', None)
-            tags_ru = build_hashtags_for_item(title, text, config=config)
+            tags_ru = await build_hashtags(
+                title=title,
+                text=text,
+                language=language,
+                chat_id='global',
+                ai_client=self.deepseek_client,
+                level=level,
+                ai_call_guard=self._ai_tick_allow,
+            )
         except Exception as e:
             logger.debug(f"Hashtag taxonomy failed: {e}")
             tags_ru = []
+
         if not tags_ru:
-            tags_ru = ["#Мир", "#Общество"]
+            tags_ru = ["#Россия", "#Общество"]
+
         tags_en = build_hashtags_en(tags_ru)
-        return " ".join(tags_ru), " ".join(tags_en)
+
+        hashtags_ru = " ".join(tags_ru)
+        hashtags_en = " ".join(tags_en)
+        return hashtags_ru, hashtags_en
     
     async def run_periodic_collection(self):
         """Запускает периодический сбор новостей"""
@@ -2552,8 +2540,11 @@ class NewsBot:
         # Создаем приложение
         self.create_application()
         
-        # Запускаем периодический сбор в фоне
-        collection_task = asyncio.create_task(self.run_periodic_collection())
+        # Запускаем периодический сбор в фоне (только в prod)
+        collection_task = None
+        from config.config import APP_ENV
+        if APP_ENV == "prod":
+            collection_task = asyncio.create_task(self.run_periodic_collection())
         mgmt_runner = None
         
         # Запускаем приложение
@@ -2595,7 +2586,8 @@ class NewsBot:
             logger.info("Received interrupt signal")
         finally:
             self.is_running = False
-            collection_task.cancel()
+            if collection_task:
+                collection_task.cancel()
             await stop_mgmt_api(mgmt_runner)
             await self.application.updater.stop()
             await self.application.stop()

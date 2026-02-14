@@ -36,6 +36,14 @@ class NewsDatabase:
                 cursor.execute("PRAGMA busy_timeout=10000;")
             except Exception:
                 pass
+            try:
+                cursor.execute("PRAGMA cache_size = -20000;")  # Ограничение кэша ~20MB для оптимизации Railway
+            except Exception:
+                pass
+            try:
+                cursor.execute("PRAGMA temp_store = MEMORY;")
+            except Exception:
+                pass
 
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS published_news (

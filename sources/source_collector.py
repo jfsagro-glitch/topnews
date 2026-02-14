@@ -49,8 +49,8 @@ class SourceCollector:
         self.last_collected_counts = {}
         self.last_collection_at = None
         
-        # Семафор для ограничения параллелизма (6 одновременных запросов)
-        self._sem = asyncio.Semaphore(6)
+        # Семафор для ограничения параллелизма (3 одновременных запроса для оптимизации Railway)
+        self._sem = asyncio.Semaphore(3)
         
         # Cooldown для источников, которые возвращают 403/429
         self._cooldown_until = {}  # url -> timestamp
