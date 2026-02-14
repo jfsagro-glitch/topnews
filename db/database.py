@@ -1229,6 +1229,33 @@ class NewsDatabase:
         }
         return params.get(tier, params['B'])
 
+    def toggle_source_enabled(self, source_code: str) -> bool:
+        """Toggle enabled_global flag for a source."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                # Get current state
+                cursor.execute("SELECT enabled_global FROM sources WHERE code = ?", (source_code,))
+                row = cursor.fetchone()
+                if not row:
+                    logger.warning(f"Source {source_code} not found")
+                    return False
+                
+                current_state = row[0]
+                new_state = 0 if current_state else 1
+                
+                # Update state
+                cursor.execute(
+                    "UPDATE sources SET enabled_global = ? WHERE code = ?",
+                    (new_state, source_code)
+                )
+                self._conn.commit()
+                logger.info(f"Toggled source {source_code} enabled_global: {current_state} -> {new_state}")
+                return True
+        except Exception as e:
+            logger.error(f"Error toggling source enabled for {source_code}: {e}")
+            return False
+
     def auto_adjust_source_tiers(self, days: int = 7, promote_threshold: float = 0.8, demote_threshold: float = 0.6) -> dict:
         """
         Auto-adjust source tiers based on quality_score over specified days.

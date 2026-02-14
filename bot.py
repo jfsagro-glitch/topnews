@@ -1794,6 +1794,56 @@ class NewsBot:
             await self._show_admin_sources_panel(query)
             return
         
+        # Sources pagination
+        if query.data.startswith("mgmt:sources:page:"):
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await query.answer()
+            page = int(query.data.split(":")[-1])
+            await self._show_admin_sources_panel(query, page=page)
+            return
+        
+        # Source detail view
+        if query.data.startswith("mgmt:source:detail:"):
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await query.answer()
+            source_code = query.data.split(":")[-1]
+            await self._show_source_detail(query, source_code)
+            return
+        
+        # Source toggle enable/disable
+        if query.data.startswith("mgmt:source:toggle:"):
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            source_code = query.data.split(":")[-1]
+            success = self.db.toggle_source_enabled(source_code)
+            if success:
+                await query.answer("✅ Статус изменен", show_alert=False)
+            else:
+                await query.answer("❌ Ошибка изменения статуса", show_alert=True)
+            await self._show_source_detail(query, source_code)
+            return
+        
+        # Source tier change
+        if query.data.startswith("mgmt:source:tier:"):
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            parts = query.data.split(":")
+            source_code = parts[3]
+            new_tier = parts[4]
+            success = self.db.set_source_tier(source_code, new_tier)
+            if success:
+                await query.answer(f"✅ Tier изменен на {new_tier}", show_alert=False)
+            else:
+                await query.answer("❌ Ошибка изменения tier", show_alert=True)
+            await self._show_source_detail(query, source_code)
+            return
+        
         # Stats refresh
         if query.data == "mgmt:stats:refresh":
             if not self._is_admin(query.from_user.id):
@@ -4163,42 +4213,172 @@ class NewsBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text=text, reply_markup=reply_markup)
 
-    async def _show_admin_sources_panel(self, query):
-        """📰 Sources management panel"""
-        all_enabled = True  # Placeholder - check actual status
-        telegram_enabled = self._get_rsshub_telegram_enabled()
+    async def _show_admin_sources_panel(self, query, page: int = 0):
+        """📰 Sources management panel with paginated list"""
+        sources = self.db.list_sources()
+        if not sources:
+            await query.edit_message_text(
+                text="📰 Нет источников в базе данных",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Назад в меню", callback_data="mgmt:main")]
+                ])
+            )
+            return
         
-        total_sources = len(self.collector._configured_sources) if self.collector else 0
-        failed_sources = 0
-        if self.collector and self.collector.source_health:
-            failed_sources = len([s for s, ok in self.collector.source_health.items() if not ok])
+        # Sort by quality_score DESC
+        sources_with_quality = []
+        for src in sources:
+            quality = self.db.get_source_quality(src['code']) or {}
+            quality_score = quality.get('quality_score', 0.0)
+            error_streak = quality.get('error_streak', 0)
+            last_success = quality.get('last_success_at', 'никогда')
+            tier = self.db.get_source_tier(src['code'])
+            sources_with_quality.append({
+                **src,
+                'quality_score': quality_score,
+                'error_streak': error_streak,
+                'last_success': last_success,
+                'tier': tier
+            })
+        
+        sources_with_quality.sort(key=lambda x: x['quality_score'], reverse=True)
+        
+        # Pagination
+        per_page = 8
+        total_pages = (len(sources_with_quality) + per_page - 1) // per_page
+        page = max(0, min(page, total_pages - 1))
+        start_idx = page * per_page
+        end_idx = min(start_idx + per_page, len(sources_with_quality))
+        page_sources = sources_with_quality[start_idx:end_idx]
+        
+        # Build message
+        text_lines = [
+            f"📰 ИСТОЧНИКИ ({len(sources)} всего)\n",
+            f"Страница {page + 1}/{total_pages}\n"
+        ]
+        
+        keyboard = []
+        
+        for src in page_sources:
+            # Status indicator
+            if src.get('enabled_global'):
+                if src['error_streak'] >= 5:
+                    status = "🔴"  # Enabled but failing
+                elif src['error_streak'] > 0:
+                    status = "🟡"  # Enabled with some errors
+                else:
+                    status = "🟢"  # OK
+            else:
+                status = "⚫"  # Disabled
+            
+            # Format source line
+            name = src['name'][:20] if len(src['name']) > 20 else src['name']
+            tier = src.get('tier', 'B')
+            score = src.get('quality_score', 0.0)
+            
+            button_text = f"{status} {name} [{'A' if tier=='A' else 'B' if tier=='B' else 'C'}] {score:.2f}"
+            keyboard.append([InlineKeyboardButton(
+                button_text,
+                callback_data=f"mgmt:source:detail:{src['code']}"
+            )])
+        
+        # Pagination buttons
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"mgmt:sources:page:{page-1}"))
+        nav_buttons.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"mgmt:sources:page:{page+1}"))
+        keyboard.append(nav_buttons)
+        
+        # Action buttons
+        keyboard.append([
+            InlineKeyboardButton("🔍 Тест всех", callback_data="mgmt:sources:test_all"),
+            InlineKeyboardButton("🔄 Авто-тюнинг", callback_data="mgmt:sources:auto_tune")
+        ])
+        keyboard.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data="mgmt:main")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        text = "\n".join(text_lines) + "\n\nЛегенда:\n🟢 OK | 🟡 Ошибки | 🔴 Много ошибок | ⚫ Выключен\n[A/B/C] = tier"
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
 
-        try:
-            from config.railway_config import RSSHUB_DISABLED_CHANNELS
-        except (ImportError, ValueError):
-            from config.config import RSSHUB_DISABLED_CHANNELS
-        disabled_list = [c.strip() for c in (RSSHUB_DISABLED_CHANNELS or "").split(",") if c.strip()]
-        disabled_text = ", ".join(disabled_list) if disabled_list else "нет"
+    async def _show_source_detail(self, query, source_code: str):
+        """Show detailed information about a source with action buttons."""
+        # Get source info
+        sources = self.db.list_sources()
+        source = next((s for s in sources if s['code'] == source_code), None)
+        if not source:
+            await query.answer("❌ Источник не найден", show_alert=True)
+            return
         
+        # Get quality metrics
+        quality = self.db.get_source_quality(source_code) or {}
+        quality_score = quality.get('quality_score', 0.0)
+        success_count = quality.get('success_count', 0)
+        error_count = quality.get('error_count', 0)
+        error_streak = quality.get('error_streak', 0)
+        items_total = quality.get('items_total', 0)
+        items_new = quality.get('items_new', 0)
+        items_duplicate = quality.get('items_duplicate', 0)
+        last_success = quality.get('last_success_at', 'никогда')
+        last_error = quality.get('last_error_at', 'нет')
+        last_error_code = quality.get('last_error_code', '-')
+        
+        # Get tier
+        tier = self.db.get_source_tier(source_code)
+        tier_params = self.db.get_tier_params(tier)
+        
+        # Status indicator
+        if source.get('enabled_global'):
+            if error_streak >= 5:
+                status = "🔴 Активен (много ошибок)"
+            elif error_streak > 0:
+                status = "🟡 Активен (есть ошибки)"
+            else:
+                status = "🟢 Активен"
+        else:
+            status = "⚫ Отключен"
+        
+        # Format message
         text = (
-            "📰 УПРАВЛЕНИЕ ИСТОЧНИКАМИ\n\n"
-            f"Активные источники: {total_sources}\n"
-            f"Ошибок источников: {failed_sources}\n"
-            f"Telegram (RSSHub): {'✅ ВКЛ' if telegram_enabled else '⛔ ВЫКЛ'}\n"
-            f"Отключенные каналы: {disabled_text}\n\n"
-            "Действия:"
+            f"📰 {source['name']}\n\n"
+            f"Код: {source_code}\n"
+            f"Статус: {status}\n"
+            f"Tier: {tier} (интервал: {tier_params['min_interval_seconds']//60} мин, "
+            f"лимит: {tier_params.get('max_items_per_fetch', 'нет')})\n\n"
+            f"📊 Качество: {quality_score:.3f}\n"
+            f"✅ Успехов: {success_count}\n"
+            f"❌ Ошибок: {error_count} (streak: {error_streak})\n\n"
+            f"📈 Статистика:\n"
+            f"  Всего получено: {items_total}\n"
+            f"  Новых: {items_new}\n"
+            f"  Дубликатов: {items_duplicate}\n\n"
+            f"🕐 Последний успех: {last_success}\n"
+            f"❗ Последняя ошибка: {last_error}\n"
+            f"   Код ошибки: {last_error_code}"
         )
         
-        keyboard = [
-            [InlineKeyboardButton("✅ Включить все" if not all_enabled else "❌ Отключить все", 
-                                callback_data="mgmt:sources:toggle_all")],
-            [InlineKeyboardButton(
-                "🔕 Telegram: выключить" if telegram_enabled else "🔔 Telegram: включить",
-                callback_data="mgmt:sources:toggle_telegram",
-            )],
-            [InlineKeyboardButton("🔍 Переоценить сейчас", callback_data="mgmt:sources:rescan")],
-            [InlineKeyboardButton("⬅️ Назад в меню", callback_data="mgmt:main")],
-        ]
+        # Build keyboard
+        keyboard = []
+        
+        # Toggle enable/disable
+        toggle_text = "⛔ Отключить" if source.get('enabled_global') else "✅ Включить"
+        keyboard.append([InlineKeyboardButton(toggle_text, callback_data=f"mgmt:source:toggle:{source_code}")])
+        
+        # Tier change buttons
+        tier_buttons = []
+        for t in ['A', 'B', 'C']:
+            if t == tier:
+                tier_buttons.append(InlineKeyboardButton(f"[{t}]", callback_data="noop"))
+            else:
+                tier_buttons.append(InlineKeyboardButton(f"{t}", callback_data=f"mgmt:source:tier:{source_code}:{t}"))
+        keyboard.append(tier_buttons)
+        
+        # Test fetch button
+        keyboard.append([InlineKeyboardButton("🧪 Тест сбора", callback_data=f"mgmt:source:test:{source_code}")])
+        
+        # Back button
+        keyboard.append([InlineKeyboardButton("⬅️ К списку", callback_data="mgmt:sources")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text=text, reply_markup=reply_markup)
