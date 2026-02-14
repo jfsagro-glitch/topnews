@@ -244,7 +244,7 @@ class SourceCollector:
                             logger.info(f"Source {domain} using HTML parsing: {src_url}")
                             _add_entry(src_url, domain, 'html')
         
-        # Log summary of configured sources
+        # Log summary of configured sources  
         telegram_sources = []
         seen_telegram = set()
         for s in self._configured_sources:
