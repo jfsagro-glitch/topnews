@@ -319,9 +319,13 @@ class SourceCollector:
             return self._rsshub_telegram_enabled_default
 
     def _should_fetch_source(self, url: str, source_name: str, src_type: str) -> bool:
+        """Check if source should be fetched now based on cooldown and timing"""
+        # Check if Telegram RSSHub is disabled
         if self._is_telegram_rsshub(url) and not self._rsshub_telegram_enabled():
             logger.info(f"Skipping Telegram RSSHub source (disabled): {source_name}")
             return False
+        
+        # Check cooldown
         if self._in_cooldown(url):
             if self.db:
                 try:
@@ -337,24 +341,23 @@ class SourceCollector:
                     )
                 except Exception:
                     pass
-            logger.debug(f"Skipping {source_name}: in cooldown")
             return False
+        
+        # If no database, allow fetch
         if not self.db:
             return True
+        
+        # Check database state
         state = self.db.get_source_fetch_state(url)
         if not state:
-            logger.debug(f"Allowing {source_name}: no state in DB")
             return True
+        
         next_fetch = state.get("next_fetch_at")
         # Allow fetch if next_fetch_at is None, 0, or time has passed
-        if next_fetch is None or next_fetch == 0:
-            logger.debug(f"Allowing {source_name}: next_fetch_at is {next_fetch}")
+        if not next_fetch or next_fetch == 0:
             return True
-        time_until = next_fetch - time.time()
-        if time_until > 0:
-            logger.debug(f"Skipping {source_name}: next fetch in {int(time_until/60)} minutes")
-            return False
-        return True
+        
+        return time.time() >= float(next_fetch)
 
     def _update_fetch_state(
         self,
@@ -571,28 +574,19 @@ class SourceCollector:
                 tier_max_items = self._get_max_items_for_source(source_name, max_items)
                 effective_max_items = tier_max_items if tier_max_items is not None else max_items
                 
-                if src_type == 'rss':
-                    tasks.append((
-                        source_name,
-                        fetch_url,
-                        src_type,
-                        self._collect_with_timeout(
-                            fetch_url,
-                            source_name,
-                            self._collect_from_rss(fetch_url, source_name, category, effective_max_items),
-                        ),
-                    ))
-                else:
-                    tasks.append((
-                        source_name,
-                        fetch_url,
-                        src_type,
-                        self._collect_with_timeout(
-                            fetch_url,
-                            source_name,
-                            self._collect_from_html(fetch_url, source_name, category, effective_max_items),
-                        ),
-                    ))
+                # Select appropriate collection method
+                collect_method = (
+                    self._collect_from_rss(fetch_url, source_name, category, effective_max_items)
+                    if src_type == 'rss'
+                    else self._collect_from_html(fetch_url, source_name, category, effective_max_items)
+                )
+                
+                tasks.append((
+                    source_name,
+                    fetch_url,
+                    src_type,
+                    self._collect_with_timeout(fetch_url, source_name, collect_method),
+                ))
             
             logger.info(f"Collection: {len(tasks)} sources to fetch, {skipped_count} skipped")
             
@@ -610,7 +604,10 @@ class SourceCollector:
             
             # Собираем результаты
             for (source_name, fetch_url, src_type, _task), result in zip(tasks, results):
-                if isinstance(result, list):
+                status = self._last_fetch_status.get(fetch_url, {})
+                is_success = isinstance(result, list)
+                
+                if is_success:
                     count = len(result)
                     self.last_collected_counts[source_name] = count
                     all_news.extend(result)
@@ -619,46 +616,30 @@ class SourceCollector:
                         logger.info(f"{source_name}: collected {count} items")
                     else:
                         logger.warning(f"{source_name}: 0 items (no new content or parsing issue)")
-                    status = self._last_fetch_status.get(fetch_url, {})
-                    self._update_fetch_state(
-                        fetch_url,
-                        source_name,
-                        src_type,
-                        ok=status.get("ok", True),
-                        status_code=status.get("status_code"),
-                        error_code=status.get("error"),
-                    )
-                    # Record quality metrics and check for quarantine
-                    quarantine_info = self.db.update_source_quality_fetch(
-                        source_name,
-                        ok=status.get("ok", True),
-                        error_code=status.get("error")
-                    )
-                    if quarantine_info:
-                        self.quarantined_sources_this_tick.append(quarantine_info)
-                elif isinstance(result, Exception):
+                else:
                     logger.error(f"{source_name}: {type(result).__name__}: {result}")
                     self.source_health[source_name] = False
                     self._note_source_failure(fetch_url)
-                    # Ensure we still record 0 for failed sources so they show in status
                     self.last_collected_counts[source_name] = 0
-                    status = self._last_fetch_status.get(fetch_url, {})
-                    self._update_fetch_state(
-                        fetch_url,
-                        source_name,
-                        src_type,
-                        ok=False,
-                        status_code=status.get("status_code"),
-                        error_code=status.get("error"),
-                    )
-                    # Record quality metrics and check for quarantine
-                    quarantine_info = self.db.update_source_quality_fetch(
-                        source_name,
-                        ok=False,
-                        error_code=status.get("error")
-                    )
-                    if quarantine_info:
-                        self.quarantined_sources_this_tick.append(quarantine_info)
+                
+                # Update fetch state for both success and failure
+                self._update_fetch_state(
+                    fetch_url,
+                    source_name,
+                    src_type,
+                    ok=status.get("ok", True) if is_success else False,
+                    status_code=status.get("status_code"),
+                    error_code=status.get("error"),
+                )
+                
+                # Record quality metrics and check for quarantine
+                quarantine_info = self.db.update_source_quality_fetch(
+                    source_name,
+                    ok=status.get("ok", True) if is_success else False,
+                    error_code=status.get("error")
+                )
+                if quarantine_info:
+                    self.quarantined_sources_this_tick.append(quarantine_info)
             
             logger.info(f"Collected total {len(all_news)} news items from {len([s for s in self.source_health.values() if s])} sources")
 
