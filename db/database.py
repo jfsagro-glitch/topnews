@@ -350,6 +350,7 @@ class NewsDatabase:
                     translate_enabled INTEGER DEFAULT 0,
                     translate_lang TEXT DEFAULT 'ru',
                     category_filter TEXT,
+                    delivery_mode TEXT DEFAULT 'realtime',
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -362,6 +363,25 @@ class NewsDatabase:
                     delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (user_id, news_id)
                 )
+            ''')
+
+            # Table for pending digest items (buffered news for hourly/morning delivery)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS pending_digests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    news_id INTEGER NOT NULL,
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    delivery_mode TEXT NOT NULL,
+                    FOREIGN KEY (news_id) REFERENCES published_news(id),
+                    UNIQUE(user_id, news_id)
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_pending_digests_user ON pending_digests(user_id)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_pending_digests_added ON pending_digests(added_at)
             ''')
 
             # Table for cached translations (by news_id + checksum + target language)
@@ -540,6 +560,7 @@ class NewsDatabase:
                 'translate_lang': "TEXT DEFAULT 'ru'",
                 'env': "TEXT DEFAULT 'prod'",
                 'category_filter': 'TEXT',
+                'delivery_mode': "TEXT DEFAULT 'realtime'",
             }
             for column, col_type in required.items():
                 if column not in existing:
@@ -1437,6 +1458,133 @@ class NewsDatabase:
             ]
         except Exception as e:
             logger.error(f"Error getting cluster members: {e}")
+            return []
+
+    # ========================
+    # Delivery Mode Functions
+    # ========================
+
+    def get_user_delivery_mode(self, user_id: str, env: str = 'prod') -> str:
+        """Get user's delivery mode preference (realtime/hourly/morning)."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                SELECT delivery_mode FROM user_preferences
+                WHERE user_id = ? AND (env = ? OR env IS NULL)
+            """, (str(user_id), env))
+            row = cursor.fetchone()
+            return row[0] if row else 'realtime'
+        except Exception as e:
+            logger.error(f"Error getting user delivery mode: {e}")
+            return 'realtime'
+
+    def set_user_delivery_mode(self, user_id: str, mode: str, env: str = 'prod') -> bool:
+        """Set user's delivery mode (realtime/hourly/morning)."""
+        if mode not in ('realtime', 'hourly', 'morning'):
+            logger.error(f"Invalid delivery mode: {mode}")
+            return False
+        
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute("""
+                    INSERT INTO user_preferences (user_id, env, delivery_mode, updated_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        delivery_mode = excluded.delivery_mode,
+                        updated_at = excluded.updated_at
+                """, (str(user_id), env, mode))
+                self._conn.commit()
+                logger.info(f"Set delivery mode for user {user_id} to {mode}")
+                return True
+        except Exception as e:
+            logger.error(f"Error setting user delivery mode: {e}")
+            return False
+
+    def add_to_pending_digest(self, user_id: str, news_id: int, delivery_mode: str) -> bool:
+        """Add news item to user's pending digest."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute("""
+                    INSERT OR IGNORE INTO pending_digests (user_id, news_id, delivery_mode, added_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                """, (str(user_id), news_id, delivery_mode))
+                self._conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error adding to pending digest: {e}")
+            return False
+
+    def get_pending_digest_items(self, user_id: str, delivery_mode: str = None) -> List[dict]:
+        """Get pending digest items for a user, optionally filtered by delivery_mode."""
+        try:
+            cursor = self._conn.cursor()
+            if delivery_mode:
+                cursor.execute("""
+                    SELECT pd.id, pd.news_id, pd.added_at, n.title, n.source, n.url, n.category
+                    FROM pending_digests pd
+                    JOIN published_news n ON pd.news_id = n.id
+                    WHERE pd.user_id = ? AND pd.delivery_mode = ?
+                    ORDER BY pd.added_at
+                """, (str(user_id), delivery_mode))
+            else:
+                cursor.execute("""
+                    SELECT pd.id, pd.news_id, pd.added_at, n.title, n.source, n.url, n.category
+                    FROM pending_digests pd
+                    JOIN published_news n ON pd.news_id = n.id
+                    WHERE pd.user_id = ?
+                    ORDER BY pd.added_at
+                """, (str(user_id),))
+            
+            return [
+                {
+                    'digest_id': row[0],
+                    'news_id': row[1],
+                    'added_at': row[2],
+                    'title': row[3],
+                    'source': row[4],
+                    'url': row[5],
+                    'category': row[6],
+                }
+                for row in cursor.fetchall()
+            ]
+        except Exception as e:
+            logger.error(f"Error getting pending digest items: {e}")
+            return []
+
+    def clear_pending_digest(self, user_id: str, news_ids: List[int] = None) -> int:
+        """Clear pending digest items. If news_ids provided, clear only those; else clear all."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                if news_ids:
+                    placeholders = ','.join(['?'] * len(news_ids))
+                    cursor.execute(f"""
+                        DELETE FROM pending_digests
+                        WHERE user_id = ? AND news_id IN ({placeholders})
+                    """, (str(user_id), *news_ids))
+                else:
+                    cursor.execute("""
+                        DELETE FROM pending_digests WHERE user_id = ?
+                    """, (str(user_id),))
+                self._conn.commit()
+                return cursor.rowcount
+        except Exception as e:
+            logger.error(f"Error clearing pending digest: {e}")
+            return 0
+
+    def get_users_by_delivery_mode(self, delivery_mode: str, env: str = 'prod') -> List[str]:
+        """Get all user IDs with a specific delivery mode."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                SELECT user_id FROM user_preferences
+                WHERE delivery_mode = ? AND (env = ? OR env IS NULL)
+            """, (delivery_mode, env))
+            return [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting users by delivery mode: {e}")
             return []
 
     def get_source_event_counts(self, sources: List[str], window_hours: int = 24) -> dict:

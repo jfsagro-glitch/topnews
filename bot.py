@@ -1050,8 +1050,11 @@ class NewsBot:
         if app_env == "prod":
             translate_enabled, target_lang = self.db.get_user_translation(str(user_id), env="prod")
             translate_status = "Вкл" if translate_enabled else "Выкл"
+            delivery_mode = self.db.get_user_delivery_mode(str(user_id), env="prod")
+            delivery_label = {"realtime": "В реальном времени", "hourly": "Каждый час", "morning": "Утром"}.get(delivery_mode, "В реальном времени")
             keyboard.append([InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")])
             keyboard.append([InlineKeyboardButton(f"🌐 Перевод ({target_lang.upper()}): {translate_status}", callback_data="settings:translate_toggle")])
+            keyboard.append([InlineKeyboardButton(f"⏰ Доставка: {delivery_label}", callback_data="settings:delivery_mode")])
             keyboard.append([InlineKeyboardButton("📥 Экспорт новостей", callback_data="export_menu")])
             keyboard.append([InlineKeyboardButton("📊 Статус бота", callback_data="show_status")])
         else:
@@ -1144,6 +1147,8 @@ class NewsBot:
                 or data.startswith("settings:src_toggle:")
                 or data.startswith("settings:src_page:")
                 or data == "settings:translate_toggle"
+                or data == "settings:delivery_mode"
+                or data.startswith("settings:delivery:")
                 or data == "export_menu"
                 or data.startswith("export_period:")
                 or data == "export_doc"
@@ -1264,12 +1269,16 @@ class NewsBot:
         if query.data == "settings:back":
             # Вернуться к меню настроек
             await query.answer()
-            translate_enabled, target_lang = self.db.get_user_translation(str(query.from_user.id), env="prod")
+            user_id = str(query.from_user.id)
+            translate_enabled, target_lang = self.db.get_user_translation(user_id, env="prod")
             translate_status = "Вкл" if translate_enabled else "Выкл"
+            delivery_mode = self.db.get_user_delivery_mode(user_id, env="prod")
+            delivery_label = {"realtime": "В реальном времени", "hourly": "Каждый час", "morning": "Утром"}.get(delivery_mode, "В реальном времени")
             keyboard = [
                 [InlineKeyboardButton("🧰 Фильтр", callback_data="settings:filter")],
                 [InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")],
                 [InlineKeyboardButton(f"🌐 Перевод ({target_lang.upper()}): {translate_status}", callback_data="settings:translate_toggle")],
+                [InlineKeyboardButton(f"⏰ Доставка: {delivery_label}", callback_data="settings:delivery_mode")],
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
@@ -1292,6 +1301,63 @@ class NewsBot:
                     [InlineKeyboardButton("⬅️ Назад", callback_data="settings:back")]
                 ])
             )
+            return
+        
+        if query.data == "settings:delivery_mode":
+            await query.answer()
+            user_id = str(query.from_user.id)
+            current_mode = self.db.get_user_delivery_mode(user_id, env="prod")
+            
+            keyboard = [
+                [InlineKeyboardButton(
+                    f"{'✅' if current_mode == 'realtime' else '⚪'} В реальном времени",
+                    callback_data="settings:delivery:realtime"
+                )],
+                [InlineKeyboardButton(
+                    f"{'✅' if current_mode == 'hourly' else '⚪'} Каждый час",
+                    callback_data="settings:delivery:hourly"
+                )],
+                [InlineKeyboardButton(
+                    f"{'✅' if current_mode == 'morning' else '⚪'} Утром (7:00)",
+                    callback_data="settings:delivery:morning"
+                )],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="settings:back")]
+            ]
+            
+            await query.edit_message_text(
+                text="⏰ Режим доставки новостей:\n\n"
+                     "• В реальном времени — новости приходят сразу\n"
+                     "• Каждый час — новости собираются и отправляются раз в час\n"
+                     "• Утром — новости приходят один раз в 7:00",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
+        
+        if query.data.startswith("settings:delivery:"):
+            await query.answer()
+            user_id = str(query.from_user.id)
+            mode = query.data.split(":")[-1]  # realtime, hourly, morning
+            
+            success = self.db.set_user_delivery_mode(user_id, mode, env="prod")
+            if success:
+                mode_names = {
+                    "realtime": "В реальном времени",
+                    "hourly": "Каждый час",
+                    "morning": "Утром (7:00)"
+                }
+                await query.edit_message_text(
+                    text=f"✅ Режим доставки изменен на: {mode_names.get(mode, mode)}",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Назад", callback_data="settings:back")]
+                    ])
+                )
+            else:
+                await query.edit_message_text(
+                    text="❌ Ошибка при изменении режима доставки",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Назад", callback_data="settings:back")]
+                    ])
+                )
             return
         
         # ==================== AI MANAGEMENT CALLBACKS (ALL ADMINS) ====================
@@ -2308,6 +2374,16 @@ class NewsBot:
         """Final delivery gate with pause/version checks and idempotency."""
         try:
             user_id_str = str(user_id)
+            
+            # Check delivery mode - if not realtime, buffer to pending digest
+            delivery_mode = self.db.get_user_delivery_mode(user_id_str, env="prod")
+            if delivery_mode in ('hourly', 'morning'):
+                # Add to pending digest instead of immediate delivery
+                buffered = self.db.add_to_pending_digest(user_id_str, news_id, delivery_mode)
+                if buffered:
+                    logger.info(f"DELIVERY_BUFFERED user_id={user_id} news_id={news_id} mode={delivery_mode}")
+                return True
+            
             if get_app_env() == "prod" and news_data:
                 user_filter = self.db.get_user_category_filter(user_id_str, env="prod")
                 if user_filter and news_data.get('category') != user_filter:
@@ -2469,10 +2545,22 @@ class NewsBot:
         stop_state = get_global_collection_stop_state(app_env=get_app_env())
         if stop_state.enabled:
             logger.info(
-                {
-                    "event": "tick_skipped_global_stop",
-                    "ttl_sec_remaining": stop_state.ttl_sec_remaining,
-
+                f"tick_skipped_global_stop ttl_sec_remaining={stop_state.ttl_sec_remaining} key={stop_state.key}"
+            )
+            return 0
+        
+        if self.is_paused:
+            logger.info("Bot is paused, skipping collection")
+            return 0
+        
+        # Prevent concurrent collection cycles
+        if self.collection_lock.locked():
+            logger.info("Collection already in progress, skipping")
+            return 0
+        
+        async with self.collection_lock:
+            return await self._do_collect_and_publish()
+    
     async def run_tier_adjustment(self):
         """Periodic task to auto-adjust source tiers based on quality score."""
         logger.info("Starting tier adjustment scheduler (checks daily)")
@@ -2492,22 +2580,190 @@ class NewsBot:
             except Exception as e:
                 logger.error(f"Error in tier adjustment: {e}", exc_info=True)
                 await asyncio.sleep(60 * 60)  # Wait 1 hour on error before retry
-                    "key": stop_state.key,
-                }
-            )
-            return 0
+
+    async def run_hourly_digest(self):
+        """Periodic task to send hourly digests."""
+        logger.info("Starting hourly digest scheduler")
+        # Initial delay to align with hour boundary
+        import datetime
+        now = datetime.datetime.now()
+        minutes_until_next_hour = 60 - now.minute
+        await asyncio.sleep(minutes_until_next_hour * 60)
         
-        if self.is_paused:
-            logger.info("Bot is paused, skipping collection")
-            return 0
+        while True:
+            try:
+                logger.info("Running hourly digest delivery...")
+                await self._send_digest_to_users('hourly')
+            except Exception as e:
+                logger.error(f"Error in hourly digest: {e}", exc_info=True)
+            
+            await asyncio.sleep(60 * 60)  # Run every hour
+
+    async def run_morning_digest(self):
+        """Periodic task to send morning digests at 7:00 AM."""
+        logger.info("Starting morning digest scheduler")
         
-        # Prevent concurrent collection cycles
-        if self.collection_lock.locked():
-            logger.info("Collection already in progress, skipping")
-            return 0
-        
-        async with self.collection_lock:
-            return await self._do_collect_and_publish()
+        while True:
+            try:
+                import datetime
+                now = datetime.datetime.now()
+                target_hour = 7  # 7:00 AM
+                
+                # Calculate seconds until next 7:00 AM
+                target = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+                if now >= target:
+                    target += datetime.timedelta(days=1)
+                
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"Next morning digest in {wait_seconds/3600:.1f} hours")
+                await asyncio.sleep(wait_seconds)
+                
+                logger.info("Running morning digest delivery...")
+                await self._send_digest_to_users('morning')
+            except Exception as e:
+                logger.error(f"Error in morning digest: {e}", exc_info=True)
+                await asyncio.sleep(60 * 60)  # Wait 1 hour on error
+
+    async def _send_digest_to_users(self, delivery_mode: str):
+        """Send pending digest items to all users with the specified delivery mode."""
+        try:
+            user_ids = self.db.get_users_by_delivery_mode(delivery_mode, env="prod")
+            if not user_ids:
+                logger.info(f"No users with {delivery_mode} delivery mode")
+                return
+            
+            logger.info(f"Sending {delivery_mode} digest to {len(user_ids)} users")
+            sent_count = 0
+            
+            for user_id_str in user_ids:
+                try:
+                    pending = self.db.get_pending_digest_items(user_id_str, delivery_mode)
+                    if not pending:
+                        continue
+                    
+                    # Send digest header
+                    if delivery_mode == 'hourly':
+                        header = f"📰 Почасовая подборка ({len(pending)} новостей)"
+                    else:
+                        header = f"☀️ Утренний дайджест ({len(pending)} новостей)"
+                    
+                    user_id = int(user_id_str)
+                    await self.application.bot.send_message(
+                        chat_id=user_id,
+                        text=header,
+                        disable_notification=True
+                    )
+                    
+                    # Send each news item
+                    news_ids_sent = []
+                    for item in pending[:50]:  # Limit to 50 items per digest
+                        news_id = item['news_id']
+                        news_data = self.db.get_news_by_id(news_id)
+                        if not news_data:
+                            continue
+                        
+                        # Check if news passes user filters
+                        user_filter = self.db.get_user_category_filter(user_id_str, env="prod")
+                        if user_filter and news_data.get('category') != user_filter:
+                            continue
+                        
+                        enabled_source_ids = self.db.get_enabled_source_ids_for_user(user_id_str, env="prod")
+                        if enabled_source_ids is not None:
+                            source = news_data.get('source', '')
+                            if source:
+                                if not hasattr(self, '_source_code_to_id_cache'):
+                                    sources = self.db.list_sources()
+                                    self._source_code_to_id_cache = {src['code']: src['id'] for src in sources}
+                                source_id = self._source_code_to_id_cache.get(source)
+                                if source_id and source_id not in enabled_source_ids:
+                                    continue
+                        
+                        # Build message
+                        base_text = (
+                            news_data.get('clean_text')
+                            or news_data.get('text', '')
+                            or news_data.get('lead_text', '')
+                        )
+                        title = news_data.get('title', 'No title')
+                        source_name = news_data.get('source', 'Unknown')
+                        source_url = news_data.get('url', '')
+                        
+                        # Translation if enabled
+                        translate_enabled, target_lang = self.db.get_user_translation(user_id_str, env="prod")
+                        translated_text = None
+                        if translate_enabled and news_data.get('language') == 'en' and base_text:
+                            checksum = news_data.get('checksum') or ''
+                            if checksum:
+                                translated_text = self.db.get_translation_cache(news_id, checksum, target_lang)
+                        
+                        language = news_data.get('language') or 'ru'
+                        tag_language = 'ru' if (translate_enabled and language == 'en') else ('en' if language == 'en' else 'ru')
+                        base_tag = self._get_category_tag(news_data.get('category', 'russia'), tag_language)
+                        extra_tags = news_data.get('hashtags_ru') if tag_language == 'ru' else news_data.get('hashtags_en')
+                        extra_tags = extra_tags or ''
+                        if base_tag and base_tag in extra_tags:
+                            extra_tags = extra_tags.replace(base_tag, '').strip()
+                        
+                        message = format_telegram_message(
+                            title=title,
+                            text=translated_text or base_text,
+                            source_name=source_name,
+                            source_url=source_url,
+                            category=self._get_category_line(
+                                news_data.get('category', 'russia'),
+                                language=tag_language,
+                                extra_tags=extra_tags
+                            )
+                        )
+                        
+                        # Build keyboard with cluster button if applicable
+                        cluster_id = self.db.get_cluster_for_news(news_id)
+                        cluster_info = None
+                        if cluster_id:
+                            cluster_info = self.db.get_cluster_info(cluster_id)
+                        
+                        buttons_row1 = [
+                            InlineKeyboardButton("✨ ИИ", callback_data=f"ai:{news_id}"),
+                            InlineKeyboardButton("✅ Отбор", callback_data=f"select:{news_id}")
+                        ]
+                        buttons_rows = [buttons_row1]
+                        
+                        if cluster_info and cluster_info['member_count'] > 1:
+                            source_count = cluster_info['member_count']
+                            suffix = "ов" if source_count > 4 else ("а" if source_count in (2, 3, 4) else "")
+                            buttons_rows.append([
+                                InlineKeyboardButton(
+                                    f"📰 +{source_count-1} источник{suffix}",
+                                    callback_data=f"cluster:{cluster_id}"
+                                )
+                            ])
+                        
+                        keyboard = InlineKeyboardMarkup(buttons_rows)
+                        
+                        await self.application.bot.send_message(
+                            chat_id=user_id,
+                            text=message,
+                            parse_mode=ParseMode.MARKDOWN,
+                            reply_markup=keyboard,
+                            disable_web_page_preview=True,
+                            disable_notification=True
+                        )
+                        
+                        news_ids_sent.append(news_id)
+                        self.db.update_last_delivered(user_id_str, news_id, env="prod")
+                    
+                    # Clear sent items from pending
+                    if news_ids_sent:
+                        cleared = self.db.clear_pending_digest(user_id_str, news_ids_sent)
+                        logger.info(f"Sent {len(news_ids_sent)} digest items to user {user_id}, cleared {cleared}")
+                        sent_count += len(news_ids_sent)
+                
+                except Exception as e:
+                    logger.error(f"Error sending {delivery_mode} digest to user {user_id_str}: {e}")
+            
+            logger.info(f"Completed {delivery_mode} digest: sent {sent_count} items total")
+        except Exception as e:
+            logger.error(f"Error in _send_digest_to_users: {e}", exc_info=True)
     
     async def _do_collect_and_publish(self) -> int:
         """
@@ -3135,10 +3391,14 @@ class NewsBot:
         # Запускаем периодический сбор в фоне (только в prod)
         collection_task = None
         tier_adjustment_task = None
+        hourly_digest_task = None
+        morning_digest_task = None
         from config.config import APP_ENV
         if APP_ENV == "prod":
             collection_task = asyncio.create_task(self.run_periodic_collection())
             tier_adjustment_task = asyncio.create_task(self.run_tier_adjustment())
+            hourly_digest_task = asyncio.create_task(self.run_hourly_digest())
+            morning_digest_task = asyncio.create_task(self.run_morning_digest())
         mgmt_runner = None
         
         # Запускаем приложение
