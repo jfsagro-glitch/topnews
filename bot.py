@@ -2478,6 +2478,9 @@ class NewsBot:
             published_count = 0
             max_publications = 40  # Лимит публикаций за цикл (защита от rate limiting)
             
+            # Track per-source statistics for quality metrics
+            source_stats = {}  # {source: {'total': int, 'new': int, 'duplicate': int}}
+            
             # Кэш дубликатов в текущей сессии (защита от повторов в одном цикле)
             session_titles = set()  # normalized titles for duplicate detection
             session_url_hashes = set()
@@ -2487,6 +2490,13 @@ class NewsBot:
             
             # Публикуем каждую новость
             for news in news_items:
+                # Track per-source statistics
+                source = news.get('source', '')
+                if source:
+                    if source not in source_stats:
+                        source_stats[source] = {'total': 0, 'new': 0, 'duplicate': 0}
+                    source_stats[source]['total'] += 1
+                
                 # Stop may be toggled while processing a tick.
                 if get_global_collection_stop_state(app_env=get_app_env()).enabled:
                     logger.info({"event": "publish_aborted_global_stop"})
@@ -2546,6 +2556,8 @@ class NewsBot:
                 title = news.get('title', '')
                 normalized = re.sub(r'[^\w\s]', '', title.lower())
                 if normalized in session_titles:
+                    if source:
+                        source_stats[source]['duplicate'] += 1
                     logger.debug(f"Skipping duplicate in session: {title[:50]}")
                     continue
                 session_titles.add(normalized)
@@ -2573,20 +2585,28 @@ class NewsBot:
 
                 # Проверка дубликатов по URL hash / guid / URL canonical
                 if self.db.is_seen_guid_or_url_hash(news.get('guid'), url_hash):
+                    if source:
+                        source_stats[source]['duplicate'] += 1
                     logger.debug(f"Skipping duplicate guid/url_hash: {title[:50]}")
                     continue
                 if url_normalized and self.db.is_url_normalized_seen(url_normalized):
+                    if source:
+                        source_stats[source]['duplicate'] += 1
                     logger.debug(f"Skipping duplicate url_normalized: {title[:50]}")
                     continue
 
                 # Проверка дубликатов по checksum (контент) в окне 48 часов
                 if checksum and self.db.is_checksum_recent(checksum, hours=48):
+                    if source:
+                        source_stats[source]['duplicate'] += 1
                     logger.debug(f"Skipping duplicate checksum: {title[:50]}")
                     continue
 
                 # Проверка дубликатов по content_hash (нормализованный title+text) в окне 48 часов
                 content_hash = news.get('content_hash') or ''
                 if content_hash and self.db.is_content_hash_recent(content_hash, hours=48):
+                    if source:
+                        source_stats[source]['duplicate'] += 1
                     logger.debug(f"Skipping duplicate content_hash: {title[:50]}")
                     continue
 
@@ -2603,6 +2623,8 @@ class NewsBot:
                 
                 # Проверяем дубликат по заголовку в БД (защита от одной новости на разных источниках)
                 if self.db.is_similar_title_published(title, threshold=0.85):  # Increased threshold to 0.85
+                    if source:
+                        source_stats[source]['duplicate'] += 1
                     logger.debug(f"Skipping similar title: {title[:50]}")
                     continue
                 
@@ -2644,8 +2666,14 @@ class NewsBot:
                 )
 
                 if not news_id:
+                    if source:
+                        source_stats[source]['duplicate'] += 1
                     logger.debug(f"Skipping duplicate URL: {news.get('url')}")
                     continue
+
+                # Successfully added new item
+                if source:
+                    source_stats[source]['new'] += 1
 
                 if isinstance(news.get('simhash'), int):
                     recent_simhashes.insert(0, news['simhash'])
@@ -2794,6 +2822,17 @@ class NewsBot:
                 "ai_cache_hits": cache_hits_tick,
                 "budget_state": budget_state,
             }
+            
+            # Record source quality statistics
+            for source_name, stats in source_stats.items():
+                if stats['total'] > 0:  # Only record if source had items
+                    self.db.update_source_quality_stats(
+                        source_name,
+                        total=stats['total'],
+                        new=stats['new'],
+                        duplicate=stats['duplicate']
+                    )
+            
             logger.info("TICK_STATS %s", json.dumps(tick_log, ensure_ascii=True))
             return published_count
         

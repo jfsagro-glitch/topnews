@@ -569,6 +569,12 @@ class SourceCollector:
                         status_code=status.get("status_code"),
                         error_code=status.get("error"),
                     )
+                    # Record quality metrics
+                    self.db.update_source_quality_fetch(
+                        source_name,
+                        ok=status.get("ok", True),
+                        error_code=status.get("error")
+                    )
                 elif isinstance(result, Exception):
                     logger.error(f"{source_name}: {type(result).__name__}: {result}")
                     self.source_health[source_name] = False
@@ -583,6 +589,12 @@ class SourceCollector:
                         ok=False,
                         status_code=status.get("status_code"),
                         error_code=status.get("error"),
+                    )
+                    # Record quality metrics
+                    self.db.update_source_quality_fetch(
+                        source_name,
+                        ok=False,
+                        error_code=status.get("error")
                     )
             
             logger.info(f"Collected total {len(all_news)} news items from {len([s for s in self.source_health.values() if s])} sources")

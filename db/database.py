@@ -550,6 +550,20 @@ class NewsDatabase:
         except Exception as e:
             logger.debug(f"Error ensuring approved_users columns: {e}")
 
+        try:
+            cursor.execute("PRAGMA table_info(sources)")
+            existing = {row[1] for row in cursor.fetchall()}
+            required = {
+                'tier': "TEXT DEFAULT 'B'",
+                'min_interval_seconds': 'INTEGER',
+                'max_items_per_fetch': 'INTEGER',
+            }
+            for column, col_type in required.items():
+                if column not in existing:
+                    cursor.execute(f"ALTER TABLE sources ADD COLUMN {column} {col_type}")
+        except Exception as e:
+            logger.debug(f"Error ensuring sources columns: {e}")
+
     def _ensure_indexes(self, cursor):
         """Ensure indexes exist after columns are added."""
         try:
