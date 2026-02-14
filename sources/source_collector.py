@@ -337,13 +337,24 @@ class SourceCollector:
                     )
                 except Exception:
                     pass
+            logger.debug(f"Skipping {source_name}: in cooldown")
             return False
         if not self.db:
             return True
         state = self.db.get_source_fetch_state(url)
-        if not state or not state.get("next_fetch_at"):
+        if not state:
+            logger.debug(f"Allowing {source_name}: no state in DB")
             return True
-        return time.time() >= float(state["next_fetch_at"])
+        next_fetch = state.get("next_fetch_at")
+        # Allow fetch if next_fetch_at is None, 0, or time has passed
+        if next_fetch is None or next_fetch == 0:
+            logger.debug(f"Allowing {source_name}: next_fetch_at is {next_fetch}")
+            return True
+        time_until = next_fetch - time.time()
+        if time_until > 0:
+            logger.debug(f"Skipping {source_name}: next fetch in {int(time_until/60)} minutes")
+            return False
+        return True
 
     def _update_fetch_state(
         self,
@@ -543,6 +554,8 @@ class SourceCollector:
             tasks = []  # list of tuples (source_name, fetch_url, src_type, task)
             
             # Используем сконфигурированные источники, автоматически классифицированные
+            logger.info(f"Starting collection from {len(self._configured_sources)} configured sources")
+            skipped_count = 0
             for s in self._configured_sources:
                 fetch_url = s.get('fetch_url', '')
                 source_name = s.get('source_name', '')
@@ -551,6 +564,7 @@ class SourceCollector:
                 max_items = s.get('max_items', 10)
                 if not self._should_fetch_source(fetch_url, source_name, src_type):
                     self.last_collected_counts[source_name] = 0
+                    skipped_count += 1
                     continue
                 
                 # Apply tier-based max_items limit
@@ -579,6 +593,8 @@ class SourceCollector:
                             self._collect_from_html(fetch_url, source_name, category, effective_max_items),
                         ),
                     ))
+            
+            logger.info(f"Collection: {len(tasks)} sources to fetch, {skipped_count} skipped")
             
             # Запускаем все параллельно
             results = await asyncio.gather(*[t[3] for t in tasks], return_exceptions=True)
