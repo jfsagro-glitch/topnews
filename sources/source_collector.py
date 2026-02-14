@@ -543,7 +543,12 @@ class SourceCollector:
             tasks = []  # list of tuples (source_name, fetch_url, src_type, task)
             
             # Используем сконфигурированные источники, автоматически классифицированные
-            for fetch_url, source_name, category, src_type, max_items in self._configured_sources:
+            for s in self._configured_sources:
+                fetch_url = s.get('fetch_url', '')
+                source_name = s.get('source_name', '')
+                category = s.get('category', 'general')
+                src_type = s.get('src_type', 'rss')
+                max_items = s.get('max_items', 10)
                 if not self._should_fetch_source(fetch_url, source_name, src_type):
                     self.last_collected_counts[source_name] = 0
                     continue
@@ -583,7 +588,8 @@ class SourceCollector:
             self.last_collection_at = time.time()
             
             # Initialize all configured sources to 0 (will update below)
-            for fetch_url, source_name, category, src_type, max_items in self._configured_sources:
+            for s in self._configured_sources:
+                source_name = s.get('source_name', '')
                 self.last_collected_counts[source_name] = 0
             
             # Собираем результаты
