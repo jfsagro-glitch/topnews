@@ -2180,6 +2180,50 @@ class NewsBot:
                 
                 return
 
+            elif action == "cluster":
+                # Показать все источники в кластере
+                cluster_id = int(parts[1])
+                user_id = query.from_user.id
+                
+                try:
+                    cluster_info = self.db.get_cluster_info(cluster_id)
+                    if not cluster_info:
+                        await query.answer("❌ Кластер не найден", show_alert=True)
+                        return
+                    
+                    members = self.db.get_cluster_members(cluster_id)
+                    if not members:
+                        await query.answer("❌ Нет источников в кластере", show_alert=True)
+                        return
+                    
+                    # Формируем сообщение со списком источников
+                    message_lines = [
+                        f"📰 Эта новость опубликована в {len(members)} источник{'ах' if len(members) > 4 else ('е' if len(members) == 1 else 'ах')}:\n"
+                    ]
+                    
+                    for idx, member in enumerate(members, 1):
+                        source_name = member.get('source', 'Unknown')
+                        url = member.get('url', '')
+                        # Truncate URL for display
+                        display_url = url if len(url) < 50 else url[:47] + '...'
+                        message_lines.append(f"{idx}. {source_name}\n   {display_url}")
+                    
+                    message_text = "\n".join(message_lines)
+                    
+                    await query.answer()
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=message_text,
+                        disable_web_page_preview=True,
+                        disable_notification=True
+                    )
+                    return
+                    
+                except Exception as e:
+                    logger.error(f"Error showing cluster {cluster_id}: {e}", exc_info=True)
+                    await query.answer("❌ Ошибка при загрузке источников", show_alert=True)
+                    return
+
             await query.answer("❌ Неизвестная команда", show_alert=False)
     
     async def _summarize_with_deepseek(self, text: str, title: str, checksum: str | None = None, user_id: int = None) -> tuple[str | None, dict]:
@@ -2700,6 +2744,35 @@ class NewsBot:
 
                 self.db.record_source_event(news.get('source', ''), "success")
 
+                # Event clustering: group similar news from different sources
+                cluster_id = None
+                if isinstance(news.get('simhash'), int):
+                    try:
+                        # Find similar clusters within 6-hour window (tighter threshold for clustering)
+                        similar_clusters = self.db.find_similar_clusters(
+                            news['simhash'], 
+                            hours=6, 
+                            hamming_threshold=3
+                        )
+                        
+                        if similar_clusters:
+                            # Add to existing cluster (use first match)
+                            cluster_id = similar_clusters[0]
+                            self.db.add_news_to_cluster(cluster_id, news_id)
+                            cluster_info = self.db.get_cluster_info(cluster_id)
+                            if cluster_info:
+                                logger.info(
+                                    f"Added news {news_id} to cluster {cluster_id} "
+                                    f"(now {cluster_info['member_count']} sources)"
+                                )
+                        else:
+                            # Create new cluster with this news as representative
+                            cluster_id = self.db.create_cluster(news_id)
+                            if cluster_id:
+                                logger.debug(f"Created new cluster {cluster_id} for news {news_id}")
+                    except Exception as e:
+                        logger.debug(f"Error in event clustering: {e}")
+
                 # Check if we need auto-summarization for lenta.ru and ria.ru (cleanup_level=5)
                 from core.services.access_control import AILevelManager
                 ai_manager = AILevelManager(self.db)
@@ -2782,13 +2855,29 @@ class NewsBot:
                     'hashtags_en': hashtags_en,
                 }
 
-                # Создаем кнопки: ИИ пересказ и Выбрать
-                keyboard = InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton("🤖 ИИ", callback_data=f"ai:{news_id}"),
-                        InlineKeyboardButton("📌 Выбрать", callback_data=f"select:{news_id}")
-                    ]
-                ])
+                # Получаем информацию о кластере (если новость в кластере)
+                cluster_info = None
+                if cluster_id:
+                    cluster_info = self.db.get_cluster_info(cluster_id)
+
+                # Создаем кнопки: ИИ пересказ, Выбрать, и опционально Источники
+                buttons_row1 = [
+                    InlineKeyboardButton("🤖 ИИ", callback_data=f"ai:{news_id}"),
+                    InlineKeyboardButton("📌 Выбрать", callback_data=f"select:{news_id}")
+                ]
+                
+                # Если в кластере больше 1 источника, добавляем кнопку "Источники"
+                buttons_rows = [buttons_row1]
+                if cluster_info and cluster_info['member_count'] > 1:
+                    source_count = cluster_info['member_count']
+                    buttons_rows.append([
+                        InlineKeyboardButton(
+                            f"📰 +{source_count - 1} источник{'ов' if source_count > 4 else ('а' if source_count <= 3 else 'ов')}", 
+                            callback_data=f"cluster:{cluster_id}"
+                        )
+                    ])
+                
+                keyboard = InlineKeyboardMarkup(buttons_rows)
 
                 try:
                     # ВРЕМЕННО ОТКЛЮЧЕНА: пересылка новостей в канал

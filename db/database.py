@@ -296,6 +296,35 @@ class NewsDatabase:
                 )
             ''')
 
+            # Tables for event clustering (group same story from multiple sources)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS news_clusters (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    representative_news_id INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    member_count INTEGER DEFAULT 1,
+                    FOREIGN KEY (representative_news_id) REFERENCES published_news(id) ON DELETE CASCADE
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_news_clusters_created ON news_clusters(created_at)
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS news_cluster_members (
+                    cluster_id INTEGER NOT NULL,
+                    news_id INTEGER NOT NULL,
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (cluster_id, news_id),
+                    FOREIGN KEY (cluster_id) REFERENCES news_clusters(id) ON DELETE CASCADE,
+                    FOREIGN KEY (news_id) REFERENCES published_news(id) ON DELETE CASCADE
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_cluster_members_news ON news_cluster_members(news_id)
+            ''')
+
             # Table for approved users (who have access to prod bot)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS approved_users (
@@ -1236,6 +1265,179 @@ class NewsDatabase:
         except Exception as e:
             logger.error(f"Error auto-adjusting source tiers: {e}")
             return result
+
+    def find_similar_clusters(self, simhash: int, hours: int = 6, hamming_threshold: int = 3) -> List[int]:
+        """
+        Find clusters with similar simhash within time window.
+        
+        Args:
+            simhash: Simhash value to compare
+            hours: Time window in hours
+            hamming_threshold: Maximum Hamming distance (default 3 for clustering)
+        
+        Returns:
+            List of cluster IDs
+        """
+        if not simhash:
+            return []
+        try:
+            from utils.deduplication import hamming_distance
+            cursor = self._conn.cursor()
+            
+            # Get recent clusters with their representative news simhash
+            cursor.execute("""
+                SELECT DISTINCT c.id, n.simhash
+                FROM news_clusters c
+                JOIN published_news n ON c.representative_news_id = n.id
+                WHERE c.created_at > datetime('now', ? || ' hours')
+                AND n.simhash IS NOT NULL
+            """, (f'-{hours}',))
+            
+            rows = cursor.fetchall()
+            similar_clusters = []
+            
+            for cluster_id, cluster_simhash in rows:
+                if cluster_simhash and hamming_distance(simhash, cluster_simhash) <= hamming_threshold:
+                    similar_clusters.append(cluster_id)
+            
+            return similar_clusters
+        except Exception as e:
+            logger.debug(f"Error finding similar clusters: {e}")
+            return []
+
+    def create_cluster(self, representative_news_id: int) -> int | None:
+        """Create new cluster with given news as representative."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute("""
+                    INSERT INTO news_clusters (representative_news_id, member_count)
+                    VALUES (?, 1)
+                """, (representative_news_id,))
+                cluster_id = cursor.lastrowid
+                
+                # Add representative as first member
+                cursor.execute("""
+                    INSERT INTO news_cluster_members (cluster_id, news_id)
+                    VALUES (?, ?)
+                """, (cluster_id, representative_news_id))
+                
+                self._conn.commit()
+                return cluster_id
+        except Exception as e:
+            logger.error(f"Error creating cluster: {e}")
+            return None
+
+    def add_news_to_cluster(self, cluster_id: int, news_id: int) -> bool:
+        """Add news to existing cluster."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                
+                # Check if already in cluster
+                cursor.execute("""
+                    SELECT 1 FROM news_cluster_members 
+                    WHERE cluster_id = ? AND news_id = ?
+                """, (cluster_id, news_id))
+                if cursor.fetchone():
+                    return True
+                
+                # Add to cluster
+                cursor.execute("""
+                    INSERT INTO news_cluster_members (cluster_id, news_id)
+                    VALUES (?, ?)
+                """, (cluster_id, news_id))
+                
+                # Update member count
+                cursor.execute("""
+                    UPDATE news_clusters 
+                    SET member_count = member_count + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (cluster_id,))
+                
+                self._conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error adding news to cluster: {e}")
+            return False
+
+    def get_cluster_for_news(self, news_id: int) -> int | None:
+        """Get cluster ID for given news item."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                SELECT cluster_id FROM news_cluster_members
+                WHERE news_id = ?
+            """, (news_id,))
+            row = cursor.fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            logger.debug(f"Error getting cluster for news: {e}")
+            return None
+
+    def get_cluster_info(self, cluster_id: int) -> dict | None:
+        """Get cluster information including all members."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                SELECT c.id, c.representative_news_id, c.member_count, c.created_at,
+                       n.title, n.source, n.url
+                FROM news_clusters c
+                JOIN published_news n ON c.representative_news_id = n.id
+                WHERE c.id = ?
+            """, (cluster_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            
+            # Get all member news IDs
+            cursor.execute("""
+                SELECT news_id FROM news_cluster_members
+                WHERE cluster_id = ?
+                ORDER BY added_at
+            """, (cluster_id,))
+            member_ids = [r[0] for r in cursor.fetchall()]
+            
+            return {
+                'cluster_id': row[0],
+                'representative_news_id': row[1],
+                'member_count': row[2],
+                'created_at': row[3],
+                'title': row[4],
+                'source': row[5],
+                'url': row[6],
+                'member_ids': member_ids,
+            }
+        except Exception as e:
+            logger.error(f"Error getting cluster info: {e}")
+            return None
+
+    def get_cluster_members(self, cluster_id: int) -> List[dict]:
+        """Get all news items in a cluster with details."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                SELECT n.id, n.title, n.source, n.url, n.published_at
+                FROM news_cluster_members cm
+                JOIN published_news n ON cm.news_id = n.id
+                WHERE cm.cluster_id = ?
+                ORDER BY cm.added_at
+            """, (cluster_id,))
+            
+            return [
+                {
+                    'id': row[0],
+                    'title': row[1],
+                    'source': row[2],
+                    'url': row[3],
+                    'published_at': row[4],
+                }
+                for row in cursor.fetchall()
+            ]
+        except Exception as e:
+            logger.error(f"Error getting cluster members: {e}")
+            return []
 
     def get_source_event_counts(self, sources: List[str], window_hours: int = 24) -> dict:
         if not sources:
