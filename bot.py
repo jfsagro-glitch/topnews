@@ -2428,6 +2428,26 @@ class NewsBot:
                 {
                     "event": "tick_skipped_global_stop",
                     "ttl_sec_remaining": stop_state.ttl_sec_remaining,
+
+    async def run_tier_adjustment(self):
+        """Periodic task to auto-adjust source tiers based on quality score."""
+        logger.info("Starting tier adjustment scheduler (checks daily)")
+        while True:
+            try:
+                await asyncio.sleep(24 * 60 * 60)  # Run once per day
+                
+                logger.info("Running auto-adjustment of source tiers...")
+                result = self.db.auto_adjust_source_tiers(days=7, promote_threshold=0.8, demote_threshold=0.6)
+                
+                if result['promoted']:
+                    logger.info(f"Promoted sources: {result['promoted']}")
+                if result['demoted']:
+                    logger.info(f"Demoted sources: {result['demoted']}")
+                
+                logger.info(f"Tier adjustment complete: {len(result['promoted'])} promoted, {len(result['demoted'])} demoted")
+            except Exception as e:
+                logger.error(f"Error in tier adjustment: {e}", exc_info=True)
+                await asyncio.sleep(60 * 60)  # Wait 1 hour on error before retry
                     "key": stop_state.key,
                 }
             )
@@ -3025,9 +3045,11 @@ class NewsBot:
         
         # Запускаем периодический сбор в фоне (только в prod)
         collection_task = None
+        tier_adjustment_task = None
         from config.config import APP_ENV
         if APP_ENV == "prod":
             collection_task = asyncio.create_task(self.run_periodic_collection())
+            tier_adjustment_task = asyncio.create_task(self.run_tier_adjustment())
         mgmt_runner = None
         
         # Запускаем приложение

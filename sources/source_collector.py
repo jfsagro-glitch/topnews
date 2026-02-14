@@ -270,12 +270,38 @@ class SourceCollector:
     def _is_telegram_rsshub(self, url: str) -> bool:
         return '/telegram/channel/' in url
 
-    def _get_min_interval(self, url: str, src_type: str) -> int:
+    def _get_min_interval(self, url: str, src_type: str, source_name: str | None = None) -> int:
+        """Get minimum fetch interval based on source tier or default config."""
+        # Try to get tier-based interval from database
+        if self.db and source_name:
+            try:
+                tier = self.db.get_source_tier(source_name)
+                tier_params = self.db.get_tier_params(tier)
+                tier_interval = tier_params.get('min_interval_seconds')
+                if tier_interval:
+                    return int(tier_interval)
+            except Exception as e:
+                logger.debug(f"Error getting tier interval for {source_name}: {e}")
+        
+        # Fallback to config-based intervals
         if self._is_rsshub_url(url):
             return int(self._rsshub_min_interval)
         if src_type == 'rss':
             return int(self._rss_min_interval)
         return int(self._rss_min_interval)
+
+    def _get_max_items_for_source(self, source_name: str | None, default: int | None = None) -> int | None:
+        """Get max items per fetch based on source tier or default."""
+        if self.db and source_name:
+            try:
+                tier = self.db.get_source_tier(source_name)
+                tier_params = self.db.get_tier_params(tier)
+                max_items = tier_params.get('max_items_per_fetch')
+                if max_items is not None:
+                    return max_items
+            except Exception as e:
+                logger.debug(f"Error getting tier max_items for {source_name}: {e}")
+        return default
 
     def _rsshub_telegram_enabled(self) -> bool:
         if not self.db:
@@ -332,7 +358,7 @@ class SourceCollector:
 
         if ok:
             error_streak = 0
-            delay = self._get_min_interval(url, src_type)
+            delay = self._get_min_interval(url, src_type, source_name)
             next_fetch_at = now + delay
             last_status = "OK"
             last_error = None
@@ -515,6 +541,11 @@ class SourceCollector:
                 if not self._should_fetch_source(fetch_url, source_name, src_type):
                     self.last_collected_counts[source_name] = 0
                     continue
+                
+                # Apply tier-based max_items limit
+                tier_max_items = self._get_max_items_for_source(source_name, max_items)
+                effective_max_items = tier_max_items if tier_max_items is not None else max_items
+                
                 if src_type == 'rss':
                     tasks.append((
                         source_name,
@@ -523,7 +554,7 @@ class SourceCollector:
                         self._collect_with_timeout(
                             fetch_url,
                             source_name,
-                            self._collect_from_rss(fetch_url, source_name, category, max_items),
+                            self._collect_from_rss(fetch_url, source_name, category, effective_max_items),
                         ),
                     ))
                 else:
@@ -534,7 +565,7 @@ class SourceCollector:
                         self._collect_with_timeout(
                             fetch_url,
                             source_name,
-                            self._collect_from_html(fetch_url, source_name, category, max_items),
+                            self._collect_from_html(fetch_url, source_name, category, effective_max_items),
                         ),
                     ))
             

@@ -1136,6 +1136,107 @@ class NewsDatabase:
             logger.debug(f"Error getting source quality for {source}: {e}")
             return None
 
+    def get_source_tier(self, source_code: str) -> str:
+        """Get tier for source (A/B/C), defaults to B if not found."""
+        if not source_code:
+            return 'B'
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                "SELECT tier FROM sources WHERE code = ?",
+                (source_code,)
+            )
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else 'B'
+        except Exception as e:
+            logger.debug(f"Error getting source tier for {source_code}: {e}")
+            return 'B'
+
+    def set_source_tier(self, source_code: str, tier: str) -> bool:
+        """Set tier for source (must be A/B/C)."""
+        if tier not in ('A', 'B', 'C'):
+            logger.warning(f"Invalid tier {tier}, must be A/B/C")
+            return False
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    "UPDATE sources SET tier = ? WHERE code = ?",
+                    (tier, source_code)
+                )
+                self._conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error setting source tier for {source_code}: {e}")
+            return False
+
+    def get_tier_params(self, tier: str) -> dict:
+        """Get tier-specific parameters (interval, max_items)."""
+        params = {
+            'A': {'min_interval_seconds': 300, 'max_items_per_fetch': None},   # 5min, unlimited
+            'B': {'min_interval_seconds': 900, 'max_items_per_fetch': 50},     # 15min, 50 items
+            'C': {'min_interval_seconds': 3600, 'max_items_per_fetch': 20},    # 1hour, 20 items
+        }
+        return params.get(tier, params['B'])
+
+    def auto_adjust_source_tiers(self, days: int = 7, promote_threshold: float = 0.8, demote_threshold: float = 0.6) -> dict:
+        """
+        Auto-adjust source tiers based on quality_score over specified days.
+        
+        Args:
+            days: Number of days to consider for quality score
+            promote_threshold: Score >= this value → promote tier (e.g., B→A)
+            demote_threshold: Score < this value → demote tier (e.g., B→C)
+        
+        Returns:
+            Dict with {'promoted': [...], 'demoted': [...], 'unchanged': [...]}
+        """
+        result = {'promoted': [], 'demoted': [], 'unchanged': []}
+        try:
+            cursor = self._conn.cursor()
+            # Get all sources with their current tier and quality score
+            cursor.execute("""
+                SELECT s.code, s.tier, q.quality_score
+                FROM sources s
+                LEFT JOIN source_quality q ON s.code = q.source
+                WHERE s.enabled_global = 1
+            """)
+            rows = cursor.fetchall()
+            
+            with self._write_lock:
+                for row in rows:
+                    source_code, current_tier, quality_score = row[0], row[1] or 'B', row[2] or 0.0
+                    new_tier = current_tier
+                    
+                    # Promotion logic
+                    if current_tier == 'C' and quality_score >= promote_threshold:
+                        new_tier = 'B'
+                    elif current_tier == 'B' and quality_score >= promote_threshold:
+                        new_tier = 'A'
+                    
+                    # Demotion logic
+                    elif current_tier == 'A' and quality_score < demote_threshold:
+                        new_tier = 'B'
+                    elif current_tier == 'B' and quality_score < demote_threshold:
+                        new_tier = 'C'
+                    
+                    if new_tier != current_tier:
+                        cursor.execute("UPDATE sources SET tier = ? WHERE code = ?", (new_tier, source_code))
+                        if new_tier < current_tier:  # Alphabetically earlier = promoted
+                            result['promoted'].append({'source': source_code, 'from': current_tier, 'to': new_tier, 'score': quality_score})
+                        else:
+                            result['demoted'].append({'source': source_code, 'from': current_tier, 'to': new_tier, 'score': quality_score})
+                    else:
+                        result['unchanged'].append(source_code)
+                
+                self._conn.commit()
+            
+            logger.info(f"Auto-adjusted tiers: promoted={len(result['promoted'])}, demoted={len(result['demoted'])}")
+            return result
+        except Exception as e:
+            logger.error(f"Error auto-adjusting source tiers: {e}")
+            return result
+
     def get_source_event_counts(self, sources: List[str], window_hours: int = 24) -> dict:
         if not sources:
             return {}
