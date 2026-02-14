@@ -9,6 +9,7 @@ from datetime import datetime
 from net.http_client import get_http_client
 from utils.lead_extractor import extract_lead_from_rss, extract_lead_from_html
 from utils.date_parser import parse_datetime_value, split_date_time
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,11 @@ class RSSParser:
             # Check for error status codes
             if response.status_code != 200:
                 logger.error(f"RSS {url} returned status {response.status_code}")
-                return news_items
+                raise httpx.HTTPStatusError(
+                    f"HTTP {response.status_code}",
+                    request=response.request,
+                    response=response,
+                )
             
             # Store new ETag and Last-Modified for next request
             if self.db:

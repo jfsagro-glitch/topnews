@@ -217,6 +217,29 @@ class NewsDatabase:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+
+            # Table for per-source fetch scheduling (RSS/RSSHub throttling)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS source_fetch_state (
+                    url TEXT PRIMARY KEY,
+                    source_name TEXT,
+                    next_fetch_at REAL,
+                    last_fetch_at REAL,
+                    last_status TEXT,
+                    error_streak INTEGER DEFAULT 0,
+                    last_error_code TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # System settings (shared: global stop, RSSHub toggles)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS system_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_source_events_source_time
                 ON source_events(source, created_at)
@@ -1149,6 +1172,88 @@ class NewsDatabase:
                 return True
         except Exception as e:
             logger.debug(f"Error caching RSS items for {url}: {e}")
+            return False
+
+    def get_system_setting(self, key: str, default: str | None = None) -> str | None:
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute('SELECT value FROM system_settings WHERE key = ?', (key,))
+            row = cursor.fetchone()
+            return row[0] if row else default
+        except Exception as e:
+            logger.debug(f"Error getting system setting {key}: {e}")
+            return default
+
+    def set_system_setting(self, key: str, value: str) -> bool:
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    '''INSERT INTO system_settings(key, value) VALUES(?, ?)
+                       ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP''',
+                    (key, value)
+                )
+                self._conn.commit()
+            return True
+        except Exception as e:
+            logger.debug(f"Error setting system setting {key}: {e}")
+            return False
+
+    def get_source_fetch_state(self, url: str) -> dict | None:
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                '''SELECT url, source_name, next_fetch_at, last_fetch_at, last_status, error_streak, last_error_code
+                   FROM source_fetch_state WHERE url = ?''',
+                (url,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "url": row[0],
+                "source_name": row[1],
+                "next_fetch_at": row[2],
+                "last_fetch_at": row[3],
+                "last_status": row[4],
+                "error_streak": row[5] or 0,
+                "last_error_code": row[6],
+            }
+        except Exception as e:
+            logger.debug(f"Error getting source fetch state for {url}: {e}")
+            return None
+
+    def set_source_fetch_state(
+        self,
+        url: str,
+        source_name: str | None,
+        next_fetch_at: float | None,
+        last_fetch_at: float | None,
+        last_status: str | None,
+        error_streak: int | None,
+        last_error_code: str | None,
+    ) -> bool:
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    '''INSERT INTO source_fetch_state(
+                           url, source_name, next_fetch_at, last_fetch_at, last_status, error_streak, last_error_code
+                       ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(url) DO UPDATE SET
+                           source_name=excluded.source_name,
+                           next_fetch_at=excluded.next_fetch_at,
+                           last_fetch_at=excluded.last_fetch_at,
+                           last_status=excluded.last_status,
+                           error_streak=excluded.error_streak,
+                           last_error_code=excluded.last_error_code,
+                           updated_at=CURRENT_TIMESTAMP''',
+                    (url, source_name, next_fetch_at, last_fetch_at, last_status, error_streak, last_error_code)
+                )
+                self._conn.commit()
+            return True
+        except Exception as e:
+            logger.debug(f"Error setting source fetch state for {url}: {e}")
             return False
 
     def get_rss_cached_items(self, url: str) -> List | None:

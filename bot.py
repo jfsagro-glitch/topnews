@@ -399,15 +399,43 @@ class NewsBot:
         return self.application
 
     # Persistent reply keyboard for chats (anchored at bottom)
-    # For regular users
+    # For regular users (prod)
     REPLY_KEYBOARD = ReplyKeyboardMarkup(
         [['🔄', '✉️', '⏸️', '▶️'], ['⚙️ Настройки']], resize_keyboard=True, one_time_keyboard=False
     )
-    
-    # For sandbox admin users - includes Management button
-    REPLY_KEYBOARD_ADMIN = ReplyKeyboardMarkup(
-        [['🔄', '✉️', '⏸️', '▶️'], ['⚙️ Настройки', '🛠 Управление']], resize_keyboard=True, one_time_keyboard=False
-    )
+
+    def _build_sandbox_admin_keyboard(self) -> InlineKeyboardMarkup:
+        from core.services.global_stop import get_global_stop
+
+        is_stopped = get_global_stop()
+        toggle_text = "✅ ВОЗОБНОВИТЬ ВСЮ СИСТЕМУ" if is_stopped else "⛔ ОСТАНОВИТЬ ВСЮ СИСТЕМУ"
+
+        keyboard = [
+            [InlineKeyboardButton(toggle_text, callback_data="mgmt:toggle_global_stop")],
+            [InlineKeyboardButton("📊 Статус системы", callback_data="mgmt:status")],
+            [InlineKeyboardButton("🤖 AI управление", callback_data="mgmt:ai")],
+            [InlineKeyboardButton("📰 Источники", callback_data="mgmt:sources")],
+            [InlineKeyboardButton("📈 Статистика", callback_data="mgmt:stats")],
+            [InlineKeyboardButton("⚙ Настройки", callback_data="mgmt:settings")],
+            [InlineKeyboardButton("👥 Пользователи и инвайты", callback_data="mgmt:users")],
+            [InlineKeyboardButton("🧰 Диагностика", callback_data="mgmt:diag")],
+            [InlineKeyboardButton("↩️ Назад", callback_data="mgmt:main")],
+        ]
+
+        return InlineKeyboardMarkup(keyboard)
+
+    def _get_rsshub_telegram_enabled(self) -> bool:
+        try:
+            value = self.db.get_system_setting("rsshub_telegram_enabled")
+        except Exception:
+            value = None
+        if value is None:
+            try:
+                from config.railway_config import RSSHUB_TELEGRAM_ENABLED
+            except (ImportError, ValueError):
+                from config.config import RSSHUB_TELEGRAM_ENABLED
+            return bool(RSSHUB_TELEGRAM_ENABLED)
+        return value.strip() not in ("0", "false", "False")
     
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
@@ -429,7 +457,7 @@ class NewsBot:
                 await update.message.reply_text(
                     "✅ Инвайт-код успешно активирован!\n\n"
                     "Теперь у вас есть доступ к боту. Используйте /help для списка команд.",
-                    reply_markup=self.REPLY_KEYBOARD
+                    reply_markup=self._build_sandbox_admin_keyboard() if APP_ENV == "sandbox" else self.REPLY_KEYBOARD
                 )
                 return
 
@@ -448,7 +476,7 @@ class NewsBot:
                     await update.message.reply_text(
                         "✅ Инвайт-код успешно активирован!\n\n"
                         "Теперь у вас есть доступ к боту. Используйте /help для списка команд.",
-                        reply_markup=self.REPLY_KEYBOARD
+                        reply_markup=self._build_sandbox_admin_keyboard() if APP_ENV == "sandbox" else self.REPLY_KEYBOARD
                     )
                     return
                 else:
@@ -477,18 +505,37 @@ class NewsBot:
         
         is_admin = self._is_admin(user_id)
         env_marker = "\n🧪 SANDBOX" if APP_ENV == "sandbox" else ""
-        
-        # Choose keyboard based on admin status and environment
-        keyboard = self.REPLY_KEYBOARD_ADMIN if (APP_ENV == "sandbox" and is_admin) else self.REPLY_KEYBOARD
-        
+
+        if APP_ENV == "sandbox":
+            if not is_admin:
+                await update.message.reply_text("❌ Доступ запрещён")
+                return
+            await update.message.reply_text(
+                "🛠 Админ-панель системы" + env_marker + "\n\n"
+                "Выберите раздел:",
+                reply_markup=self._build_sandbox_admin_keyboard()
+            )
+            return
+
         await update.message.reply_text(
             "👋 Добро пожаловать в News Aggregator Bot!" + env_marker + "\n\n"
             "Используйте /help для списка команд",
-            reply_markup=keyboard
+            reply_markup=self.REPLY_KEYBOARD
         )
     
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /help"""
+        from core.services.global_stop import get_global_stop
+        if get_app_env() == "prod" and get_global_stop():
+            await update.message.reply_text("🔴 Система временно остановлена администратором.")
+            return
+        if get_app_env() == "sandbox":
+            await update.message.reply_text(
+                "🛠 Админ-режим\n\n"
+                "Используйте кнопки админ-панели для управления системой.",
+                reply_markup=self._build_sandbox_admin_keyboard(),
+            )
+            return
         help_text = (
             "📚 Доступные команды:\n\n"
             "/sync - Принудительно запустить сбор новостей\n"
@@ -505,6 +552,13 @@ class NewsBot:
     
     async def cmd_sync(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /sync - принудительный сбор новостей"""
+        from core.services.global_stop import get_global_stop
+        if get_app_env() == "sandbox":
+            await update.message.reply_text("⛔ Недоступно в админ-режиме")
+            return
+        if get_app_env() == "prod" and get_global_stop():
+            await update.message.reply_text("🔴 Система временно остановлена администратором.")
+            return
         stop_state = get_global_collection_stop_state(app_env=get_app_env())
         if stop_state.enabled:
             ttl = stop_state.ttl_sec_remaining
@@ -543,7 +597,7 @@ class NewsBot:
     async def cmd_my_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /my_selection - показать выбранные новости и экспортировать"""
         if get_app_env() == "sandbox":
-            await update.message.reply_text("⛔ Access denied")
+            await update.message.reply_text("⛔ Недоступно в админ-режиме")
             return
         user_id = update.message.from_user.id
         selected = self.db.get_user_selections(user_id, env="prod")
@@ -718,11 +772,25 @@ class NewsBot:
     
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /status"""
+        from core.services.global_stop import get_global_stop
+        if get_app_env() == "sandbox":
+            await update.message.reply_text("⛔ Недоступно в админ-режиме")
+            return
+        if get_app_env() == "prod" and get_global_stop():
+            await update.message.reply_text("🔴 Система временно остановлена администратором.")
+            return
         status_text = self._build_status_text()
         await update.message.reply_text(status_text, disable_web_page_preview=True)
     
     async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /pause - приостановить новости для пользователя"""
+        from core.services.global_stop import get_global_stop
+        if get_app_env() == "sandbox":
+            await update.message.reply_text("⛔ Недоступно в админ-режиме")
+            return
+        if get_app_env() == "prod" and get_global_stop():
+            await update.message.reply_text("🔴 Система временно остановлена администратором.")
+            return
         if get_app_env() == "sandbox" and not self._is_admin(update.message.from_user.id):
             await update.message.reply_text("⛔ Access denied")
             return
@@ -733,6 +801,13 @@ class NewsBot:
     
     async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /resume - возобновить новости для пользователя"""
+        from core.services.global_stop import get_global_stop
+        if get_app_env() == "sandbox":
+            await update.message.reply_text("⛔ Недоступно в админ-режиме")
+            return
+        if get_app_env() == "prod" and get_global_stop():
+            await update.message.reply_text("🔴 Система временно остановлена администратором.")
+            return
         if get_app_env() == "sandbox" and not self._is_admin(update.message.from_user.id):
             await update.message.reply_text("⛔ Access denied")
             return
@@ -762,15 +837,7 @@ class NewsBot:
             return
         
         # Show expanded management menu with all admin panels
-        keyboard = [
-            [InlineKeyboardButton("📊 Статус системы", callback_data="mgmt:status")],
-            [InlineKeyboardButton("🤖 Управление AI", callback_data="mgmt:ai")],
-            [InlineKeyboardButton("📰 Источники данных", callback_data="mgmt:sources")],
-            [InlineKeyboardButton("📈 Статистика", callback_data="mgmt:stats")],
-            [InlineKeyboardButton("⚙ Настройки", callback_data="mgmt:settings")],
-            [InlineKeyboardButton("👥 Пользователи и инвайты", callback_data="mgmt:users")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = self._build_sandbox_admin_keyboard()
         await update.message.reply_text(
             "🛠 Управление ботом\n\n"
             "Выберите раздел:",
@@ -860,6 +927,13 @@ class NewsBot:
     
     async def cmd_filter(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /filter"""
+        from core.services.global_stop import get_global_stop
+        if get_app_env() == "sandbox":
+            await update.message.reply_text("⛔ Недоступно в админ-режиме")
+            return
+        if get_app_env() == "prod" and get_global_stop():
+            await update.message.reply_text("🔴 Система временно остановлена администратором.")
+            return
         # Создаем inline кнопки для выбора категорий
         ai_status = "✅" if self.ai_verification_enabled else "❌"
         keyboard = [
@@ -932,6 +1006,10 @@ class NewsBot:
             )
             return
         
+        if get_app_env() == "sandbox" and text in {'🔄', '✉️', '⏸️', '▶️'}:
+            await update.message.reply_text("⛔ Недоступно в админ-режиме")
+            return
+
         if text == '🔄':
             await self.cmd_sync(update, context)
         elif text == '✉️':
@@ -948,8 +1026,13 @@ class NewsBot:
     
     async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """⚙️ Меню настроек"""
-    async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """⚙️ Меню настроек"""
+        from core.services.global_stop import get_global_stop
+        if get_app_env() == "sandbox":
+            await update.message.reply_text("⛔ Недоступно в админ-режиме")
+            return
+        if get_app_env() == "prod" and get_global_stop():
+            await update.message.reply_text("🔴 Система временно остановлена администратором.")
+            return
         user_id = update.message.from_user.id
         is_admin = self._is_admin(user_id)
         app_env = get_app_env()
@@ -1502,6 +1585,15 @@ class NewsBot:
                 return
             await self._show_admin_settings_panel(query)
             return
+
+        # Admin panel: Diagnostics
+        if query.data == "mgmt:diag":
+            await query.answer()
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await self._show_admin_diagnostics_panel(query)
+            return
         
         # Back to admin menu
         if query.data == "mgmt:main":
@@ -1514,12 +1606,17 @@ class NewsBot:
             if not self._is_admin(query.from_user.id):
                 await query.answer("❌ Доступ запрещён", show_alert=True)
                 return
-            await query.answer()
             from core.services.global_stop import toggle_global_stop
             new_state = toggle_global_stop()
-            logger.info(f"GLOBAL_STOP toggled to {new_state} by admin_id={query.from_user.id}")
-            await query.answer(f"✅ Система {'остановлена' if new_state else 'запущена'}", show_alert=True)
-            await self._show_admin_status(query)
+            if new_state:
+                logger.warning(f"[ADMIN] SYSTEM FULL STOP by {query.from_user.id}")
+                await query.answer("🔴 Система полностью остановлена", show_alert=True)
+            else:
+                logger.warning(f"[ADMIN] SYSTEM FULL RESUME by {query.from_user.id}")
+                await query.answer("🟢 Система возобновлена", show_alert=True)
+            await query.edit_message_reply_markup(
+                reply_markup=self._build_sandbox_admin_keyboard()
+            )
             return
         
         # AI module selection
@@ -1567,6 +1664,23 @@ class NewsBot:
             await query.answer()
             # Toggle all sources
             logger.info(f"Sources toggle_all by admin_id={query.from_user.id}")
+            await self._show_admin_sources_panel(query)
+            return
+
+        if query.data == "mgmt:sources:toggle_telegram":
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            enabled = self._get_rsshub_telegram_enabled()
+            new_value = "0" if enabled else "1"
+            try:
+                self.db.set_system_setting("rsshub_telegram_enabled", new_value)
+            except Exception:
+                pass
+            await query.answer(
+                "✅ Telegram RSSHub включен" if new_value == "1" else "⛔ Telegram RSSHub отключен",
+                show_alert=True,
+            )
             await self._show_admin_sources_panel(query)
             return
         
@@ -1693,6 +1807,14 @@ class NewsBot:
             # Показать статус бота
             await query.answer()
             user_id = query.from_user.id
+
+            from core.services.global_stop import get_global_stop
+            if get_app_env() == "prod" and get_global_stop():
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="🔴 Система временно остановлена администратором.",
+                )
+                return
 
             status_text = self._build_status_text()
             
@@ -3487,15 +3609,7 @@ class NewsBot:
 
     async def cmd_management_inline(self, query):
         """Show main management menu via inline query"""
-        keyboard = [
-            [InlineKeyboardButton("📊 Статус системы", callback_data="mgmt:status")],
-            [InlineKeyboardButton("🤖 Управление AI", callback_data="mgmt:ai")],
-            [InlineKeyboardButton("📰 Источники данных", callback_data="mgmt:sources")],
-            [InlineKeyboardButton("📈 Статистика", callback_data="mgmt:stats")],
-            [InlineKeyboardButton("⚙ Настройки", callback_data="mgmt:settings")],
-            [InlineKeyboardButton("👥 Пользователи и инвайты", callback_data="mgmt:users")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = self._build_sandbox_admin_keyboard()
         await query.edit_message_text(
             text="🛠 Управление ботом\n\nВыберите раздел:",
             reply_markup=reply_markup
@@ -3526,8 +3640,10 @@ class NewsBot:
             
             # Build keyboard with toggle global stop button
             keyboard = [
-                [InlineKeyboardButton("🔴 Остановить сервис" if not is_stopped else "🟢 Запустить сервис", 
-                                    callback_data="mgmt:toggle_global_stop")],
+                [InlineKeyboardButton(
+                    "⛔ ОСТАНОВИТЬ ВСЮ СИСТЕМУ" if not is_stopped else "✅ ВОЗОБНОВИТЬ ВСЮ СИСТЕМУ",
+                    callback_data="mgmt:toggle_global_stop",
+                )],
                 [InlineKeyboardButton("⬅️ Назад в меню", callback_data="mgmt:main")],
             ]
             
@@ -3563,18 +3679,36 @@ class NewsBot:
     async def _show_admin_sources_panel(self, query):
         """📰 Sources management panel"""
         all_enabled = True  # Placeholder - check actual status
+        telegram_enabled = self._get_rsshub_telegram_enabled()
+        
+        total_sources = len(self.collector._configured_sources) if self.collector else 0
+        failed_sources = 0
+        if self.collector and self.collector.source_health:
+            failed_sources = len([s for s, ok in self.collector.source_health.items() if not ok])
+
+        try:
+            from config.railway_config import RSSHUB_DISABLED_CHANNELS
+        except (ImportError, ValueError):
+            from config.config import RSSHUB_DISABLED_CHANNELS
+        disabled_list = [c.strip() for c in (RSSHUB_DISABLED_CHANNELS or "").split(",") if c.strip()]
+        disabled_text = ", ".join(disabled_list) if disabled_list else "нет"
         
         text = (
             "📰 УПРАВЛЕНИЕ ИСТОЧНИКАМИ\n\n"
-            "Активные источники: 5\n"
-            "Последнее обновление: сейчас\n"
-            "Ошибок: 0\n\n"
+            f"Активные источники: {total_sources}\n"
+            f"Ошибок источников: {failed_sources}\n"
+            f"Telegram (RSSHub): {'✅ ВКЛ' if telegram_enabled else '⛔ ВЫКЛ'}\n"
+            f"Отключенные каналы: {disabled_text}\n\n"
             "Действия:"
         )
         
         keyboard = [
             [InlineKeyboardButton("✅ Включить все" if not all_enabled else "❌ Отключить все", 
                                 callback_data="mgmt:sources:toggle_all")],
+            [InlineKeyboardButton(
+                "🔕 Telegram: выключить" if telegram_enabled else "🔔 Telegram: включить",
+                callback_data="mgmt:sources:toggle_telegram",
+            )],
             [InlineKeyboardButton("🔍 Переоценить сейчас", callback_data="mgmt:sources:rescan")],
             [InlineKeyboardButton("⬅️ Назад в меню", callback_data="mgmt:main")],
         ]
@@ -3604,6 +3738,36 @@ class NewsBot:
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text=text, reply_markup=reply_markup)
+
+    async def _show_admin_diagnostics_panel(self, query):
+        """🧰 Diagnostics panel"""
+        from core.services.global_stop import is_redis_available, get_global_stop
+        try:
+            try:
+                from config.railway_config import RSSHUB_BASE_URL
+            except (ImportError, ValueError):
+                from config.config import RSSHUB_BASE_URL
+
+            redis_ok = is_redis_available()
+            global_stop = get_global_stop()
+            rsshub_url = RSSHUB_BASE_URL or "-"
+
+            text = (
+                "🧰 ДИАГНОСТИКА\n\n"
+                f"🔴 Redis: {'✅ OK' if redis_ok else '⚠️ Fallback (SQLite)'}\n"
+                f"⛔ Global stop: {'ON' if global_stop else 'OFF'}\n"
+                f"🗄️ DB: {self.db.db_path}\n"
+                f"🛰 RSSHub: {rsshub_url}\n"
+            )
+
+            keyboard = [
+                [InlineKeyboardButton("⬅️ Назад в меню", callback_data="mgmt:main")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(text=text, reply_markup=reply_markup)
+        except Exception as e:
+            logger.error(f"Diagnostics panel error: {e}")
+            await query.answer("❌ Ошибка диагностики", show_alert=True)
 
     async def _show_admin_settings_panel(self, query):
         """⚙ Settings panel"""

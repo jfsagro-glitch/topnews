@@ -63,6 +63,11 @@ class SourceCollector:
                 SOURCE_ERROR_STREAK_LIMIT,
                 SOURCE_ERROR_STREAK_WINDOW_SECONDS,
                 SOURCE_ERROR_COOLDOWN_SECONDS,
+                RSSHUB_MIN_INTERVAL_SECONDS,
+                RSS_MIN_INTERVAL_SECONDS,
+                RSSHUB_CONCURRENCY,
+                RSSHUB_DISABLED_CHANNELS,
+                RSSHUB_TELEGRAM_ENABLED,
             )
         except (ImportError, ValueError):
             from config.config import (
@@ -70,12 +75,24 @@ class SourceCollector:
                 SOURCE_ERROR_STREAK_LIMIT,
                 SOURCE_ERROR_STREAK_WINDOW_SECONDS,
                 SOURCE_ERROR_COOLDOWN_SECONDS,
+                RSSHUB_MIN_INTERVAL_SECONDS,
+                RSS_MIN_INTERVAL_SECONDS,
+                RSSHUB_CONCURRENCY,
+                RSSHUB_DISABLED_CHANNELS,
+                RSSHUB_TELEGRAM_ENABLED,
             )
 
         self._source_collect_timeout = SOURCE_COLLECT_TIMEOUT_SECONDS
         self._source_error_streak_limit = SOURCE_ERROR_STREAK_LIMIT
         self._source_error_window = SOURCE_ERROR_STREAK_WINDOW_SECONDS
         self._source_error_cooldown_seconds = SOURCE_ERROR_COOLDOWN_SECONDS
+        self._rsshub_min_interval = RSSHUB_MIN_INTERVAL_SECONDS
+        self._rss_min_interval = RSS_MIN_INTERVAL_SECONDS
+        self._rsshub_concurrency = max(1, int(RSSHUB_CONCURRENCY))
+        self._rsshub_telegram_enabled_default = bool(RSSHUB_TELEGRAM_ENABLED)
+        self._rsshub_disabled_channels = {
+            item.strip().lower() for item in (RSSHUB_DISABLED_CHANNELS or "").split(",") if item.strip()
+        }
         self._rsshub_bases = self._normalize_rsshub_bases(RSSHUB_BASE_URL, RSSHUB_MIRROR_URLS)
         self._rss_fallback_blocklist = {
             'gazeta.ru',
@@ -83,6 +100,8 @@ class SourceCollector:
             'mosreg.ru',
             'www.mosreg.ru',
         }
+        self._rsshub_sem = asyncio.Semaphore(self._rsshub_concurrency)
+        self._last_fetch_status = {}
         
         # Known RSS overrides by domain (when config contains site root)
         # Includes fallback URLs for sites that block direct requests
@@ -154,6 +173,9 @@ class SourceCollector:
                         # t.me channels: use RSSHub if configured
                         if domain.endswith('t.me') or 't.me' in domain:
                             channel = src.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '').strip('/')
+                            if channel.lower() in self._rsshub_disabled_channels:
+                                logger.warning(f"Telegram channel {channel} disabled (RSSHub blacklist)")
+                                continue
                             base = self._rsshub_bases[0] if self._rsshub_bases else ''
 
                             source_name = channel  # Use short name like 'mash' instead of 't.me/mash'
@@ -212,6 +234,105 @@ class SourceCollector:
         """Set cooldown for URL (default 10 minutes)"""
         self._cooldown_until[url] = time.time() + seconds
         logger.warning(f"Cooldown set for {url} for {seconds}s")
+
+    def _is_rsshub_url(self, url: str) -> bool:
+        return '/telegram/channel/' in url or '/twitter/user/' in url
+
+    def _is_telegram_rsshub(self, url: str) -> bool:
+        return '/telegram/channel/' in url
+
+    def _get_min_interval(self, url: str, src_type: str) -> int:
+        if self._is_rsshub_url(url):
+            return int(self._rsshub_min_interval)
+        if src_type == 'rss':
+            return int(self._rss_min_interval)
+        return int(self._rss_min_interval)
+
+    def _rsshub_telegram_enabled(self) -> bool:
+        if not self.db:
+            return self._rsshub_telegram_enabled_default
+        try:
+            value = self.db.get_system_setting("rsshub_telegram_enabled")
+            if value is None:
+                return self._rsshub_telegram_enabled_default
+            return value.strip() not in ("0", "false", "False")
+        except Exception:
+            return self._rsshub_telegram_enabled_default
+
+    def _should_fetch_source(self, url: str, source_name: str, src_type: str) -> bool:
+        if self._is_telegram_rsshub(url) and not self._rsshub_telegram_enabled():
+            logger.info(f"Skipping Telegram RSSHub source (disabled): {source_name}")
+            return False
+        if self._in_cooldown(url):
+            if self.db:
+                try:
+                    next_fetch_at = self._cooldown_until.get(url, time.time() + 600)
+                    self.db.set_source_fetch_state(
+                        url=url,
+                        source_name=source_name,
+                        next_fetch_at=next_fetch_at,
+                        last_fetch_at=None,
+                        last_status="COOLDOWN",
+                        error_streak=1,
+                        last_error_code="cooldown",
+                    )
+                except Exception:
+                    pass
+            return False
+        if not self.db:
+            return True
+        state = self.db.get_source_fetch_state(url)
+        if not state or not state.get("next_fetch_at"):
+            return True
+        return time.time() >= float(state["next_fetch_at"])
+
+    def _update_fetch_state(
+        self,
+        url: str,
+        source_name: str,
+        src_type: str,
+        ok: bool,
+        status_code: int | None,
+        error_code: str | None = None,
+    ) -> None:
+        if not self.db:
+            return
+        now = time.time()
+        state = self.db.get_source_fetch_state(url) or {}
+        error_streak = int(state.get("error_streak") or 0)
+
+        if ok:
+            error_streak = 0
+            delay = self._get_min_interval(url, src_type)
+            next_fetch_at = now + delay
+            last_status = "OK"
+            last_error = None
+        else:
+            error_streak = error_streak + 1
+            if status_code in (401, 403, 404):
+                delay = 6 * 60 * 60
+            elif status_code in (429, 500, 502, 503, 504):
+                if error_streak <= 1:
+                    delay = 5 * 60
+                elif error_streak == 2:
+                    delay = 15 * 60
+                else:
+                    delay = 60 * 60
+            else:
+                delay = 15 * 60
+            next_fetch_at = now + delay
+            last_status = "ERROR"
+            last_error = error_code or (str(status_code) if status_code else "unknown")
+
+        self.db.set_source_fetch_state(
+            url=url,
+            source_name=source_name,
+            next_fetch_at=next_fetch_at,
+            last_fetch_at=now,
+            last_status=last_status,
+            error_streak=error_streak,
+            last_error_code=last_error,
+        )
 
     def _note_source_failure(self, url: str) -> None:
         if not url:
@@ -348,28 +469,40 @@ class SourceCollector:
         Собирает новости из всех источников асинхронно
         """
         all_news = []
+
+        try:
+            from core.services.global_stop import get_global_stop
+            if get_global_stop():
+                return []
+        except Exception:
+            pass
         
         try:
             # Параллельно запускаем сбор из разных типов источников
-            tasks = []  # list of tuples (source_name, task)
+            tasks = []  # list of tuples (source_name, fetch_url, src_type, task)
             
             # Используем сконфигурированные источники, автоматически классифицированные
             for fetch_url, source_name, category, src_type in self._configured_sources:
+                if not self._should_fetch_source(fetch_url, source_name, src_type):
+                    self.last_collected_counts[source_name] = 0
+                    continue
                 if src_type == 'rss':
                     tasks.append((
                         source_name,
                         fetch_url,
+                        src_type,
                         self._collect_with_timeout(fetch_url, source_name, self._collect_from_rss(fetch_url, source_name, category)),
                     ))
                 else:
                     tasks.append((
                         source_name,
                         fetch_url,
+                        src_type,
                         self._collect_with_timeout(fetch_url, source_name, self._collect_from_html(fetch_url, source_name, category)),
                     ))
             
             # Запускаем все параллельно
-            results = await asyncio.gather(*[t[2] for t in tasks], return_exceptions=True)
+            results = await asyncio.gather(*[t[3] for t in tasks], return_exceptions=True)
 
             # Reset last collection stats
             self.last_collected_counts = {}
@@ -380,7 +513,7 @@ class SourceCollector:
                 self.last_collected_counts[source_name] = 0
             
             # Собираем результаты
-            for (source_name, fetch_url, _task), result in zip(tasks, results):
+            for (source_name, fetch_url, src_type, _task), result in zip(tasks, results):
                 if isinstance(result, list):
                     count = len(result)
                     self.last_collected_counts[source_name] = count
@@ -390,12 +523,30 @@ class SourceCollector:
                         logger.info(f"{source_name}: collected {count} items")
                     else:
                         logger.warning(f"{source_name}: 0 items (no new content or parsing issue)")
+                    status = self._last_fetch_status.get(fetch_url, {})
+                    self._update_fetch_state(
+                        fetch_url,
+                        source_name,
+                        src_type,
+                        ok=status.get("ok", True),
+                        status_code=status.get("status_code"),
+                        error_code=status.get("error"),
+                    )
                 elif isinstance(result, Exception):
                     logger.error(f"{source_name}: {type(result).__name__}: {result}")
                     self.source_health[source_name] = False
                     self._note_source_failure(fetch_url)
                     # Ensure we still record 0 for failed sources so they show in status
                     self.last_collected_counts[source_name] = 0
+                    status = self._last_fetch_status.get(fetch_url, {})
+                    self._update_fetch_state(
+                        fetch_url,
+                        source_name,
+                        src_type,
+                        ok=False,
+                        status_code=status.get("status_code"),
+                        error_code=status.get("error"),
+                    )
             
             logger.info(f"Collected total {len(all_news)} news items from {len([s for s in self.source_health.values() if s])} sources")
 
@@ -407,11 +558,21 @@ class SourceCollector:
     
     async def _collect_from_rss(self, url: str, source_name: str, category: str) -> List[Dict]:
         """Собирает из RSS источника"""
-        async with self._sem:
+        try:
+            from core.services.global_stop import get_global_stop
+            if get_global_stop():
+                self._last_fetch_status[url] = {"ok": False, "status_code": None, "error": "global_stop"}
+                return []
+        except Exception:
+            pass
+
+        sem = self._rsshub_sem if self._is_rsshub_url(url) else self._sem
+        async with sem:
             try:
                 # Проверяем cooldown
                 if self._in_cooldown(url):
                     logger.warning(f"Source {source_name} in cooldown, skipping")
+                    self._last_fetch_status[url] = {"ok": False, "status_code": None, "error": "cooldown"}
                     return []
                 
                 news = await self.rss_parser.parse(url, source_name)
@@ -545,9 +706,13 @@ class SourceCollector:
                         item['url_hash'] = url_hash
                     item['text'] = clean_text
                     filtered_news.append(item)
+                self._last_fetch_status[url] = {"ok": True, "status_code": 200, "error": None}
                 return filtered_news
             except Exception as e:
                 # Check if it's an HTTP error worth cooldown
+                status_code = None
+                if hasattr(e, "response"):
+                    status_code = getattr(e.response, "status_code", None)
                 error_str = str(e)
                 if '403' in error_str:
                     self._set_cooldown(url, 1800)
@@ -568,6 +733,11 @@ class SourceCollector:
                     # 503 from RSSHub Twitter/X feeds - likely API issues, short cooldown
                     self._set_cooldown(url, 300)
                     logger.warning(f"⚠️ RSSHub Twitter/X feed unavailable for {source_name} (503), will retry in 5 min")
+                self._last_fetch_status[url] = {
+                    "ok": False,
+                    "status_code": status_code,
+                    "error": error_str[:60],
+                }
                 self._note_source_failure(url)
                 self._record_source_error(source_name, e)
                 logger.error(f"Error collecting from RSS {url}: {type(e).__name__}: {e}")
@@ -575,9 +745,19 @@ class SourceCollector:
     
     async def _collect_from_html(self, url: str, source_name: str, category: str) -> List[Dict]:
         """Собирает из HTML источника"""
-        async with self._sem:
+        try:
+            from core.services.global_stop import get_global_stop
+            if get_global_stop():
+                self._last_fetch_status[url] = {"ok": False, "status_code": None, "error": "global_stop"}
+                return []
+        except Exception:
+            pass
+
+        sem = self._rsshub_sem if self._is_rsshub_url(url) else self._sem
+        async with sem:
             if self._in_cooldown(url):
                 logger.debug(f"Skipping {url} (in cooldown)")
+                self._last_fetch_status[url] = {"ok": False, "status_code": None, "error": "cooldown"}
                 return []
             
             try:
@@ -708,6 +888,7 @@ class SourceCollector:
                         item['url_hash'] = url_hash
                     item['text'] = clean_text
                     filtered_news.append(item)
+                self._last_fetch_status[url] = {"ok": True, "status_code": 200, "error": None}
                 return filtered_news
             except Exception as e:
                 # Try to extract HTTP status code
@@ -724,10 +905,20 @@ class SourceCollector:
                     )
                     self._record_source_error(source_name, e)
                     self._note_source_failure(url)
+                    self._last_fetch_status[url] = {
+                        "ok": False,
+                        "status_code": status_code,
+                        "error": str(e)[:60],
+                    }
                     return []
                 
                 self._note_source_failure(url)
                 self._record_source_error(source_name, e)
+                self._last_fetch_status[url] = {
+                    "ok": False,
+                    "status_code": status_code,
+                    "error": str(e)[:60],
+                }
                 logger.error(f"Error collecting from HTML {source_name} ({url}): {e}", exc_info=False)
                 return []
 
@@ -738,6 +929,7 @@ class SourceCollector:
             logger.warning(f"Timeout collecting from {source_name} ({url})")
             self._note_source_failure(url)
             self._record_source_error(source_name, e)
+            self._last_fetch_status[url] = {"ok": False, "status_code": None, "error": "timeout"}
             return []
 
     async def _try_fallback_rss(self, url: str, source_name: str, category: str) -> List[Dict]:
@@ -784,6 +976,12 @@ class SourceCollector:
             Verified category or None if verification skipped/failed
         """
         try:
+            try:
+                from core.services.global_stop import get_global_stop
+                if get_global_stop():
+                    return None
+            except Exception:
+                pass
             # ⚠️ DISABLED: AI category verification is redundant
             # The keyword classifier already achieves 95%+ accuracy
             # Disabling this saves ~250 tokens per news item (~70% cost reduction)
@@ -808,6 +1006,12 @@ class SourceCollector:
             Clean text or None if cleaning skipped/failed
         """
         try:
+            try:
+                from core.services.global_stop import get_global_stop
+                if get_global_stop():
+                    return None
+            except Exception:
+                pass
             # Sandbox: honor AI cleanup level
             try:
                 from config.railway_config import APP_ENV
