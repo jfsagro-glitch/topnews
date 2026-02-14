@@ -1044,23 +1044,27 @@ class NewsBot:
 
         keyboard = []
         keyboard.append([InlineKeyboardButton("🧰 Фильтр", callback_data="settings:filter")])
-        keyboard.append([InlineKeyboardButton("🤖 AI переключатели", callback_data="ai:management")])
-        keyboard.append([InlineKeyboardButton("📊 Статус бота", callback_data="show_status")])
-
+        
+        # PROD mode: only user-friendly buttons
         if app_env == "prod":
             translate_enabled, target_lang = self.db.get_user_translation(str(user_id), env="prod")
             translate_status = "Вкл" if translate_enabled else "Выкл"
-            keyboard.insert(1, [InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")])
-            keyboard.insert(3, [InlineKeyboardButton(f"🌐 Перевод ({target_lang.upper()}): {translate_status}", callback_data="settings:translate_toggle")])
-            keyboard.insert(4, [InlineKeyboardButton("📥 Экспорт новостей", callback_data="export_menu")])
-
-        # Global collection control buttons for admins (prod + sandbox)
-        if is_admin:
-            is_stopped, _ttl = get_global_collection_stop_status(app_env=app_env)
-            if is_stopped:
-                keyboard.append([InlineKeyboardButton("▶️ Возобновить сбор", callback_data="collection:restore")])
-            else:
-                keyboard.append([InlineKeyboardButton("⏸ Остановить сбор", callback_data="collection:stop")])
+            keyboard.append([InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")])
+            keyboard.append([InlineKeyboardButton(f"🌐 Перевод ({target_lang.upper()}): {translate_status}", callback_data="settings:translate_toggle")])
+            keyboard.append([InlineKeyboardButton("📥 Экспорт новостей", callback_data="export_menu")])
+            keyboard.append([InlineKeyboardButton("📊 Статус бота", callback_data="show_status")])
+        else:
+            # SANDBOX mode: include admin features
+            keyboard.append([InlineKeyboardButton("🤖 AI переключатели", callback_data="ai:management")])
+            keyboard.append([InlineKeyboardButton("📊 Статус бота", callback_data="show_status")])
+            
+            # Global collection control buttons for sandbox admins
+            if is_admin:
+                is_stopped, _ttl = get_global_collection_stop_status(app_env=app_env)
+                if is_stopped:
+                    keyboard.append([InlineKeyboardButton("▶️ Возобновить сбор", callback_data="collection:restore")])
+                else:
+                    keyboard.append([InlineKeyboardButton("⏸ Остановить сбор", callback_data="collection:stop")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("⚙️ Настройки", reply_markup=reply_markup)
@@ -1114,6 +1118,24 @@ class NewsBot:
         if not await self._sandbox_admin_guard(query=query):
             return
         app_env = get_app_env()
+        
+        # ==================== PROD MODE RESTRICTIONS ====================
+        # Block admin-only callbacks in prod environment
+        if app_env == "prod":
+            data = query.data or ""
+            if data == "collection:stop" or data == "collection:restore":
+                await query.answer(
+                    "⛔ Остановка сбора доступна только в sandbox режиме",
+                    show_alert=True
+                )
+                return
+            if data == "mgmt:ai" or data == "ai:management" or data.startswith("mgmt:ai:"):
+                await query.answer(
+                    "⛔ AI-управление доступно только в sandbox режиме",
+                    show_alert=True
+                )
+                return
+        
         if app_env == "sandbox":
             data = query.data or ""
             if (
