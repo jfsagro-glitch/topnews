@@ -248,11 +248,13 @@ class SourceCollector:
         telegram_sources = []
         seen_telegram = set()
         for s in self._configured_sources:
-            if 'telegram' in s[0].lower() or any(x in s[0] for x in ['t.me', 'telegram']):
-                if s[1] not in seen_telegram:
-                    telegram_sources.append(s[1])
-                    seen_telegram.add(s[1])
-        other_sources = [s[1] for s in self._configured_sources if s[1] not in seen_telegram]
+            fetch_url = s.get('fetch_url', '')
+            source_name = s.get('source_name', '')
+            if 'telegram' in fetch_url.lower() or any(x in fetch_url for x in ['t.me', 'telegram']):
+                if source_name not in seen_telegram:
+                    telegram_sources.append(source_name)
+                    seen_telegram.add(source_name)
+        other_sources = [s.get('source_name', '') for s in self._configured_sources if s.get('source_name', '') not in seen_telegram]
         if telegram_sources:
             logger.info(f"Configured Telegram channels for collection: {telegram_sources}")
         logger.info(f"Total configured sources: {len(self._configured_sources)} (Telegram: {len(telegram_sources)}, Others: {len(other_sources)})")
