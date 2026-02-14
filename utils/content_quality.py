@@ -23,6 +23,13 @@ def compute_checksum(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
+def compute_content_hash(title: str, text: str) -> str:
+    """Return sha256 hash for normalized title + text."""
+    combined = f"{title or ''} {text or ''}".strip().lower()
+    combined = re.sub(r"\s+", " ", combined)
+    return hashlib.sha256(combined.encode("utf-8")).hexdigest()
+
+
 def normalize_url(url: str) -> str:
     """Return a canonicalized URL string for deduplication."""
     raw = (url or "").strip()

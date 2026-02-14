@@ -19,6 +19,7 @@ from utils.content_classifier import ContentClassifier
 from utils.content_quality import (
     content_quality_score,
     compute_checksum,
+    compute_content_hash,
     compute_simhash,
     compute_url_hash,
     detect_language,
@@ -143,79 +144,103 @@ class SourceCollector:
 
         # We'll dynamically build source list from `SOURCES_CONFIG` so all configured
         # sources are actually collected. Each entry will be classified as 'rss' or 'html'.
-        self._configured_sources = []  # list of tuples (fetch_url, source_name, category, type)
+        self._configured_sources = []  # list of dicts with per-source metadata
         _seen_entries = set()
-        for category_key, cfg in SOURCES_CONFIG.items():
-            max_items_per_fetch = cfg.get('max_items_per_fetch', 10)
+        for _category_key, cfg in SOURCES_CONFIG.items():
+            default_tier = (cfg.get('tier') or 'B').upper()
+            default_enabled = cfg.get('enabled', True)
+            default_min_interval = cfg.get('min_interval_seconds')
+            default_max_items = cfg.get('max_items_per_fetch', 10)
+            default_tags = cfg.get('tags') or {}
+            category = cfg.get('category', 'russia')
+
             for src in cfg.get('sources', []):
-                parsed = urlparse(src)
+                if isinstance(src, dict):
+                    src_url = src.get('url') or src.get('source')
+                    if not src_url:
+                        continue
+                    tier = (src.get('tier') or default_tier or 'B').upper()
+                    enabled = src.get('enabled', default_enabled)
+                    min_interval = src.get('min_interval_seconds', default_min_interval)
+                    max_items = src.get('max_items_per_fetch', default_max_items)
+                    tags = dict(default_tags)
+                    if isinstance(src.get('tags'), dict):
+                        tags.update(src.get('tags') or {})
+                else:
+                    src_url = src
+                    tier = default_tier
+                    enabled = default_enabled
+                    min_interval = default_min_interval
+                    max_items = default_max_items
+                    tags = dict(default_tags)
+
+                if max_items is None:
+                    max_items = 10
+                max_items = int(max_items)
+
+                parsed = urlparse(src_url)
                 domain = parsed.netloc.lower()
 
-                entries_to_add = []
+                def _add_entry(fetch_url: str, source_name: str, src_type: str):
+                    entry = {
+                        "fetch_url": fetch_url,
+                        "source_name": source_name,
+                        "category": category,
+                        "src_type": src_type,
+                        "max_items": max_items,
+                        "min_interval": min_interval,
+                        "tier": tier,
+                        "enabled": bool(enabled),
+                        "tags": tags,
+                        "source_url": src_url,
+                    }
+                    entry_key = (fetch_url, source_name)
+                    if entry_key in _seen_entries:
+                        return
+                    _seen_entries.add(entry_key)
+                    self._configured_sources.append(entry)
+                    self.source_health.setdefault(source_name, False)
 
                 # Prefer RSS override when we know the host's RSS endpoint
                 if domain in self.rss_overrides:
                     fetch_url = self.rss_overrides[domain]
                     if fetch_url is None:
-                        # Domain explicitly has no RSS (like dzen.ru), use HTML
                         logger.info(f"Source {domain} configured for HTML parsing (no RSS available)")
-                        entries_to_add.append((src, domain, cfg.get('category', 'russia'), 'html', max_items_per_fetch))
+                        _add_entry(src_url, domain, 'html')
                     else:
-                        src_type = 'rss'
-                        source_name = domain
                         logger.info(f"Source {domain} using RSS override: {fetch_url}")
-                        entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type, max_items_per_fetch))
+                        _add_entry(fetch_url, domain, 'rss')
                 else:
-                    # Heuristics: if URL looks like RSS or XML, treat as RSS
-                    if 'rss' in src.lower() or src.lower().endswith(('.xml', '.rss')):
-                        fetch_url = src
-                        src_type = 'rss'
-                        source_name = domain
-                        logger.info(f"Source {domain} detected as RSS: {fetch_url}")
-                        entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type, max_items_per_fetch))
+                    if 'rss' in src_url.lower() or src_url.lower().endswith(('.xml', '.rss')):
+                        logger.info(f"Source {domain} detected as RSS: {src_url}")
+                        _add_entry(src_url, domain, 'rss')
                     else:
-                        # t.me channels: use RSSHub if configured
                         if domain.endswith('t.me') or 't.me' in domain:
-                            channel = src.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '').strip('/')
+                            channel = src_url.replace('https://t.me/', '').replace('http://t.me/', '').replace('@', '').strip('/')
                             if channel.lower() in self._rsshub_disabled_channels:
                                 logger.warning(f"Telegram channel {channel} disabled (RSSHub blacklist)")
                                 continue
                             base = self._rsshub_bases[0] if self._rsshub_bases else ''
-
-                            source_name = channel  # Use short name like 'mash' instead of 't.me/mash'
+                            source_name = channel
                             if base:
                                 fetch_url = f"{base}/telegram/channel/{channel}"
                                 logger.info(f"Telegram channel {channel} using RSSHub: {fetch_url}")
-                                entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), 'rss', max_items_per_fetch))
+                                _add_entry(fetch_url, source_name, 'rss')
                             else:
                                 logger.warning(f"RSSHub not configured for Telegram channel {channel}")
-                        # x.com / twitter.com accounts: use RSSHub if configured
                         elif 'x.com' in domain or 'twitter.com' in domain:
-                            # Extract username from URL like https://x.com/username
-                            username = src.replace('https://x.com/', '').replace('http://x.com/', '').replace('https://twitter.com/', '').replace('http://twitter.com/', '').replace('@', '').strip('/')
+                            username = src_url.replace('https://x.com/', '').replace('http://x.com/', '').replace('https://twitter.com/', '').replace('http://twitter.com/', '').replace('@', '').strip('/')
                             base = self._rsshub_bases[0] if self._rsshub_bases else ''
-
-                            source_name = f"@{username}"  # Use @username format
+                            source_name = f"@{username}"
                             if base:
                                 fetch_url = f"{base}/twitter/user/{username}"
                                 logger.info(f"X/Twitter account {username} using RSSHub: {fetch_url}")
-                                entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), 'rss', max_items_per_fetch))
+                                _add_entry(fetch_url, source_name, 'rss')
                             else:
                                 logger.warning(f"RSSHub not configured for X/Twitter account {username}")
                         else:
-                            fetch_url = src
-                            src_type = 'html'
-                            source_name = domain
-                            logger.info(f"Source {domain} using HTML parsing: {fetch_url}")
-                            entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type, max_items_per_fetch))
-
-                for entry in entries_to_add:
-                    entry_key = (entry[0], entry[1])
-                    if entry_key in _seen_entries:
-                        continue
-                    _seen_entries.add(entry_key)
-                    self._configured_sources.append(entry)
-                    self.source_health.setdefault(entry[1], False)
+                            logger.info(f"Source {domain} using HTML parsing: {src_url}")
+                            _add_entry(src_url, domain, 'html')
         
         # Log summary of configured sources
         telegram_sources = []
@@ -669,6 +694,7 @@ class SourceCollector:
 
                     lang = detect_language(clean_text, title)
                     checksum = compute_checksum(clean_text)
+                    content_hash = compute_content_hash(title, clean_text)
                     simhash = compute_simhash(clean_text, title=title)
                     normalized_url = normalize_url(item_url) if item_url else ""
                     url_hash = compute_url_hash(normalized_url) if normalized_url else ""
@@ -701,6 +727,7 @@ class SourceCollector:
                     item['raw_text'] = raw_text
                     item['clean_text'] = clean_text
                     item['checksum'] = checksum
+                    item['content_hash'] = content_hash
                     item['simhash'] = simhash
                     item['language'] = lang
                     item['published_at'] = pub_iso
@@ -866,6 +893,7 @@ class SourceCollector:
 
                     lang = detect_language(clean_text, title)
                     checksum = compute_checksum(clean_text)
+                    content_hash = compute_content_hash(title, clean_text)
                     simhash = compute_simhash(clean_text, title=title)
                     normalized_url = normalize_url(item_url) if item_url else ""
                     url_hash = compute_url_hash(normalized_url) if normalized_url else ""
@@ -897,6 +925,7 @@ class SourceCollector:
                     item['raw_text'] = raw_text
                     item['clean_text'] = clean_text
                     item['checksum'] = checksum
+                    item['content_hash'] = content_hash
                     item['simhash'] = simhash
                     item['language'] = lang
                     item['published_at'] = pub_iso

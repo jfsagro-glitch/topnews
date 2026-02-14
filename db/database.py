@@ -56,6 +56,7 @@ class NewsDatabase:
                     raw_text TEXT,
                     clean_text TEXT,
                     checksum TEXT,
+                    content_hash TEXT,
                     language TEXT,
                     domain TEXT,
                     extraction_method TEXT,
@@ -215,6 +216,21 @@ class NewsDatabase:
                     event_type TEXT NOT NULL,
                     error_code TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Table for per-source quality metrics (for auto-tuning)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS source_quality (
+                    source TEXT PRIMARY KEY,
+                    success_count INTEGER NOT NULL DEFAULT 0,
+                    error_count INTEGER NOT NULL DEFAULT 0,
+                    items_total INTEGER NOT NULL DEFAULT 0,
+                    items_new INTEGER NOT NULL DEFAULT 0,
+                    items_duplicate INTEGER NOT NULL DEFAULT 0,
+                    quality_score REAL NOT NULL DEFAULT 0.0,
+                    last_error_code TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
 
@@ -384,6 +400,7 @@ class NewsDatabase:
                 raw_text TEXT,
                 clean_text TEXT,
                 checksum TEXT,
+                content_hash TEXT,
                 language TEXT,
                 domain TEXT,
                 extraction_method TEXT,
@@ -455,6 +472,7 @@ class NewsDatabase:
                 'raw_text': 'TEXT',
                 'clean_text': 'TEXT',
                 'checksum': 'TEXT',
+                'content_hash': 'TEXT',
                 'language': 'TEXT',
                 'domain': 'TEXT',
                 'extraction_method': 'TEXT',
@@ -550,6 +568,9 @@ class NewsDatabase:
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_checksum ON published_news(checksum)
             ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_content_hash ON published_news(content_hash)
+            ''')
         except Exception as e:
             logger.debug(f"Error ensuring indexes: {e}")
     
@@ -563,6 +584,7 @@ class NewsDatabase:
         raw_text: str | None = None,
         clean_text: str | None = None,
         checksum: str | None = None,
+        content_hash: str | None = None,
         language: str | None = None,
         domain: str | None = None,
         extraction_method: str | None = None,
@@ -596,16 +618,16 @@ class NewsDatabase:
                     cursor.execute('''
                         INSERT INTO published_news (
                             url, title, source, category, lead_text,
-                            raw_text, clean_text, checksum, language, domain,
+                            raw_text, clean_text, checksum, content_hash, language, domain,
                             extraction_method, published_at, published_date,
                             published_time, published_confidence, published_source,
                             fetched_at, first_seen_at, url_hash, url_normalized, guid, simhash,
                             quality_score, hashtags_ru, hashtags_en
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         url, title, source, category, lead_text,
-                        raw_text, clean_text, checksum, language, domain,
+                        raw_text, clean_text, checksum, content_hash, language, domain,
                         extraction_method, published_at, published_date,
                         published_time, published_confidence, published_source,
                         fetched_at, first_seen_at, url_hash, url_normalized, guid, simhash,
@@ -713,6 +735,24 @@ class NewsDatabase:
             return cursor.fetchone() is not None
         except Exception as e:
             logger.error(f"Error checking checksum: {e}")
+            return False
+
+    def is_content_hash_recent(self, content_hash: str | None, hours: int = 48) -> bool:
+        if not content_hash:
+            return False
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT 1 FROM published_news
+                WHERE content_hash = ? AND published_at > datetime('now', '-{int(hours)} hour')
+                LIMIT 1
+                """,
+                (content_hash,)
+            )
+            return cursor.fetchone() is not None
+        except Exception as e:
+            logger.error(f"Error checking content_hash: {e}")
             return False
 
     def get_recent_simhashes(self, hours: int = 48, limit: int = 1000) -> List[int]:
@@ -951,6 +991,136 @@ class NewsDatabase:
                 self._conn.commit()
         except Exception as e:
             logger.debug(f"Error recording source event for {source}: {e}")
+
+    def update_source_quality_fetch(self, source: str, ok: bool, error_code: str | None = None) -> None:
+        if not source:
+            return
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO source_quality(source, success_count, error_count, last_error_code)
+                    VALUES(?, ?, ?, ?)
+                    ON CONFLICT(source) DO UPDATE SET
+                        success_count = success_count + ?,
+                        error_count = error_count + ?,
+                        last_error_code = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        source,
+                        1 if ok else 0,
+                        0 if ok else 1,
+                        None if ok else error_code,
+                        1 if ok else 0,
+                        0 if ok else 1,
+                        None if ok else error_code,
+                    ),
+                )
+                self._conn.commit()
+        except Exception as e:
+            logger.debug(f"Error updating source quality fetch for {source}: {e}")
+
+    def update_source_quality_stats(
+        self,
+        source: str,
+        items_total: int,
+        items_new: int,
+        items_duplicate: int,
+    ) -> None:
+        if not source:
+            return
+        items_total = max(0, int(items_total))
+        items_new = max(0, int(items_new))
+        items_duplicate = max(0, int(items_duplicate))
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO source_quality(source, items_total, items_new, items_duplicate)
+                    VALUES(?, ?, ?, ?)
+                    ON CONFLICT(source) DO UPDATE SET
+                        items_total = items_total + ?,
+                        items_new = items_new + ?,
+                        items_duplicate = items_duplicate + ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        source,
+                        items_total,
+                        items_new,
+                        items_duplicate,
+                        items_total,
+                        items_new,
+                        items_duplicate,
+                    ),
+                )
+                cursor.execute(
+                    """
+                    SELECT success_count, error_count, items_total, items_new, items_duplicate
+                    FROM source_quality WHERE source = ?
+                    """,
+                    (source,),
+                )
+                row = cursor.fetchone() or (0, 0, 0, 0, 0)
+                success_count, error_count, total, new, dup = row
+                quality_score = self._compute_source_quality_score(success_count, error_count, total, new, dup)
+                cursor.execute(
+                    """
+                    UPDATE source_quality
+                    SET quality_score = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE source = ?
+                    """,
+                    (quality_score, source),
+                )
+                self._conn.commit()
+        except Exception as e:
+            logger.debug(f"Error updating source quality stats for {source}: {e}")
+
+    def _compute_source_quality_score(
+        self,
+        success_count: int,
+        error_count: int,
+        items_total: int,
+        items_new: int,
+        items_duplicate: int,
+    ) -> float:
+        uptime_total = max(0, int(success_count)) + max(0, int(error_count))
+        uptime = (success_count / uptime_total) if uptime_total > 0 else 1.0
+        dedup_total = max(0, int(items_new)) + max(0, int(items_duplicate))
+        uniqueness = (items_new / dedup_total) if dedup_total > 0 else 1.0
+        yield_ratio = (items_new / items_total) if items_total > 0 else 0.0
+        score = (0.5 * uptime) + (0.3 * uniqueness) + (0.2 * yield_ratio)
+        return max(0.0, min(1.0, float(score)))
+
+    def get_source_quality(self, source: str) -> dict | None:
+        if not source:
+            return None
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                """
+                SELECT success_count, error_count, items_total, items_new, items_duplicate, quality_score
+                FROM source_quality WHERE source = ?
+                """,
+                (source,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "success_count": row[0] or 0,
+                "error_count": row[1] or 0,
+                "items_total": row[2] or 0,
+                "items_new": row[3] or 0,
+                "items_duplicate": row[4] or 0,
+                "quality_score": row[5] if row[5] is not None else 0.0,
+            }
+        except Exception as e:
+            logger.debug(f"Error getting source quality for {source}: {e}")
+            return None
 
     def get_source_event_counts(self, sources: List[str], window_hours: int = 24) -> dict:
         if not sources:

@@ -10,6 +10,7 @@ import hmac
 import hashlib
 import secrets
 import json
+from contextlib import suppress
 from datetime import datetime
 from net.deepseek_client import DeepSeekClient
 from urllib.parse import urlparse
@@ -1163,6 +1164,11 @@ class NewsBot:
                 return
 
             set_global_collection_stop(True, ttl_sec=3600, by=str(user_id))
+            
+            # Уведомляем asyncio.Event об остановке (локальный эффект)
+            from core.services.global_stop import set_global_stop
+            set_global_stop(True)
+            
             await query.edit_message_text(
                 "⏸ Сбор новостей остановлен глобально\n\n"
                 "Все боты перестали собирать новости.\n"
@@ -1182,6 +1188,8 @@ class NewsBot:
                 return
 
             set_global_collection_stop(False, by=str(user_id))
+            from core.services.global_stop import set_global_stop
+            set_global_stop(False)
             await query.edit_message_text(
                 "▶️ Сбор новостей восстановлен!\n\n"
                 "Боты снова собирают новости в фоне."
@@ -2576,6 +2584,12 @@ class NewsBot:
                     logger.debug(f"Skipping duplicate checksum: {title[:50]}")
                     continue
 
+                # Проверка дубликатов по content_hash (нормализованный title+text) в окне 48 часов
+                content_hash = news.get('content_hash') or ''
+                if content_hash and self.db.is_content_hash_recent(content_hash, hours=48):
+                    logger.debug(f"Skipping duplicate content_hash: {title[:50]}")
+                    continue
+
                 # Проверка near-duplicate по simhash
                 simhash = news.get('simhash')
                 if isinstance(simhash, int) and recent_simhashes:
@@ -2609,6 +2623,7 @@ class NewsBot:
                     raw_text=news.get('raw_text'),
                     clean_text=news.get('clean_text') or news.get('text', ''),
                     checksum=news.get('checksum'),
+                    content_hash=news.get('content_hash'),
                     language=news.get('language'),
                     domain=news.get('domain'),
                     extraction_method=news.get('extraction_method'),
@@ -2890,7 +2905,7 @@ class NewsBot:
     
     async def run_periodic_collection(self):
         """Запускает периодический сбор новостей"""
-        from core.services.global_stop import get_global_stop
+        from core.services.global_stop import get_global_stop, wait_global_stop, wait_for_resume
         
         logger.info("Starting periodic news collection")
         
@@ -2898,13 +2913,43 @@ class NewsBot:
             try:
                 # Проверяем глобальный стоп
                 if get_global_stop():
-                    logger.debug("Global stop is ON, skipping collection cycle")
-                    await asyncio.sleep(5)  # Проверяем стоп каждые 5 сек
-                elif not self.is_paused:
-                    await self.collect_and_publish()
-                
+                    logger.info("⏸️  Global stop activated - waiting for resume signal...")
+                    await wait_for_resume()
+                    logger.info("⏯️  Resuming collection after signal")
+                    continue
+
+                if self.is_paused:
+                    try:
+                        await asyncio.wait_for(wait_global_stop(), timeout=CHECK_INTERVAL_SECONDS)
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+
+                collection_task = asyncio.create_task(self.collect_and_publish())
+                stop_task = asyncio.create_task(wait_global_stop())
+                done, pending = await asyncio.wait(
+                    {collection_task, stop_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if stop_task in done:
+                    logger.info("⏹️  Global stop during collection - cancelling in-flight work")
+                    collection_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await collection_task
+                    await wait_for_resume()
+                    continue
+
+                stop_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await stop_task
+
                 # Ждем перед следующей проверкой
-                await asyncio.sleep(CHECK_INTERVAL_SECONDS)
+                # (Если стоп активируется, wait_global_stop() сработает мгновенно)
+                try:
+                    await asyncio.wait_for(wait_global_stop(), timeout=CHECK_INTERVAL_SECONDS)
+                except asyncio.TimeoutError:
+                    pass
             
             except Exception as e:
                 logger.error(f"Error in periodic collection: {e}")
@@ -2930,6 +2975,11 @@ class NewsBot:
         
         # Инициализируем админов в БД (при первом запуске)
         self._init_admins_access()
+        
+        # Инициализируем asyncio.Event для глобального стопа (мгновенная отмена задач)
+        from core.services.global_stop import init_global_stop_event
+        await init_global_stop_event()
+        logger.info("Global stop event initialized (tasks will respond immediately to stop signal)")
         
         # Создаем приложение
         self.create_application()
