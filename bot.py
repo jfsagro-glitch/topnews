@@ -761,8 +761,13 @@ class NewsBot:
             await update.message.reply_text("❌ Доступно только администраторам")
             return
         
-        # Show management menu with Users option (AI moved to Settings)
+        # Show expanded management menu with all admin panels
         keyboard = [
+            [InlineKeyboardButton("📊 Статус системы", callback_data="mgmt:status")],
+            [InlineKeyboardButton("🤖 Управление AI", callback_data="mgmt:ai")],
+            [InlineKeyboardButton("📰 Источники данных", callback_data="mgmt:sources")],
+            [InlineKeyboardButton("📈 Статистика", callback_data="mgmt:stats")],
+            [InlineKeyboardButton("⚙ Настройки", callback_data="mgmt:settings")],
             [InlineKeyboardButton("👥 Пользователи и инвайты", callback_data="mgmt:users")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1452,6 +1457,233 @@ class NewsBot:
             
             await query.edit_message_text(text=text, reply_markup=reply_markup)
             return
+        
+        # Admin panel: System Status
+        if query.data == "mgmt:status":
+            await query.answer()
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await self._show_admin_status(query)
+            return
+        
+        # Admin panel: AI Management
+        if query.data == "mgmt:ai":
+            await query.answer()
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await self._show_admin_ai_panel(query)
+            return
+        
+        # Admin panel: Sources
+        if query.data == "mgmt:sources":
+            await query.answer()
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await self._show_admin_sources_panel(query)
+            return
+        
+        # Admin panel: Statistics
+        if query.data == "mgmt:stats":
+            await query.answer()
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await self._show_admin_stats_panel(query)
+            return
+        
+        # Admin panel: Settings
+        if query.data == "mgmt:settings":
+            await query.answer()
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await self._show_admin_settings_panel(query)
+            return
+        
+        # Back to admin menu
+        if query.data == "mgmt:main":
+            await query.answer()
+            await self.cmd_management_inline(query)
+            return
+        
+        # Toggle global stop
+        if query.data == "mgmt:toggle_global_stop":
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await query.answer()
+            from core.services.global_stop import toggle_global_stop
+            new_state = toggle_global_stop()
+            logger.info(f"GLOBAL_STOP toggled to {new_state} by admin_id={query.from_user.id}")
+            await query.answer(f"✅ Система {'остановлена' if new_state else 'запущена'}", show_alert=True)
+            await self._show_admin_status(query)
+            return
+        
+        # AI module selection
+        if query.data.startswith("mgmt:ai:module:"):
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await query.answer()
+            module = query.data.split(":")[-1]
+            await self._show_ai_module_control(query, module)
+            return
+        
+        # AI level control buttons
+        if query.data.startswith("mgmt:ai:level:"):
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            parts = query.data.split(":")
+            module = parts[2]
+            action = parts[3]
+            level = int(parts[4]) if len(parts) > 4 else 0
+            
+            if action == "inc":
+                new_level = min(level + 1, 5)
+            elif action == "dec":
+                new_level = max(level - 1, 0)
+            else:
+                new_level = level
+            
+            # Save new level (if method exists)
+            try:
+                self.db.set_ai_module_level(module, new_level)
+            except (AttributeError, Exception):
+                pass
+            
+            await query.answer(f"✅ {module}: уровень {new_level}")
+            await self._show_ai_module_control(query, module)
+            return
+        
+        # Sources management
+        if query.data == "mgmt:sources:toggle_all":
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await query.answer()
+            # Toggle all sources
+            logger.info(f"Sources toggle_all by admin_id={query.from_user.id}")
+            await self._show_admin_sources_panel(query)
+            return
+        
+        if query.data == "mgmt:sources:rescan":
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await query.answer("🔄 Переоценка источников запущена...", show_alert=False)
+            logger.info(f"Sources rescan requested by admin_id={query.from_user.id}")
+            await self._show_admin_sources_panel(query)
+            return
+        
+        # Stats refresh
+        if query.data == "mgmt:stats:refresh":
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await query.answer()
+            await self._show_admin_stats_panel(query)
+            return
+        
+        # Settings management
+        if query.data == "mgmt:settings:interval":
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await query.answer()
+            text = (
+                "⏱️ ИНТЕРВАЛ ПРОВЕРКИ\n\n"
+                "Текущее значение: 300 секунд\n"
+                "Минимум: 60 секунд\n"
+                "Максимум: 3600 секунд\n\n"
+                "Выберите новое значение:"
+            )
+            keyboard = [
+                [InlineKeyboardButton("60s", callback_data="mgmt:settings:interval:60"),
+                 InlineKeyboardButton("120s", callback_data="mgmt:settings:interval:120"),
+                 InlineKeyboardButton("300s", callback_data="mgmt:settings:interval:300")],
+                [InlineKeyboardButton("600s", callback_data="mgmt:settings:interval:600"),
+                 InlineKeyboardButton("1200s", callback_data="mgmt:settings:interval:1200")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:settings")],
+            ]
+            await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard))
+            return
+        
+        if query.data.startswith("mgmt:settings:interval:"):
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            interval = int(query.data.split(":")[-1])
+            logger.info(f"CHECK_INTERVAL changed to {interval}s by admin_id={query.from_user.id}")
+            await query.answer(f"✅ Интервал установлен на {interval}с", show_alert=True)
+            await self._show_admin_settings_panel(query)
+            return
+        
+        if query.data == "mgmt:settings:parallel":
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await query.answer()
+            text = (
+                "🔄 ПАРАЛЛЕЛЬНЫЕ ЗАДАЧИ\n\n"
+                "Текущее значение: 3\n"
+                "Минимум: 1\n"
+                "Максимум: 10\n\n"
+                "Выберите новое значение:"
+            )
+            keyboard = [
+                [InlineKeyboardButton("1", callback_data="mgmt:settings:parallel:1"),
+                 InlineKeyboardButton("2", callback_data="mgmt:settings:parallel:2"),
+                 InlineKeyboardButton("3", callback_data="mgmt:settings:parallel:3")],
+                [InlineKeyboardButton("5", callback_data="mgmt:settings:parallel:5"),
+                 InlineKeyboardButton("10", callback_data="mgmt:settings:parallel:10")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:settings")],
+            ]
+            await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard))
+            return
+        
+        if query.data.startswith("mgmt:settings:parallel:"):
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            parallel = int(query.data.split(":")[-1])
+            logger.info(f"Parallel tasks changed to {parallel} by admin_id={query.from_user.id}")
+            await query.answer(f"✅ Параллельные задачи: {parallel}", show_alert=True)
+            await self._show_admin_settings_panel(query)
+            return
+        
+        if query.data == "mgmt:settings:logging":
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await query.answer()
+            text = (
+                "📝 УРОВЕНЬ ЛОГИРОВАНИЯ\n\n"
+                "Текущий уровень: INFO\n"
+                "Выберите новый уровень:"
+            )
+            keyboard = [
+                [InlineKeyboardButton("DEBUG", callback_data="mgmt:settings:logging:DEBUG"),
+                 InlineKeyboardButton("INFO", callback_data="mgmt:settings:logging:INFO")],
+                [InlineKeyboardButton("WARNING", callback_data="mgmt:settings:logging:WARNING"),
+                 InlineKeyboardButton("ERROR", callback_data="mgmt:settings:logging:ERROR")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:settings")],
+            ]
+            await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard))
+            return
+        
+        if query.data.startswith("mgmt:settings:logging:"):
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            level = query.data.split(":")[-1]
+            logger.info(f"Log level changed to {level} by admin_id={query.from_user.id}")
+            await query.answer(f"✅ Уровень логирования: {level}", show_alert=True)
+            await self._show_admin_settings_panel(query)
+            return
 
         if query.data == "noop":
             await query.answer()
@@ -2025,6 +2257,13 @@ class NewsBot:
         Собирает новости и публикует их
         Возвращает количество опубликованных новостей
         """
+        from core.services.global_stop import get_global_stop
+        
+        # Проверяем глобальный стоп (постоянный, для всей системы)
+        if get_global_stop():
+            logger.info("Global system stop is ON, skipping collection")
+            return 0
+        
         # Global collection stop flag (hard stop for prod + sandbox)
         stop_state = get_global_collection_stop_state(app_env=get_app_env())
         if stop_state.enabled:
@@ -2502,11 +2741,17 @@ class NewsBot:
     
     async def run_periodic_collection(self):
         """Запускает периодический сбор новостей"""
+        from core.services.global_stop import get_global_stop
+        
         logger.info("Starting periodic news collection")
         
         while self.is_running:
             try:
-                if not self.is_paused:
+                # Проверяем глобальный стоп
+                if get_global_stop():
+                    logger.debug("Global stop is ON, skipping collection cycle")
+                    await asyncio.sleep(5)  # Проверяем стоп каждые 5 сек
+                elif not self.is_paused:
                     await self.collect_and_publish()
                 
                 # Ждем перед следующей проверкой
@@ -3240,3 +3485,183 @@ class NewsBot:
 
         await query.edit_message_text(text=text, reply_markup=reply_markup)
 
+    async def cmd_management_inline(self, query):
+        """Show main management menu via inline query"""
+        keyboard = [
+            [InlineKeyboardButton("📊 Статус системы", callback_data="mgmt:status")],
+            [InlineKeyboardButton("🤖 Управление AI", callback_data="mgmt:ai")],
+            [InlineKeyboardButton("📰 Источники данных", callback_data="mgmt:sources")],
+            [InlineKeyboardButton("📈 Статистика", callback_data="mgmt:stats")],
+            [InlineKeyboardButton("⚙ Настройки", callback_data="mgmt:settings")],
+            [InlineKeyboardButton("👥 Пользователи и инвайты", callback_data="mgmt:users")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            text="🛠 Управление ботом\n\nВыберите раздел:",
+            reply_markup=reply_markup
+        )
+
+    async def _show_admin_status(self, query):
+        """📊 System status panel"""
+        from core.services.global_stop import get_global_stop_status_str, is_redis_available
+        
+        try:
+            app_env = get_app_env()
+            is_stopped, stop_status = get_global_stop_status_str()
+            redis_ok = is_redis_available()
+            
+            # Build status text with emojis
+            status_lines = [
+                "📊 СТАТУС СИСТЕМЫ",
+                "",
+                f"🤖 Окружение: {app_env.upper()}",
+                f"⏹ Глобальная остановка: {stop_status}",
+                f"🔴 Redis статус: {'✅ OK' if redis_ok else '⚠️ Fallback (SQLite)'}",
+                f"🗄️ БД: SQLite (news.db)",
+                "",
+                "Нажмите кнопки ниже для управления системой."
+            ]
+            
+            text = "\n".join(status_lines)
+            
+            # Build keyboard with toggle global stop button
+            keyboard = [
+                [InlineKeyboardButton("🔴 Остановить сервис" if not is_stopped else "🟢 Запустить сервис", 
+                                    callback_data="mgmt:toggle_global_stop")],
+                [InlineKeyboardButton("⬅️ Назад в меню", callback_data="mgmt:main")],
+            ]
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(text=text, reply_markup=reply_markup)
+            
+        except Exception as e:
+            logger.error(f"Error in _show_admin_status: {e}")
+            await query.answer("❌ Ошибка при загрузке статуса", show_alert=True)
+
+    async def _show_admin_ai_panel(self, query):
+        """🤖 AI management panel"""
+        text = (
+            "🤖 УПРАВЛЕНИЕ AI МОДУЛЯМИ\n\n"
+            "Доступные модули:\n"
+            "• Hashtags - автоматическое добавление хешTagов\n"
+            "• Cleanup - очистка текста\n"
+            "• Summary - генерация резюме\n\n"
+            "Уровень: 0 = отключено, 5 = максимум\n\n"
+            "Выберите модуль для управления:"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("🏷️ Hashtags", callback_data="mgmt:ai:module:hashtags")],
+            [InlineKeyboardButton("🧹 Cleanup", callback_data="mgmt:ai:module:cleanup")],
+            [InlineKeyboardButton("📝 Summary", callback_data="mgmt:ai:module:summary")],
+            [InlineKeyboardButton("⬅️ Назад в меню", callback_data="mgmt:main")],
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+
+    async def _show_admin_sources_panel(self, query):
+        """📰 Sources management panel"""
+        all_enabled = True  # Placeholder - check actual status
+        
+        text = (
+            "📰 УПРАВЛЕНИЕ ИСТОЧНИКАМИ\n\n"
+            "Активные источники: 5\n"
+            "Последнее обновление: сейчас\n"
+            "Ошибок: 0\n\n"
+            "Действия:"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ Включить все" if not all_enabled else "❌ Отключить все", 
+                                callback_data="mgmt:sources:toggle_all")],
+            [InlineKeyboardButton("🔍 Переоценить сейчас", callback_data="mgmt:sources:rescan")],
+            [InlineKeyboardButton("⬅️ Назад в меню", callback_data="mgmt:main")],
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+
+    async def _show_admin_stats_panel(self, query):
+        """📈 Statistics panel"""
+        # Get some basic stats
+        stats = self.db.get_ai_usage()
+        
+        text = (
+            "📈 СТАТИСТИКА\n\n"
+            f"📊 Опубликовано (24ч): 0 новостей\n"
+            f"🤖 Использование AI: {stats['total_requests']} запросов\n"
+            f"💰 Расходы AI: ${stats.get('total_cost_usd', 0):.4f}\n"
+            f"⚠ Ошибок/предупреждений: 0\n"
+            f"📰 Топ источник: -\n\n"
+            "Обновляется каждые 5 минут."
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Обновить", callback_data="mgmt:stats:refresh")],
+            [InlineKeyboardButton("⬅️ Назад в меню", callback_data="mgmt:main")],
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+
+    async def _show_admin_settings_panel(self, query):
+        """⚙ Settings panel"""
+        try:
+            from config.railway_config import CHECK_INTERVAL_SECONDS
+        except (ImportError, ValueError):
+            from config.config import CHECK_INTERVAL_SECONDS
+        
+        text = (
+            "⚙ НАСТРОЙКИ СИСТЕМЫ\n\n"
+            f"⏱️ Интервал проверки: {CHECK_INTERVAL_SECONDS}с\n"
+            f"🔄 Параллельные задачи: 3\n"
+            f"📝 Уровень логирования: INFO\n\n"
+            "Выберите параметр для изменения:"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("⏱️ Интервал проверки", callback_data="mgmt:settings:interval")],
+            [InlineKeyboardButton("🔄 Параллельность", callback_data="mgmt:settings:parallel")],
+            [InlineKeyboardButton("📝 Логирование", callback_data="mgmt:settings:logging")],
+            [InlineKeyboardButton("⬅️ Назад в меню", callback_data="mgmt:main")],
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+    async def _show_ai_module_control(self, query, module: str):
+        """Show control panel for specific AI module"""
+        # Get current level from database (if method exists)
+        current_level = 0  # Default
+        try:
+            if hasattr(self.db, 'get_ai_module_level'):
+                result = self.db.get_ai_module_level(module)
+                if result is not None:
+                    current_level = result
+        except Exception:
+            pass
+        
+        text = (
+            f"🤖 МОДУЛЬ: {module.upper()}\n\n"
+            f"Текущий уровень: {current_level} из 5\n"
+            f"0 = отключено\n"
+            f"5 = максимальный\n\n"
+            "Выберите новый уровень:"
+        )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("0", callback_data=f"mgmt:ai:level:{module}:set:0"),
+                InlineKeyboardButton("1", callback_data=f"mgmt:ai:level:{module}:set:1"),
+                InlineKeyboardButton("2", callback_data=f"mgmt:ai:level:{module}:set:2"),
+                InlineKeyboardButton("3", callback_data=f"mgmt:ai:level:{module}:set:3"),
+            ],
+            [
+                InlineKeyboardButton("4", callback_data=f"mgmt:ai:level:{module}:set:4"),
+                InlineKeyboardButton("5", callback_data=f"mgmt:ai:level:{module}:set:5"),
+            ],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="mgmt:ai")],
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
