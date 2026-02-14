@@ -68,6 +68,7 @@ class SourceCollector:
                 RSSHUB_CONCURRENCY,
                 RSSHUB_DISABLED_CHANNELS,
                 RSSHUB_TELEGRAM_ENABLED,
+                RSSHUB_SOURCE_COOLDOWN_SECONDS,
             )
         except (ImportError, ValueError):
             from config.config import (
@@ -80,6 +81,7 @@ class SourceCollector:
                 RSSHUB_CONCURRENCY,
                 RSSHUB_DISABLED_CHANNELS,
                 RSSHUB_TELEGRAM_ENABLED,
+                RSSHUB_SOURCE_COOLDOWN_SECONDS,
             )
 
         self._source_collect_timeout = SOURCE_COLLECT_TIMEOUT_SECONDS
@@ -89,6 +91,7 @@ class SourceCollector:
         self._rsshub_min_interval = RSSHUB_MIN_INTERVAL_SECONDS
         self._rss_min_interval = RSS_MIN_INTERVAL_SECONDS
         self._rsshub_concurrency = max(1, int(RSSHUB_CONCURRENCY))
+        self._rsshub_source_cooldown = int(RSSHUB_SOURCE_COOLDOWN_SECONDS)
         self._rsshub_telegram_enabled_default = bool(RSSHUB_TELEGRAM_ENABLED)
         self._rsshub_disabled_channels = {
             item.strip().lower() for item in (RSSHUB_DISABLED_CHANNELS or "").split(",") if item.strip()
@@ -143,6 +146,7 @@ class SourceCollector:
         self._configured_sources = []  # list of tuples (fetch_url, source_name, category, type)
         _seen_entries = set()
         for category_key, cfg in SOURCES_CONFIG.items():
+            max_items_per_fetch = cfg.get('max_items_per_fetch', 10)
             for src in cfg.get('sources', []):
                 parsed = urlparse(src)
                 domain = parsed.netloc.lower()
@@ -155,12 +159,12 @@ class SourceCollector:
                     if fetch_url is None:
                         # Domain explicitly has no RSS (like dzen.ru), use HTML
                         logger.info(f"Source {domain} configured for HTML parsing (no RSS available)")
-                        entries_to_add.append((src, domain, cfg.get('category', 'russia'), 'html'))
+                        entries_to_add.append((src, domain, cfg.get('category', 'russia'), 'html', max_items_per_fetch))
                     else:
                         src_type = 'rss'
                         source_name = domain
                         logger.info(f"Source {domain} using RSS override: {fetch_url}")
-                        entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type))
+                        entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type, max_items_per_fetch))
                 else:
                     # Heuristics: if URL looks like RSS or XML, treat as RSS
                     if 'rss' in src.lower() or src.lower().endswith(('.xml', '.rss')):
@@ -168,7 +172,7 @@ class SourceCollector:
                         src_type = 'rss'
                         source_name = domain
                         logger.info(f"Source {domain} detected as RSS: {fetch_url}")
-                        entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type))
+                        entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type, max_items_per_fetch))
                     else:
                         # t.me channels: use RSSHub if configured
                         if domain.endswith('t.me') or 't.me' in domain:
@@ -182,7 +186,7 @@ class SourceCollector:
                             if base:
                                 fetch_url = f"{base}/telegram/channel/{channel}"
                                 logger.info(f"Telegram channel {channel} using RSSHub: {fetch_url}")
-                                entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), 'rss'))
+                                entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), 'rss', max_items_per_fetch))
                             else:
                                 logger.warning(f"RSSHub not configured for Telegram channel {channel}")
                         # x.com / twitter.com accounts: use RSSHub if configured
@@ -195,7 +199,7 @@ class SourceCollector:
                             if base:
                                 fetch_url = f"{base}/twitter/user/{username}"
                                 logger.info(f"X/Twitter account {username} using RSSHub: {fetch_url}")
-                                entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), 'rss'))
+                                entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), 'rss', max_items_per_fetch))
                             else:
                                 logger.warning(f"RSSHub not configured for X/Twitter account {username}")
                         else:
@@ -203,7 +207,7 @@ class SourceCollector:
                             src_type = 'html'
                             source_name = domain
                             logger.info(f"Source {domain} using HTML parsing: {fetch_url}")
-                            entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type))
+                            entries_to_add.append((fetch_url, source_name, cfg.get('category', 'russia'), src_type, max_items_per_fetch))
 
                 for entry in entries_to_add:
                     entry_key = (entry[0], entry[1])
@@ -482,7 +486,7 @@ class SourceCollector:
             tasks = []  # list of tuples (source_name, fetch_url, src_type, task)
             
             # Используем сконфигурированные источники, автоматически классифицированные
-            for fetch_url, source_name, category, src_type in self._configured_sources:
+            for fetch_url, source_name, category, src_type, max_items in self._configured_sources:
                 if not self._should_fetch_source(fetch_url, source_name, src_type):
                     self.last_collected_counts[source_name] = 0
                     continue
@@ -491,14 +495,22 @@ class SourceCollector:
                         source_name,
                         fetch_url,
                         src_type,
-                        self._collect_with_timeout(fetch_url, source_name, self._collect_from_rss(fetch_url, source_name, category)),
+                        self._collect_with_timeout(
+                            fetch_url,
+                            source_name,
+                            self._collect_from_rss(fetch_url, source_name, category, max_items),
+                        ),
                     ))
                 else:
                     tasks.append((
                         source_name,
                         fetch_url,
                         src_type,
-                        self._collect_with_timeout(fetch_url, source_name, self._collect_from_html(fetch_url, source_name, category)),
+                        self._collect_with_timeout(
+                            fetch_url,
+                            source_name,
+                            self._collect_from_html(fetch_url, source_name, category, max_items),
+                        ),
                     ))
             
             # Запускаем все параллельно
@@ -509,7 +521,7 @@ class SourceCollector:
             self.last_collection_at = time.time()
             
             # Initialize all configured sources to 0 (will update below)
-            for fetch_url, source_name, category, src_type in self._configured_sources:
+            for fetch_url, source_name, category, src_type, max_items in self._configured_sources:
                 self.last_collected_counts[source_name] = 0
             
             # Собираем результаты
@@ -556,7 +568,7 @@ class SourceCollector:
         
         return all_news
     
-    async def _collect_from_rss(self, url: str, source_name: str, category: str) -> List[Dict]:
+    async def _collect_from_rss(self, url: str, source_name: str, category: str, max_items: int) -> List[Dict]:
         """Собирает из RSS источника"""
         try:
             from core.services.global_stop import get_global_stop
@@ -575,7 +587,7 @@ class SourceCollector:
                     self._last_fetch_status[url] = {"ok": False, "status_code": None, "error": "cooldown"}
                     return []
                 
-                news = await self.rss_parser.parse(url, source_name)
+                news = await self.rss_parser.parse(url, source_name, max_items=max_items)
                 filtered_news = []
                 for item in news:
                     title = item.get('title', '')
@@ -727,12 +739,24 @@ class SourceCollector:
                     mirror_items = await self._try_rsshub_mirrors(url, source_name)
                     if mirror_items:
                         return mirror_items
-                    self._set_cooldown(url, 300)
-                    logger.warning(f"⚠️ RSSHub Telegram feed unavailable for {source_name} (503), will retry in 5 min")
+                    self._set_cooldown(url, self._rsshub_source_cooldown)
+                    logger.warning(
+                        f"⚠️ RSSHub Telegram feed unavailable for {source_name} (503), "
+                        f"will retry in {self._rsshub_source_cooldown}s"
+                    )
                 elif '503' in error_str and '/twitter/' in url:
                     # 503 from RSSHub Twitter/X feeds - likely API issues, short cooldown
-                    self._set_cooldown(url, 300)
-                    logger.warning(f"⚠️ RSSHub Twitter/X feed unavailable for {source_name} (503), will retry in 5 min")
+                    self._set_cooldown(url, self._rsshub_source_cooldown)
+                    logger.warning(
+                        f"⚠️ RSSHub Twitter/X feed unavailable for {source_name} (503), "
+                        f"will retry in {self._rsshub_source_cooldown}s"
+                    )
+                elif 'preview' in error_str or 'permission' in error_str:
+                    self._set_cooldown(url, 21600)
+                    logger.warning(
+                        f"⚠️ RSSHub preview/permission issue for {source_name}, "
+                        "cooldown 6h"
+                    )
                 self._last_fetch_status[url] = {
                     "ok": False,
                     "status_code": status_code,
@@ -743,7 +767,7 @@ class SourceCollector:
                 logger.error(f"Error collecting from RSS {url}: {type(e).__name__}: {e}")
                 return []
     
-    async def _collect_from_html(self, url: str, source_name: str, category: str) -> List[Dict]:
+    async def _collect_from_html(self, url: str, source_name: str, category: str, max_items: int) -> List[Dict]:
         """Собирает из HTML источника"""
         try:
             from core.services.global_stop import get_global_stop
@@ -762,6 +786,8 @@ class SourceCollector:
             
             try:
                 news = await self.html_parser.parse(url, source_name)
+                if max_items and len(news) > max_items:
+                    news = news[:max_items]
                 if not news:
                     rss_fallback = await self._try_fallback_rss(url, source_name, category)
                     if rss_fallback:

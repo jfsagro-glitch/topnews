@@ -178,6 +178,7 @@ RSSHUB_MIRROR_URLS = [url.strip() for url in (_RSSHUB_MIRROR_RAW or '').split(',
 RSSHUB_MIN_INTERVAL_SECONDS = env_int('RSSHUB_MIN_INTERVAL_SECONDS', 900)
 RSS_MIN_INTERVAL_SECONDS = env_int('RSS_MIN_INTERVAL_SECONDS', 300)
 RSSHUB_CONCURRENCY = env_int('RSSHUB_CONCURRENCY', 2)
+RSSHUB_SOURCE_COOLDOWN_SECONDS = env_int('RSSHUB_SOURCE_COOLDOWN_SECONDS', 600)
 RSSHUB_DISABLED_CHANNELS = env_str('RSSHUB_DISABLED_CHANNELS', 'rian_ru') or ''
 RSSHUB_TELEGRAM_ENABLED = env_bool('RSSHUB_TELEGRAM_ENABLED', True)
 
@@ -200,6 +201,7 @@ SOURCES_CONFIG = {
     },
     'yahoo_world_extended': {
         'category': 'world',
+        'max_items_per_fetch': 20,
         'sources': [
             # World
             'https://news.yahoo.com/rss/world',

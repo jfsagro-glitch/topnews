@@ -2829,7 +2829,7 @@ class NewsBot:
         }
         emoji = emoji_map.get(category, '🗞')
         base_tag = self._get_category_tag(category, language)
-        tags = f"{base_tag} {extra_tags}".strip() if extra_tags else base_tag
+        tags = extra_tags.strip() if extra_tags else base_tag
         return f"{emoji} {tags}".strip()
 
     async def _generate_hashtags_snapshot(self, news: dict) -> tuple[str, str]:

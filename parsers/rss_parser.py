@@ -21,7 +21,7 @@ class RSSParser:
         self.timeout = timeout
         self.db = db  # Optional database for conditional GET state
     
-    async def parse(self, url: str, source_name: str) -> List[Dict]:
+    async def parse(self, url: str, source_name: str, max_items: int = 10) -> List[Dict]:
         """
         Парсит RSS фид и возвращает новости
         Использует conditional GET (ETag/Last-Modified) если доступно
@@ -79,7 +79,7 @@ class RSSParser:
                 return news_items
             
             # Обрабатываем каждую запись
-            for entry in feed.entries[:10]:  # Берём до 10 последних
+            for entry in feed.entries[:max_items]:  # Берём до max_items последних
                 lead = extract_lead_from_rss(entry, max_len=800)
                 published_info = self._parse_date_info(entry)
                 published_at = published_info.get('published_at')
