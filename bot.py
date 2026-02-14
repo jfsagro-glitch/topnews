@@ -13,7 +13,7 @@ import json
 from datetime import datetime
 from net.deepseek_client import DeepSeekClient
 from urllib.parse import urlparse
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters,
     ContextTypes, ConversationHandler
@@ -457,7 +457,7 @@ class NewsBot:
                 await update.message.reply_text(
                     "✅ Инвайт-код успешно активирован!\n\n"
                     "Теперь у вас есть доступ к боту. Используйте /help для списка команд.",
-                    reply_markup=self._build_sandbox_admin_keyboard() if APP_ENV == "sandbox" else self.REPLY_KEYBOARD
+                    reply_markup=ReplyKeyboardRemove() if APP_ENV == "sandbox" else self.REPLY_KEYBOARD
                 )
                 return
 
@@ -476,7 +476,7 @@ class NewsBot:
                     await update.message.reply_text(
                         "✅ Инвайт-код успешно активирован!\n\n"
                         "Теперь у вас есть доступ к боту. Используйте /help для списка команд.",
-                        reply_markup=self._build_sandbox_admin_keyboard() if APP_ENV == "sandbox" else self.REPLY_KEYBOARD
+                        reply_markup=ReplyKeyboardRemove() if APP_ENV == "sandbox" else self.REPLY_KEYBOARD
                     )
                     return
                 else:
@@ -511,10 +511,10 @@ class NewsBot:
                 await update.message.reply_text("❌ Доступ запрещён")
                 return
             await update.message.reply_text(
-                "🛠 Админ-панель системы" + env_marker + "\n\n"
-                "Выберите раздел:",
-                reply_markup=self._build_sandbox_admin_keyboard()
+                "🛠 Админ-панель системы" + env_marker,
+                reply_markup=ReplyKeyboardRemove()
             )
+            await self.cmd_management(update, context)
             return
 
         await update.message.reply_text(
@@ -835,6 +835,11 @@ class NewsBot:
         if not is_admin:
             await update.message.reply_text("❌ Доступно только администраторам")
             return
+
+        await update.message.reply_text(
+            "🛠 Админ-панель",
+            reply_markup=ReplyKeyboardRemove()
+        )
         
         # Show expanded management menu with all admin panels
         reply_markup = self._build_sandbox_admin_keyboard()
