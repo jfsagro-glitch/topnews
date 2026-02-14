@@ -1844,6 +1844,20 @@ class NewsBot:
             await self._show_source_detail(query, source_code)
             return
         
+        # Source restore from quarantine
+        if query.data.startswith("mgmt:source:restore:"):
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            source_code = query.data.split(":")[-1]
+            success = self.db.restore_source(source_code)
+            if success:
+                await query.answer("✅ Источник восстановлен", show_alert=True)
+            else:
+                await query.answer("❌ Ошибка восстановления", show_alert=True)
+            await self._show_source_detail(query, source_code)
+            return
+        
         # Stats refresh
         if query.data == "mgmt:stats:refresh":
             if not self._is_admin(query.from_user.id):
@@ -2841,6 +2855,10 @@ class NewsBot:
                 except Exception:
                     cache_hits_start = 0
             news_items = await self.collector.collect_all()
+            
+            # Send admin notifications for quarantined sources
+            if self.collector.quarantined_sources_this_tick:
+                await self._notify_admins_quarantine(self.collector.quarantined_sources_this_tick)
 
             app_env = get_app_env()
             global_category_filter = self._get_global_category_filter() if app_env == "sandbox" else None
@@ -3254,6 +3272,46 @@ class NewsBot:
         except Exception as e:
             logger.error(f"Error in collect_and_publish: {e}")
             return 0
+    
+    async def _notify_admins_quarantine(self, quarantined: list):
+        """Send notifications to admins about quarantined sources."""
+        if not quarantined:
+            return
+        
+        try:
+            # Build notification message
+            message_lines = ["🔴 ИСТОЧНИКИ В КАРАНТИНЕ\n"]
+            for info in quarantined:
+                source = info.get('source', 'Unknown')
+                reason = info.get('reason', 'unknown')
+                error_streak = info.get('error_streak', 0)
+                error_code = info.get('last_error_code', 'N/A')
+                
+                message_lines.append(
+                    f"📰 {source}\n"
+                    f"   Причина: {reason}\n"
+                    f"   Ошибок подряд: {error_streak}\n"
+                    f"   Код ошибки: {error_code}\n"
+                )
+            
+            message_lines.append("\nИсточники автоматически отключены. Используйте /admin → Источники для восстановления.")
+            message = "\n".join(message_lines)
+            
+            # Send to all admins
+            for admin_id in self.admin_ids:
+                try:
+                    await self.application.bot.send_message(
+                        chat_id=admin_id,
+                        text=message,
+                        disable_notification=False  # Important notification
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin_id} about quarantine: {e}")
+            
+            logger.info(f"Sent quarantine notifications for {len(quarantined)} sources to {len(self.admin_ids)} admins")
+        
+        except Exception as e:
+            logger.error(f"Error sending quarantine notifications: {e}")
     
     def _get_category_emoji(self, category: str) -> str:
         """Возвращает категорию с эмодзи и хештегом"""
@@ -4311,6 +4369,11 @@ class NewsBot:
             await query.answer("❌ Источник не найден", show_alert=True)
             return
         
+        # Check if quarantined
+        is_quarantined = self.db.is_source_quarantined(source_code)
+        quarantine_at = source.get('quarantined_at')
+        quarantine_reason = source.get('quarantine_reason', 'unknown')
+        
         # Get quality metrics
         quality = self.db.get_source_quality(source_code) or {}
         quality_score = quality.get('quality_score', 0.0)
@@ -4329,7 +4392,9 @@ class NewsBot:
         tier_params = self.db.get_tier_params(tier)
         
         # Status indicator
-        if source.get('enabled_global'):
+        if is_quarantined:
+            status = "🔴 В КАРАНТИНЕ"
+        elif source.get('enabled_global'):
             if error_streak >= 5:
                 status = "🔴 Активен (много ошибок)"
             elif error_streak > 0:
@@ -4346,6 +4411,17 @@ class NewsBot:
             f"Статус: {status}\n"
             f"Tier: {tier} (интервал: {tier_params['min_interval_seconds']//60} мин, "
             f"лимит: {tier_params.get('max_items_per_fetch', 'нет')})\n\n"
+        )
+        
+        # Add quarantine info if quarantined
+        if is_quarantined:
+            text += (
+                f"⚠️ КАРАНТИН:\n"
+                f"   Причина: {quarantine_reason}\n"
+                f"   С: {quarantine_at or 'N/A'}\n\n"
+            )
+        
+        text += (
             f"📊 Качество: {quality_score:.3f}\n"
             f"✅ Успехов: {success_count}\n"
             f"❌ Ошибок: {error_count} (streak: {error_streak})\n\n"
@@ -4361,9 +4437,13 @@ class NewsBot:
         # Build keyboard
         keyboard = []
         
-        # Toggle enable/disable
-        toggle_text = "⛔ Отключить" if source.get('enabled_global') else "✅ Включить"
-        keyboard.append([InlineKeyboardButton(toggle_text, callback_data=f"mgmt:source:toggle:{source_code}")])
+        # If quarantined, show restore button
+        if is_quarantined:
+            keyboard.append([InlineKeyboardButton("🔓 Восстановить", callback_data=f"mgmt:source:restore:{source_code}")])
+        else:
+            # Toggle enable/disable
+            toggle_text = "⛔ Отключить" if source.get('enabled_global') else "✅ Включить"
+            keyboard.append([InlineKeyboardButton(toggle_text, callback_data=f"mgmt:source:toggle:{source_code}")])
         
         # Tier change buttons
         tier_buttons = []

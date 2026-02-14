@@ -607,12 +607,28 @@ class NewsDatabase:
                 'tier': "TEXT DEFAULT 'B'",
                 'min_interval_seconds': 'INTEGER',
                 'max_items_per_fetch': 'INTEGER',
+                'quarantined_at': 'TIMESTAMP',
+                'quarantine_reason': 'TEXT',
             }
             for column, col_type in required.items():
                 if column not in existing:
                     cursor.execute(f"ALTER TABLE sources ADD COLUMN {column} {col_type}")
         except Exception as e:
             logger.debug(f"Error ensuring sources columns: {e}")
+
+        try:
+            cursor.execute("PRAGMA table_info(source_quality)")
+            existing = {row[1] for row in cursor.fetchall()}
+            required = {
+                'error_streak': 'INTEGER DEFAULT 0',
+                'last_success_at': 'TIMESTAMP',
+                'last_error_at': 'TIMESTAMP',
+            }
+            for column, col_type in required.items():
+                if column not in existing:
+                    cursor.execute(f"ALTER TABLE source_quality ADD COLUMN {column} {col_type}")
+        except Exception as e:
+            logger.debug(f"Error ensuring source_quality columns: {e}")
 
     def _ensure_indexes(self, cursor):
         """Ensure indexes exist after columns are added."""
@@ -1056,19 +1072,50 @@ class NewsDatabase:
         except Exception as e:
             logger.debug(f"Error recording source event for {source}: {e}")
 
-    def update_source_quality_fetch(self, source: str, ok: bool, error_code: str | None = None) -> None:
+    def update_source_quality_fetch(self, source: str, ok: bool, error_code: str | None = None) -> dict | None:
+        """
+        Update source quality metrics after fetch attempt.
+        
+        Args:
+            source: Source code
+            ok: Whether fetch was successful
+            error_code: Error code if fetch failed
+        
+        Returns:
+            Dict with quarantine info if source was quarantined, None otherwise
+        """
         if not source:
-            return
+            return None
+        
+        quarantine_info = None
+        
         try:
             with self._write_lock:
                 cursor = self._conn.cursor()
+                
+                # Get current error_streak
+                cursor.execute("SELECT error_streak FROM source_quality WHERE source = ?", (source,))
+                row = cursor.fetchone()
+                current_streak = row[0] if row else 0
+                
+                # Calculate new error_streak
+                if ok:
+                    new_streak = 0  # Reset on success
+                else:
+                    new_streak = current_streak + 1
+                
+                # Update quality metrics
                 cursor.execute(
                     """
-                    INSERT INTO source_quality(source, success_count, error_count, last_error_code)
-                    VALUES(?, ?, ?, ?)
+                    INSERT INTO source_quality(source, success_count, error_count, error_streak, 
+                                              last_success_at, last_error_at, last_error_code)
+                    VALUES(?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(source) DO UPDATE SET
                         success_count = success_count + ?,
                         error_count = error_count + ?,
+                        error_streak = ?,
+                        last_success_at = ?,
+                        last_error_at = ?,
                         last_error_code = ?,
                         updated_at = CURRENT_TIMESTAMP
                     """,
@@ -1076,15 +1123,40 @@ class NewsDatabase:
                         source,
                         1 if ok else 0,
                         0 if ok else 1,
+                        new_streak,
+                        datetime.now(timezone.utc) if ok else None,
+                        None if ok else datetime.now(timezone.utc),
                         None if ok else error_code,
                         1 if ok else 0,
                         0 if ok else 1,
+                        new_streak,
+                        datetime.now(timezone.utc) if ok else None,
+                        None if ok else datetime.now(timezone.utc),
                         None if ok else error_code,
                     ),
                 )
                 self._conn.commit()
+                
+                # Auto-quarantine if error_streak >= 5 and not already quarantined
+                if new_streak >= 5 and not self.is_source_quarantined(source):
+                    reason = f"error_streak_{new_streak}"
+                    if error_code:
+                        reason += f"_{error_code}"
+                    
+                    if self.quarantine_source(source, reason):
+                        quarantine_info = {
+                            'source': source,
+                            'reason': reason,
+                            'error_streak': new_streak,
+                            'last_error_code': error_code
+                        }
+                        logger.warning(f"AUTO-QUARANTINE: {source} after {new_streak} consecutive errors")
+                
+                return quarantine_info
+                
         except Exception as e:
             logger.debug(f"Error updating source quality fetch for {source}: {e}")
+            return None
 
     def update_source_quality_stats(
         self,
@@ -1255,6 +1327,111 @@ class NewsDatabase:
         except Exception as e:
             logger.error(f"Error toggling source enabled for {source_code}: {e}")
             return False
+
+    # ========================
+    # Auto-Quarantine Functions
+    # ========================
+
+    def quarantine_source(self, source_code: str, reason: str = "auto") -> bool:
+        """
+        Quarantine a source: disable it and mark quarantine timestamp.
+        
+        Args:
+            source_code: Source code to quarantine
+            reason: Reason for quarantine (e.g., "error_streak", "http_403")
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute("""
+                    UPDATE sources
+                    SET enabled_global = 0,
+                        quarantined_at = CURRENT_TIMESTAMP,
+                        quarantine_reason = ?
+                    WHERE code = ?
+                """, (reason, source_code))
+                self._conn.commit()
+                
+                if cursor.rowcount > 0:
+                    logger.warning(f"QUARANTINED source {source_code}: reason={reason}")
+                    return True
+                else:
+                    logger.warning(f"Source {source_code} not found for quarantine")
+                    return False
+        except Exception as e:
+            logger.error(f"Error quarantining source {source_code}: {e}")
+            return False
+
+    def restore_source(self, source_code: str) -> bool:
+        """
+        Restore a quarantined source: clear quarantine fields and optionally re-enable.
+        
+        Args:
+            source_code: Source code to restore
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute("""
+                    UPDATE sources
+                    SET quarantined_at = NULL,
+                        quarantine_reason = NULL,
+                        enabled_global = 1
+                    WHERE code = ?
+                """, (source_code,))
+                self._conn.commit()
+                
+                if cursor.rowcount > 0:
+                    logger.info(f"RESTORED source {source_code} from quarantine")
+                    return True
+                else:
+                    logger.warning(f"Source {source_code} not found for restore")
+                    return False
+        except Exception as e:
+            logger.error(f"Error restoring source {source_code}: {e}")
+            return False
+
+    def is_source_quarantined(self, source_code: str) -> bool:
+        """Check if a source is currently quarantined."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                SELECT quarantined_at FROM sources WHERE code = ?
+            """, (source_code,))
+            row = cursor.fetchone()
+            return row and row[0] is not None
+        except Exception as e:
+            logger.error(f"Error checking quarantine status for {source_code}: {e}")
+            return False
+
+    def get_quarantined_sources(self) -> list:
+        """Get list of all quarantined sources with details."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                SELECT code, title, quarantined_at, quarantine_reason
+                FROM sources
+                WHERE quarantined_at IS NOT NULL
+                ORDER BY quarantined_at DESC
+            """)
+            return [
+                {
+                    'code': row[0],
+                    'title': row[1],
+                    'quarantined_at': row[2],
+                    'reason': row[3]
+                }
+                for row in cursor.fetchall()
+            ]
+        except Exception as e:
+            logger.error(f"Error getting quarantined sources: {e}")
+            return []
 
     def auto_adjust_source_tiers(self, days: int = 7, promote_threshold: float = 0.8, demote_threshold: float = 0.6) -> dict:
         """

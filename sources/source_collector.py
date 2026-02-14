@@ -49,6 +49,8 @@ class SourceCollector:
         # Last collection counts per source (for /status reporting)
         self.last_collected_counts = {}
         self.last_collection_at = None
+        # Quarantined sources during this collection tick (for admin notifications)
+        self.quarantined_sources_this_tick = []
         
         # Семафор для ограничения параллелизма (3 одновременных запроса для оптимизации Railway)
         self._sem = asyncio.Semaphore(3)
@@ -524,6 +526,8 @@ class SourceCollector:
         Собирает новости из всех источников асинхронно
         """
         all_news = []
+        # Clear quarantine tracking for this tick
+        self.quarantined_sources_this_tick = []
 
         try:
             from core.services.global_stop import get_global_stop
@@ -600,12 +604,14 @@ class SourceCollector:
                         status_code=status.get("status_code"),
                         error_code=status.get("error"),
                     )
-                    # Record quality metrics
-                    self.db.update_source_quality_fetch(
+                    # Record quality metrics and check for quarantine
+                    quarantine_info = self.db.update_source_quality_fetch(
                         source_name,
                         ok=status.get("ok", True),
                         error_code=status.get("error")
                     )
+                    if quarantine_info:
+                        self.quarantined_sources_this_tick.append(quarantine_info)
                 elif isinstance(result, Exception):
                     logger.error(f"{source_name}: {type(result).__name__}: {result}")
                     self.source_health[source_name] = False
@@ -621,12 +627,14 @@ class SourceCollector:
                         status_code=status.get("status_code"),
                         error_code=status.get("error"),
                     )
-                    # Record quality metrics
-                    self.db.update_source_quality_fetch(
+                    # Record quality metrics and check for quarantine
+                    quarantine_info = self.db.update_source_quality_fetch(
                         source_name,
                         ok=False,
                         error_code=status.get("error")
                     )
+                    if quarantine_info:
+                        self.quarantined_sources_this_tick.append(quarantine_info)
             
             logger.info(f"Collected total {len(all_news)} news items from {len([s for s in self.source_health.values() if s])} sources")
 
