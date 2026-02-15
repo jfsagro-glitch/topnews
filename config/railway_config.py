@@ -94,12 +94,6 @@ PROXY_URL = env_str('PROXY_URL', '')
 CLOSED_SOURCE_LOGIN = env_str('CLOSED_SOURCE_LOGIN', '')
 CLOSED_SOURCE_PASSWORD = env_str('CLOSED_SOURCE_PASSWORD', '')
 
-# Sandbox collection toggle
-SANDBOX_COLLECTION_ENABLED = env_bool(
-    'SANDBOX_COLLECTION_ENABLED',
-    True if APP_ENV == 'sandbox' else False,
-)
-
 # Database - используем переменную окружения для пути на Railway
 DATABASE_PATH = env_str('DATABASE_PATH', None)
 if not DATABASE_PATH:

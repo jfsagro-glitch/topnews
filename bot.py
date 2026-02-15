@@ -3501,14 +3501,12 @@ class NewsBot:
         tier_adjustment_task = None
         hourly_digest_task = None
         morning_digest_task = None
-        from config.config import APP_ENV, SANDBOX_COLLECTION_ENABLED
+        from config.config import APP_ENV
         if APP_ENV == "prod":
             collection_task = asyncio.create_task(self.run_periodic_collection())
             tier_adjustment_task = asyncio.create_task(self.run_tier_adjustment())
             hourly_digest_task = asyncio.create_task(self.run_hourly_digest())
             morning_digest_task = asyncio.create_task(self.run_morning_digest())
-        elif APP_ENV == "sandbox" and SANDBOX_COLLECTION_ENABLED:
-            collection_task = asyncio.create_task(self.run_periodic_collection())
         mgmt_runner = None
         
         # Запускаем приложение
