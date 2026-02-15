@@ -2242,7 +2242,8 @@ class NewsBot:
                         lead_text,
                         news.get('title', ''),
                         checksum=checksum,
-                        user_id=user_id
+                        user_id=user_id,
+                        bypass_tick_gate=True  # User requests bypass tick gate
                     )
                     logger.debug(f"DeepSeek response: summary={bool(summary)}, tokens={token_usage.get('total_tokens', 0)}")
 
@@ -2375,7 +2376,7 @@ class NewsBot:
 
             await query.answer("❌ Неизвестная команда", show_alert=False)
     
-    async def _summarize_with_deepseek(self, text: str, title: str, checksum: str | None = None, user_id: int = None) -> tuple[str | None, dict]:
+    async def _summarize_with_deepseek(self, text: str, title: str, checksum: str | None = None, user_id: int = None, bypass_tick_gate: bool = False) -> tuple[str | None, dict]:
         """
         Call DeepSeek API to summarize news.
         
@@ -2383,6 +2384,7 @@ class NewsBot:
             text: Article text to summarize
             title: Article title
             user_id: User ID to get AI level preference (sandbox only)
+            bypass_tick_gate: If True, skip tick gate check (for user-triggered requests)
             
         Returns:
             Tuple of (summary string or None, token usage dict)
@@ -2394,7 +2396,8 @@ class NewsBot:
             from core.services.access_control import get_effective_level
             level = get_effective_level(self.db, str(user_id or 'global'), 'summary')
 
-            if not self._ai_tick_allow("summary"):
+            # User-triggered requests bypass tick gate (they have their own rate limiting)
+            if not bypass_tick_gate and not self._ai_tick_allow("summary"):
                 return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "skipped_by_gate": True}
             
             summary, token_usage = await self.deepseek_client.summarize(
