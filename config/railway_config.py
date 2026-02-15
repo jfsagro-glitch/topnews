@@ -222,10 +222,10 @@ SOURCES_CONFIG = {
         'timeout': 8,
         'retry': 2,
         'sources': [
-            'https://www.reuters.com/world',
-            'https://feeds.apnews.com/rss/world',
+            # Reuters and AP News removed - require authentication or unavailable
             'https://www.ft.com/rss/world',
             'https://www.politico.eu/feed/',
+            'https://www.theguardian.com/world/rss',  # Added as replacement
         ]
     },
     'tech_ai_crypto': {
