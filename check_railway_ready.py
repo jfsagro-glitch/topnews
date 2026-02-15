@@ -83,7 +83,8 @@ def check_deployment_readiness():
     print("\n📁 DIRECTORY STRUCTURE CHECK")
     print("-" * 60)
     
-    required_dirs = ['config', 'db', 'logs', 'parsers', 'sources', 'utils']
+    # Note: logs/ is created at runtime and excluded in .gitignore
+    required_dirs = ['config', 'db', 'parsers', 'sources', 'utils']
     for dir_name in required_dirs:
         if os.path.isdir(dir_name):
             print(f"✅ {dir_name}/")

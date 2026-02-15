@@ -216,7 +216,6 @@ async def init_global_stop_event():
 
 def _notify_global_stop_changed(value: bool):
     """Уведомить asyncio.Event об изменении стопа."""
-    global _global_stop_event
     if _global_stop_event is None:
         return
     
@@ -241,7 +240,6 @@ async def wait_global_stop():
         except asyncio.CancelledError:
             pass
     """
-    global _global_stop_event
     if _global_stop_event is None:
         # Событие не инициализировано, ждем в цикле
         while True:
@@ -262,7 +260,6 @@ async def wait_for_resume():
             await wait_for_resume()
             logger.info("Resumed!")
     """
-    global _global_stop_event
     while get_global_stop():
         await asyncio.sleep(1)
     if _global_stop_event is not None:
