@@ -1766,11 +1766,10 @@ class NewsBot:
             else:
                 new_level = level
             
-            # Save new level (if method exists)
-            try:
-                self.db.set_ai_module_level(module, new_level)
-            except (AttributeError, Exception):
-                pass
+            # Save new level using AILevelManager
+            from core.services.access_control import AILevelManager
+            ai_manager = AILevelManager(self.db)
+            ai_manager.set_level('global', module, new_level)
             
             await query.answer(f"✅ {module}: уровень {new_level}")
             await self._show_ai_module_control(query, module)
@@ -4577,15 +4576,10 @@ class NewsBot:
         await query.edit_message_text(text=text, reply_markup=reply_markup)
     async def _show_ai_module_control(self, query, module: str):
         """Show control panel for specific AI module"""
-        # Get current level from database (if method exists)
-        current_level = 0  # Default
-        try:
-            if hasattr(self.db, 'get_ai_module_level'):
-                result = self.db.get_ai_module_level(module)
-                if result is not None:
-                    current_level = result
-        except Exception:
-            pass
+        # Get current level from AILevelManager
+        from core.services.access_control import AILevelManager
+        ai_manager = AILevelManager(self.db)
+        current_level = ai_manager.get_level('global', module)
         
         text = (
             f"🤖 МОДУЛЬ: {module.upper()}\n\n"
