@@ -121,7 +121,7 @@ def get_global_stop() -> bool:
     return get_global_collection_stop()
 
 
-def set_global_stop(enabled: bool, ttl_sec: int | None = 3600, reason: str | None = None, by: str | None = None) -> None:
+def set_global_stop(enabled: bool, ttl_sec: Optional[int] = 3600, reason: Optional[str] = None, by: Optional[str] = None) -> None:
     """Set the global stop state.
     
     Args:
@@ -146,7 +146,7 @@ def set_global_stop(enabled: bool, ttl_sec: int | None = 3600, reason: str | Non
             logger.info(f"🟢 Global stop CLEARED by={by}")
 
 
-def toggle_global_stop(ttl_sec: int | None = 3600, reason: str | None = None, by: str | None = None) -> bool:
+def toggle_global_stop(ttl_sec: Optional[int] = 3600, reason: Optional[str] = None, by: Optional[str] = None) -> bool:
     """Toggle the global stop state.
     
     Returns the new state (True if now stopped, False if now resumed).
@@ -166,7 +166,7 @@ def get_global_stop_status_str() -> Tuple[bool, str]:
     stopped, ttl_remaining = get_global_collection_stop_status()
     
     if stopped:
-        if ttl_remaining and ttl_remaining > 0:
+        if ttl_remaining is not None and ttl_remaining > 0:
             minutes = ttl_remaining // 60
             return True, f"🔴 STOPPED (expires in {minutes}m)"
         else:
