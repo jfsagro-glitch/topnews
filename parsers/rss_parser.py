@@ -28,6 +28,9 @@ class RSSParser:
         """
         news_items = []
         
+        # Yahoo RSS has no descriptions and redirects to consent page - use title as text
+        is_yahoo = source_name in ('news.yahoo.com', 'rss.news.yahoo.com')
+        
         try:
             http_client = await get_http_client()
             
@@ -102,9 +105,13 @@ class RSSParser:
                 }
                 
                 if news_item['url']:  # Только если есть ссылка
+                    # Yahoo RSS has no description and redirects to consent page - use title
+                    if is_yahoo and not news_item.get('text'):
+                        news_item['text'] = news_item['title']
+                        logger.debug(f"Yahoo source: using title as text")
                     # Если в RSS нет текста или он слишком короткий — пробуем получить абзац со страницы
                     # For sources like ria.ru that don't provide text in RSS, always fetch
-                    if not news_item.get('text') or len(news_item['text']) < 60:
+                    elif not news_item.get('text') or len(news_item['text']) < 60:
                         logger.debug(f"Text too short or missing ({len(news_item.get('text', ''))} chars), fetching from page...")
                         preview = await self._fetch_article_preview(news_item['url'])
                         if preview:
