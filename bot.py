@@ -3119,7 +3119,7 @@ class NewsBot:
                     except Exception as e:
                         logger.debug(f"Error in event clustering: {e}")
 
-                # Check if we need auto-summarization for lenta.ru and ria.ru (cleanup_level=5)
+                # Check if we need auto-summarization for all sources (cleanup_level=5)
                 from core.services.access_control import AILevelManager
                 ai_manager = AILevelManager(self.db)
                 cleanup_level = ai_manager.get_level('global', 'cleanup')
@@ -3128,11 +3128,10 @@ class NewsBot:
                 news_text = news.get('clean_text') or news.get('text', '')
                 
                 # Debug logging for auto-summarization trigger
-                is_lenta_or_ria = 'lenta.ru' in source or 'ria.ru' in source
-                logger.debug(f"Auto-summarize check: cleanup_level={cleanup_level}, source={source}, is_lenta_or_ria={is_lenta_or_ria}")
+                logger.debug(f"Auto-summarize check: cleanup_level={cleanup_level}, source={source}")
                 
-                # Auto-summarize lenta.ru and ria.ru when cleanup_level=5
-                if cleanup_level == 5 and is_lenta_or_ria:
+                # Auto-summarize ALL sources when cleanup_level=5
+                if cleanup_level == 5:
                     logger.info(f"Auto-summarizing {source} (cleanup_level=5)")
                     try:
                         # Get or generate summary
