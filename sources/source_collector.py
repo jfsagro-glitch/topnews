@@ -361,12 +361,16 @@ class SourceCollector:
         except Exception:
             return self._rsshub_telegram_enabled_default
 
-    def _should_fetch_source(self, url: str, source_name: str, src_type: str) -> bool:
-        """Check if source should be fetched now based on cooldown and timing"""
+    def _should_fetch_source(self, url: str, source_name: str, src_type: str, force: bool = False) -> bool:
+        """Check if source should be fetched now based on cooldown and timing."""
         # Check if Telegram RSSHub is disabled
         if self._is_telegram_rsshub(url) and not self._rsshub_telegram_enabled():
             logger.info(f"Skipping Telegram RSSHub source (disabled): {source_name}")
             return False
+
+        # Force collection ignores cooldown and timing gates
+        if force:
+            return True
         
         # Check cooldown
         if self._in_cooldown(url):
@@ -580,7 +584,7 @@ class SourceCollector:
                 logger.debug(f"Fallback HTML fetch failed: {type(fallback_err).__name__}: {str(fallback_err)[:80]}")
             return None
     
-    async def collect_all(self) -> List[Dict]:
+    async def collect_all(self, force: bool = False) -> List[Dict]:
         """
         Собирает новости из всех источников асинхронно
         """
@@ -608,7 +612,7 @@ class SourceCollector:
                 category = s.get('category', 'general')
                 src_type = s.get('src_type', 'rss')
                 max_items = s.get('max_items', 10)
-                if not self._should_fetch_source(fetch_url, source_name, src_type):
+                if not self._should_fetch_source(fetch_url, source_name, src_type, force=force):
                     self.last_collected_counts[source_name] = 0
                     skipped_count += 1
                     continue

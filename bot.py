@@ -560,6 +560,12 @@ class NewsBot:
         if get_app_env() == "prod" and get_global_stop():
             await update.message.reply_text("🔴 Система временно остановлена администратором.")
             return
+        user_id = update.message.from_user.id
+        args = [arg.strip().lower() for arg in (context.args or [])]
+        force = any(arg in ("force", "-f", "--force") for arg in args)
+        if force and not self._is_admin(user_id):
+            await update.message.reply_text("❌ Параметр force доступен только администраторам")
+            return
         stop_state = get_global_collection_stop_state(app_env=get_app_env())
         if stop_state.enabled:
             ttl = stop_state.ttl_sec_remaining
@@ -567,10 +573,12 @@ class NewsBot:
             await update.message.reply_text(f"⛔️ Сбор остановлен глобально{ttl_text}. /status покажет статус.")
             return
 
-        await update.message.reply_text("🔄 Начинаю сбор новостей...")
+        await update.message.reply_text(
+            "🔄 Начинаю сбор новостей..." if not force else "🔄 Начинаю сбор новостей (force)..."
+        )
         
         try:
-            count = await self.collect_and_publish()
+            count = await self.collect_and_publish(force=force)
             await update.message.reply_text(f"✅ Собрано и опубликовано {count} новостей")
         except Exception as e:
             logger.error(f"Error in sync: {e}")
@@ -2604,7 +2612,7 @@ class NewsBot:
         except Exception as e:
             logger.error(f"Error delivering pending for user {user_id}: {e}")
     
-    async def collect_and_publish(self) -> int:
+    async def collect_and_publish(self, force: bool = False) -> int:
         """
         Собирает новости и публикует их
         Возвращает количество опубликованных новостей
@@ -2634,7 +2642,7 @@ class NewsBot:
             return 0
         
         async with self.collection_lock:
-            return await self._do_collect_and_publish()
+            return await self._do_collect_and_publish(force=force)
     
     async def run_tier_adjustment(self):
         """Periodic task to auto-adjust source tiers based on quality score."""
@@ -2840,7 +2848,7 @@ class NewsBot:
         except Exception as e:
             logger.error(f"Error in _send_digest_to_users: {e}", exc_info=True)
     
-    async def _do_collect_and_publish(self) -> int:
+    async def _do_collect_and_publish(self, force: bool = False) -> int:
         """
         Internal method: performs the actual collection and publishing
         """
@@ -2865,7 +2873,7 @@ class NewsBot:
                     cache_hits_start = int(self.deepseek_client.cache.get_stats().get("hits", 0) or 0)
                 except Exception:
                     cache_hits_start = 0
-            news_items = await self.collector.collect_all()
+            news_items = await self.collector.collect_all(force=force)
             
             # Send admin notifications for quarantined sources
             if self.collector.quarantined_sources_this_tick:
@@ -3215,8 +3223,7 @@ class NewsBot:
                 keyboard = InlineKeyboardMarkup(buttons_rows)
 
                 try:
-                    # ВРЕМЕННО ОТКЛЮЧЕНА: пересылка новостей в канал
-                    logger.info(f"[STUB] Would publish to channel: {news['title'][:50]}")
+                    logger.info(f"Channel publish skipped (prod bot only): {news['title'][:50]}")
                     
                     # Сохраняем news_id как опубликованную (для корректной статистики)
                     published_count += 1
