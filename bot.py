@@ -623,9 +623,20 @@ class NewsBot:
         type_map: dict[str, str] = {}
         label_map: dict[str, str] = {}
         group_map: dict[str, str] = {}
-        for fetch_url, source_name, _category, src_type in self.collector._configured_sources:
-            if source_name in type_map:
+        for entry in self.collector._configured_sources:
+            if isinstance(entry, dict):
+                fetch_url = entry.get('fetch_url', '')
+                source_name = entry.get('source_name', '')
+                src_type = entry.get('src_type', '')
+            else:
+                try:
+                    fetch_url, source_name, _category, src_type = entry
+                except ValueError:
+                    continue
+
+            if not source_name or source_name in type_map:
                 continue
+
             source_type = src_type
             group = 'site'
             if '/telegram/channel/' in fetch_url:
