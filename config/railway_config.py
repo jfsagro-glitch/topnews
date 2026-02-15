@@ -222,10 +222,10 @@ SOURCES_CONFIG = {
         'timeout': 8,
         'retry': 2,
         'sources': [
-            'https://www.reuters.com/rssFeed/worldNews',
-            'https://apnews.com/rss',
+            'https://www.reuters.com/world',
+            'https://feeds.apnews.com/rss/world',
             'https://www.ft.com/rss/world',
-            'https://www.politico.eu/rss-feed/',
+            'https://www.politico.eu/feed/',
         ]
     },
     'tech_ai_crypto': {
@@ -251,8 +251,8 @@ SOURCES_CONFIG = {
         'ai_summary_min_chars': 600,
         'summary_only': True,
         'sources': [
-            'https://tradingeconomics.com/rss/news.aspx',
-            'https://www.bloomberg.com/feed/podcast/markets-daily.xml',
+            'https://www.investing.com/rss/news.rss',
+            'https://www.marketwatch.com/rss/topstories',
         ]
     },
     'russia': {
