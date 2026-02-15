@@ -2885,7 +2885,7 @@ class NewsBot:
             global_category_filter = self._get_global_category_filter() if app_env == "sandbox" else None
             
             published_count = 0
-            max_publications = 40  # Лимит публикаций за цикл (защита от rate limiting)
+            max_publications = 100  # Лимит публикаций за цикл (защита от rate limiting)
             
             # Track per-source statistics for quality metrics
             source_stats = {}  # {source: {'total': int, 'new': int, 'duplicate': int}}
