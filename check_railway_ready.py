@@ -72,7 +72,7 @@ def check_deployment_readiness():
     
     for filename, required_vars in config_files.items():
         if os.path.exists(filename):
-            with open(filename, 'r') as f:
+            with open(filename, 'r', encoding='utf-8', errors='replace') as f:
                 content = f.read()
                 for var in required_vars:
                     if var in content:
