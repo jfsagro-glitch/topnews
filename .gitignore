@@ -30,8 +30,6 @@ wheels/
 
 # Database
 *.db
-db/news.db
-db/*.db
 *.sqlite
 *.sqlite3
 
