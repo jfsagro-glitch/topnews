@@ -62,7 +62,8 @@ class NewsBot:
         self.access_db = NewsDatabase(db_path=ACCESS_DB_PATH)  # Shared access control DB
         
         # DeepSeek client with cache and budget enabled
-        self.deepseek_client = DeepSeekClient(db=self.db)
+        from config.config import DEEPSEEK_API_KEY
+        self.deepseek_client = DeepSeekClient(api_key=DEEPSEEK_API_KEY, db=self.db)
         
         # AI category verification toggle (can be controlled via button)
         from config.config import AI_CATEGORY_VERIFICATION_ENABLED
