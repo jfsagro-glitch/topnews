@@ -36,6 +36,7 @@ db/*.db
 
 # Logs
 logs/
+!logs/.gitkeep
 *.log
 
 # IDE
