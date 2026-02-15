@@ -3518,19 +3518,34 @@ class NewsBot:
         except (ImportError, ValueError):
             from config.config import TG_MODE, WEBHOOK_BASE_URL, WEBHOOK_PATH, WEBHOOK_SECRET, PORT
 
-        if TG_MODE == "webhook":
+        tg_mode = (TG_MODE or "").strip().lower()
+        if tg_mode in ("", "auto", "autodetect"):
+            tg_mode = "webhook" if WEBHOOK_BASE_URL else "polling"
+        elif tg_mode not in {"webhook", "polling"}:
+            logger.warning(f"Unknown TG_MODE '{TG_MODE}', auto-detecting mode")
+            tg_mode = "webhook" if WEBHOOK_BASE_URL else "polling"
+
+        if tg_mode == "webhook":
             if not WEBHOOK_BASE_URL:
-                raise ValueError("WEBHOOK_BASE_URL is required for TG_MODE=webhook")
-            webhook_url = WEBHOOK_BASE_URL.rstrip('/') + WEBHOOK_PATH
-            await self.application.updater.start_webhook(
-                listen="0.0.0.0",
-                port=PORT,
-                url_path=WEBHOOK_PATH.lstrip('/'),
-                webhook_url=webhook_url,
-                secret_token=WEBHOOK_SECRET,
-            )
-            logger.info(f"Bot started with webhook: {webhook_url}")
-        else:
+                logger.warning("WEBHOOK_BASE_URL missing for webhook mode, falling back to polling")
+                tg_mode = "polling"
+            else:
+                webhook_url = WEBHOOK_BASE_URL.rstrip('/') + WEBHOOK_PATH
+                await self.application.updater.start_webhook(
+                    listen="0.0.0.0",
+                    port=PORT,
+                    url_path=WEBHOOK_PATH.lstrip('/'),
+                    webhook_url=webhook_url,
+                    secret_token=WEBHOOK_SECRET,
+                )
+                logger.info(f"Bot started with webhook: {webhook_url}")
+
+        if tg_mode == "polling":
+            try:
+                await self.application.bot.delete_webhook(drop_pending_updates=False)
+                logger.info("Deleted webhook before polling")
+            except Exception as e:
+                logger.warning(f"Failed to delete webhook before polling: {e}")
             await self.application.updater.start_polling()
             logger.info("Bot started with polling")
 

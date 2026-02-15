@@ -14,6 +14,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 redis_client = None  # Ленивое подключение
+_redis_url_warned = False
 
 # asyncio.Event для мгновенной отмены задач (без ожидания sleep)
 _global_stop_event: Optional[asyncio.Event] = None
@@ -32,8 +33,11 @@ def _get_redis_client():
         from config.config import REDIS_URL
         
         if not REDIS_URL:
-            logger.warning("⚠️  REDIS_URL not set! Global stop will NOT synchronize between prod and sandbox.")
-            logger.warning("   → Set REDIS_URL as Shared Variable in Railway for prod-bot AND sandbox-bot services")
+            global _redis_url_warned
+            if not _redis_url_warned:
+                logger.warning("⚠️  REDIS_URL not set! Global stop will NOT synchronize between prod and sandbox.")
+                logger.warning("   → Set REDIS_URL as Shared Variable in Railway for prod-bot AND sandbox-bot services")
+                _redis_url_warned = True
             _redis_connected = False
             return None
         
