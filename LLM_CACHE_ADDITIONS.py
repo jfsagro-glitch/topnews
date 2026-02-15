@@ -2,6 +2,11 @@
 
 # Add these methods to NewsDatabase class:
 
+import logging
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
 def get_llm_cache(self, cache_key: str) -> Optional[dict]:
     """
     Get cached LLM response by key.
