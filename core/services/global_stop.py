@@ -25,6 +25,9 @@ from .collection_stop import (
 
 logger = logging.getLogger(__name__)
 
+# Configuration
+REDIS_POLL_INTERVAL_SEC = 2  # How often to check Redis for state changes
+
 # Global asyncio event for signaling stop/resume across tasks
 _global_stop_event: Optional[asyncio.Event] = None
 _monitor_task: Optional[asyncio.Task] = None
@@ -34,6 +37,13 @@ async def init_global_stop_event() -> None:
     """Initialize the global stop event and start monitoring Redis state.
     
     This should be called once at bot startup to enable async wait functions.
+    The function is idempotent - calling it multiple times is safe and will
+    only initialize once.
+    
+    The initialization starts a background monitoring task that periodically
+    checks Redis and updates the asyncio.Event. This task runs for the lifetime
+    of the application and will be automatically cancelled when the event loop
+    is shut down.
     """
     global _global_stop_event, _monitor_task
     
@@ -55,7 +65,15 @@ async def init_global_stop_event() -> None:
 
 
 async def _monitor_redis_state() -> None:
-    """Background task to monitor Redis and update the asyncio.Event."""
+    """Background task to monitor Redis and update the asyncio.Event.
+    
+    This task runs indefinitely, checking Redis every REDIS_POLL_INTERVAL_SEC seconds
+    and synchronizing the asyncio.Event with the Redis state. The task will be
+    automatically cancelled when the event loop shuts down or when the application exits.
+    
+    No explicit cleanup is required as the task is designed to run for the application's
+    lifetime and handle cancellation gracefully.
+    """
     global _global_stop_event
     
     while True:
@@ -71,8 +89,8 @@ async def _monitor_redis_state() -> None:
                 _global_stop_event.clear()
                 logger.info("🟢 Global stop cleared (from Redis)")
             
-            # Check every 2 seconds
-            await asyncio.sleep(2)
+            # Check every REDIS_POLL_INTERVAL_SEC seconds
+            await asyncio.sleep(REDIS_POLL_INTERVAL_SEC)
         except asyncio.CancelledError:
             logger.info("Global stop monitor task cancelled")
             break
