@@ -689,6 +689,10 @@ class NewsDatabase:
         """
         if published_at is None:
             published_at = datetime.now(timezone.utc).isoformat()
+        if isinstance(simhash, int):
+            # SQLite INTEGER is signed 64-bit; normalize unsigned 64-bit simhash
+            if simhash > 0x7FFFFFFFFFFFFFFF:
+                simhash = simhash - (1 << 64)
         # Retry loop to handle transient "database is locked" errors
         attempts = 3
         for attempt in range(1, attempts + 1):
@@ -847,7 +851,16 @@ class NewsDatabase:
                 """,
                 (limit,)
             )
-            return [row[0] for row in cursor.fetchall() if row and row[0] is not None]
+            results = []
+            for row in cursor.fetchall():
+                if not row or row[0] is None:
+                    continue
+                value = int(row[0])
+                # Convert signed 64-bit back to unsigned for simhash comparisons
+                if value < 0:
+                    value = value + (1 << 64)
+                results.append(value)
+            return results
         except Exception as e:
             logger.error(f"Error fetching simhashes: {e}")
             return []
