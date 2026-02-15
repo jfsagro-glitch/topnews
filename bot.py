@@ -3272,9 +3272,9 @@ class NewsBot:
                 if stats['total'] > 0:  # Only record if source had items
                     self.db.update_source_quality_stats(
                         source_name,
-                        total=stats['total'],
-                        new=stats['new'],
-                        duplicate=stats['duplicate']
+                        stats['total'],
+                        stats['new'],
+                        stats['duplicate']
                     )
             
             logger.info("TICK_STATS %s", json.dumps(tick_log, ensure_ascii=True))
