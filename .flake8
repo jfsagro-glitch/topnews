@@ -1,0 +1,17 @@
+[flake8]
+exclude = 
+    .git,
+    __pycache__,
+    venv,
+    env,
+    ENV,
+    .venv,
+    build,
+    dist,
+    *.egg-info,
+    .eggs,
+    *.db,
+    *.sqlite,
+    *.sqlite3
+max-line-length = 127
+max-complexity = 10

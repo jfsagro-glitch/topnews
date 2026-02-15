@@ -29,13 +29,15 @@ wheels/
 *.egg
 
 # Database
+*.db
 db/news.db
 db/*.db
 *.sqlite
 *.sqlite3
 
 # Logs
-logs/
+logs/*
+!logs/.gitkeep
 *.log
 
 # IDE
@@ -56,3 +58,4 @@ htmlcov/
 .temp/
 *.lnk
 topnews_all.txt
+temp_*.py
