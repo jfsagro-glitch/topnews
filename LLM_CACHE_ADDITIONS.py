@@ -1,5 +1,10 @@
 # LLM Cache and Budget Management additions for database.py
 
+import logging
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
 # Add these methods to NewsDatabase class:
 
 def get_llm_cache(self, cache_key: str) -> Optional[dict]:
