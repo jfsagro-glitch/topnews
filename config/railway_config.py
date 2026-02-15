@@ -170,6 +170,9 @@ CATEGORIES = {
     'russia': '#Россия',
     'moscow': '#Москва',
     'moscow_region': '#Подмосковье',
+    'tech': '#Технологии',
+    'crypto': '#Криптовалюты',
+    'finance': '#Финансы',
 }
 
 # Источники по категориям
@@ -213,8 +216,48 @@ SOURCES_CONFIG = {
             'https://news.yahoo.com/rss/health',
         ]
     },
+    'world_premium': {
+        'category': 'world',
+        'max_items_per_fetch': 15,
+        'timeout': 8,
+        'retry': 2,
+        'sources': [
+            'https://www.reuters.com/rssFeed/worldNews',
+            'https://apnews.com/rss',
+            'https://www.ft.com/rss/world',
+            'https://www.politico.eu/rss-feed/',
+        ]
+    },
+    'tech_ai_crypto': {
+        'category': 'tech',
+        'max_items_per_fetch': 10,
+        'timeout': 8,
+        'retry': 2,
+        'ai_hashtags_level': 2,
+        'enable_entity_extraction': True,
+        'priority_keywords': ['OpenAI', 'Ethereum', 'Tesla', 'Bitcoin', 'AI', 'ChatGPT', 'cryptocurrency'],
+        'sources': [
+            'https://techcrunch.com/feed/',
+            'https://www.theverge.com/rss/index.xml',
+            'https://www.coindesk.com/arc/outboundfeeds/rss/',
+            'https://www.wired.com/feed/rss',
+        ]
+    },
+    'finance_markets': {
+        'category': 'finance',
+        'max_items_per_fetch': 8,
+        'timeout': 8,
+        'retry': 2,
+        'ai_summary_min_chars': 600,
+        'summary_only': True,
+        'sources': [
+            'https://tradingeconomics.com/rss/news.aspx',
+            'https://www.bloomberg.com/feed/podcast/markets-daily.xml',
+        ]
+    },
     'russia': {
         'category': 'russia',
+        'strong_markers': ['Москва', 'Кремль', 'ЦБ РФ', 'Госдума', 'Президент России', 'Правительство РФ', 'Минфин', 'МИД России'],
         'sources': [
             'https://ria.ru/',
             'https://lenta.ru/',
@@ -227,6 +270,7 @@ SOURCES_CONFIG = {
             'https://www.rbc.ru/v10/static/rss/rbc_news.rss',
             'https://rss.kommersant.ru/K40/',
             'https://www.interfax.ru/rss',
+            'https://meduza.io/rss/all',
         ]
     },
     'telegram': {
@@ -236,6 +280,18 @@ SOURCES_CONFIG = {
             'https://t.me/bazabazon',
             'https://t.me/shot_shot',
             'https://t.me/mod_russia',
+        ]
+    },
+    'twitter_rsshub': {
+        'category': 'world',
+        'src_type': 'rsshub',
+        'min_likes': 300,
+        'min_retweets': 100,
+        'ignore_replies': True,
+        'sources': [
+            '/twitter/user/elonmusk',
+            '/twitter/user/durov',
+            '/twitter/user/realDonaldTrump',
         ]
     },
     'moscow_region': {

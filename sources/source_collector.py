@@ -155,6 +155,20 @@ class SourceCollector:
             default_max_items = cfg.get('max_items_per_fetch', 10)
             default_tags = cfg.get('tags') or {}
             category = cfg.get('category', 'russia')
+            
+            # New parameters for advanced source configuration
+            timeout = cfg.get('timeout')
+            retry = cfg.get('retry')
+            ai_hashtags_level = cfg.get('ai_hashtags_level')
+            enable_entity_extraction = cfg.get('enable_entity_extraction', False)
+            priority_keywords = cfg.get('priority_keywords', [])
+            ai_summary_min_chars = cfg.get('ai_summary_min_chars')
+            summary_only = cfg.get('summary_only', False)
+            strong_markers = cfg.get('strong_markers', [])
+            min_likes = cfg.get('min_likes')
+            min_retweets = cfg.get('min_retweets')
+            ignore_replies = cfg.get('ignore_replies', False)
+            src_type_override = cfg.get('src_type')
 
             for src in cfg.get('sources', []):
                 if isinstance(src, dict):
@@ -195,6 +209,17 @@ class SourceCollector:
                         "enabled": bool(enabled),
                         "tags": tags,
                         "source_url": src_url,
+                        "timeout": timeout,
+                        "retry": retry,
+                        "ai_hashtags_level": ai_hashtags_level,
+                        "enable_entity_extraction": enable_entity_extraction,
+                        "priority_keywords": priority_keywords,
+                        "ai_summary_min_chars": ai_summary_min_chars,
+                        "summary_only": summary_only,
+                        "strong_markers": strong_markers,
+                        "min_likes": min_likes,
+                        "min_retweets": min_retweets,
+                        "ignore_replies": ignore_replies,
                     }
                     entry_key = (fetch_url, source_name)
                     if entry_key in _seen_entries:
@@ -204,7 +229,25 @@ class SourceCollector:
                     self.source_health.setdefault(source_name, False)
 
                 # Prefer RSS override when we know the host's RSS endpoint
-                if domain in self.rss_overrides:
+                if src_type_override:
+                    # Direct src_type specification (e.g., for RSSHub paths)
+                    if src_type_override == 'rsshub' and src_url.startswith('/'):
+                        # RSSHub path (e.g., /twitter/user/elonmusk)
+                        base = self._rsshub_bases[0] if self._rsshub_bases else ''
+                        if base:
+                            fetch_url = f"{base}{src_url}"
+                            # Extract username from path
+                            parts = src_url.split('/')
+                            username = parts[-1] if parts else src_url
+                            source_name = f"@{username}"
+                            logger.info(f"RSSHub source {username} using: {fetch_url}")
+                            _add_entry(fetch_url, source_name, 'rss')
+                        else:
+                            logger.warning(f"RSSHub not configured for path {src_url}")
+                    else:
+                        logger.info(f"Source {src_url} using type override: {src_type_override}")
+                        _add_entry(src_url, domain or src_url, src_type_override)
+                elif domain in self.rss_overrides:
                     fetch_url = self.rss_overrides[domain]
                     if fetch_url is None:
                         logger.info(f"Source {domain} configured for HTML parsing (no RSS available)")
@@ -574,11 +617,11 @@ class SourceCollector:
                 tier_max_items = self._get_max_items_for_source(source_name, max_items)
                 effective_max_items = tier_max_items if tier_max_items is not None else max_items
                 
-                # Select appropriate collection method
+                # Select appropriate collection method with source config
                 collect_method = (
-                    self._collect_from_rss(fetch_url, source_name, category, effective_max_items)
+                    self._collect_from_rss(fetch_url, source_name, category, effective_max_items, s)
                     if src_type == 'rss'
-                    else self._collect_from_html(fetch_url, source_name, category, effective_max_items)
+                    else self._collect_from_html(fetch_url, source_name, category, effective_max_items, s)
                 )
                 
                 tasks.append((
@@ -649,8 +692,11 @@ class SourceCollector:
         
         return all_news
     
-    async def _collect_from_rss(self, url: str, source_name: str, category: str, max_items: int) -> List[Dict]:
+    async def _collect_from_rss(self, url: str, source_name: str, category: str, max_items: int, source_config: dict = None) -> List[Dict]:
         """Собирает из RSS источника"""
+        if source_config is None:
+            source_config = {}
+            
         try:
             from core.services.global_stop import get_global_stop
             if get_global_stop():
@@ -670,7 +716,30 @@ class SourceCollector:
                 
                 news = await self.rss_parser.parse(url, source_name, max_items=max_items)
                 filtered_news = []
+                
+                # Extract filters from source_config
+                min_likes = source_config.get('min_likes')
+                min_retweets = source_config.get('min_retweets')
+                ignore_replies = source_config.get('ignore_replies', False)
+                strong_markers = source_config.get('strong_markers', [])
+                priority_keywords = source_config.get('priority_keywords', [])
+                
                 for item in news:
+                    # Twitter filtering (RSSHub sources)
+                    if min_likes or min_retweets or ignore_replies:
+                        likes = item.get('likes', 0)
+                        retweets = item.get('retweets', 0)
+                        is_reply = item.get('is_reply', False)
+                        
+                        if ignore_replies and is_reply:
+                            continue
+                        if min_likes and likes < min_likes:
+                            if not (min_retweets and retweets >= min_retweets):
+                                continue
+                        if min_retweets and retweets < min_retweets:
+                            if not (min_likes and likes >= min_likes):
+                                continue
+                    
                     title = item.get('title', '')
                     text = item.get('text', '') or item.get('lead_text', '')
                     item_url = item.get('url', '')
@@ -679,6 +748,21 @@ class SourceCollector:
                     published_time = item.get('published_time')
                     published_confidence = (item.get('published_confidence') or 'none').lower()
                     published_source = item.get('published_source')
+                    
+                    # Check strong markers for Russian sources
+                    if strong_markers and (title or text):
+                        content = f"{title} {text}".lower()
+                        has_marker = any(marker.lower() in content for marker in strong_markers)
+                        if has_marker:
+                            category = 'russia'  # Override category to Russia
+                    
+                    # Priority boost for tech sources with keywords
+                    priority_boost = False
+                    if priority_keywords and (title or text):
+                        content = f"{title} {text}".lower()
+                        priority_boost = any(keyword.lower() in content for keyword in priority_keywords)
+                        if priority_boost:
+                            item['priority_boost'] = True
 
                     html = None
                     is_lenta = 'lenta.ru' in source_name
@@ -850,8 +934,11 @@ class SourceCollector:
                 logger.error(f"Error collecting from RSS {url}: {type(e).__name__}: {e}")
                 return []
     
-    async def _collect_from_html(self, url: str, source_name: str, category: str, max_items: int) -> List[Dict]:
+    async def _collect_from_html(self, url: str, source_name: str, category: str, max_items: int, source_config: dict = None) -> List[Dict]:
         """Собирает из HTML источника"""
+        if source_config is None:
+            source_config = {}
+            
         try:
             from core.services.global_stop import get_global_stop
             if get_global_stop():
