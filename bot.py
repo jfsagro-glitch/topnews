@@ -414,6 +414,13 @@ class NewsBot:
 
         keyboard = [
             [InlineKeyboardButton(toggle_text, callback_data="mgmt:toggle_global_stop")],
+        ]
+        
+        # Добавляем кнопку "Возобновить работу" только когда система остановлена
+        if is_stopped:
+            keyboard.append([InlineKeyboardButton("▶️ Возобновить работу", callback_data="mgmt:resume_work")])
+        
+        keyboard.extend([
             [InlineKeyboardButton("📊 Статус системы", callback_data="mgmt:status")],
             [InlineKeyboardButton("🤖 AI управление", callback_data="mgmt:ai")],
             [InlineKeyboardButton("📰 Источники", callback_data="mgmt:sources")],
@@ -422,7 +429,7 @@ class NewsBot:
             [InlineKeyboardButton("👥 Пользователи и инвайты", callback_data="mgmt:users")],
             [InlineKeyboardButton("🧰 Диагностика", callback_data="mgmt:diag")],
             [InlineKeyboardButton("↩️ Назад", callback_data="mgmt:main")],
-        ]
+        ])
 
         return InlineKeyboardMarkup(keyboard)
 
@@ -1735,6 +1742,45 @@ class NewsBot:
             else:
                 logger.warning(f"[ADMIN] SYSTEM FULL RESUME by {query.from_user.id}")
                 await query.answer("🟢 Система возобновлена", show_alert=True)
+            await query.edit_message_reply_markup(
+                reply_markup=self._build_sandbox_admin_keyboard()
+            )
+            return
+        
+        # Resume work - запуск сбора новостей в песочнице
+        if query.data == "mgmt:resume_work":
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            
+            # Проверяем что мы в песочнице
+            try:
+                from config.railway_config import APP_ENV
+            except (ImportError, ValueError):
+                from config.config import APP_ENV
+            
+            if APP_ENV != "sandbox":
+                await query.answer("⚠️ Эта функция доступна только в песочнице", show_alert=True)
+                return
+            
+            # Снимаем глобальную остановку (если была установлена)
+            from core.services.global_stop import set_global_stop
+            set_global_stop(enabled=False, reason="Resume via admin button", by=f"admin_{query.from_user.id}")
+            logger.warning(f"[ADMIN] WORK RESUMED by {query.from_user.id}")
+            
+            # Показываем модальное уведомление
+            await query.answer(
+                "🟢 Работа возобновлена!\n\n"
+                "✅ Система запущена\n"
+                "📰 Начинается сбор новостей\n"
+                "🤖 AI модули активны",
+                show_alert=True
+            )
+            
+            # Запускаем сбор новостей в фоне
+            asyncio.create_task(self._trigger_news_collection())
+            
+            # Обновляем клавиатуру
             await query.edit_message_reply_markup(
                 reply_markup=self._build_sandbox_admin_keyboard()
             )
@@ -4244,6 +4290,20 @@ class NewsBot:
             text="🛠 Управление ботом\n\nВыберите раздел:",
             reply_markup=reply_markup
         )
+    
+    async def _trigger_news_collection(self):
+        """Запускает сбор новостей в песочнице (фоновая задача)"""
+        try:
+            logger.info("[ADMIN] Triggering news collection in sandbox...")
+            
+            # Запускаем сбор с force=True чтобы игнорировать таймауты
+            if self.collector:
+                results = await self.collector.collect_all(force=True)
+                logger.info(f"[ADMIN] Collection completed: {len(results)} items collected")
+            else:
+                logger.warning("[ADMIN] Collector not available")
+        except Exception as e:
+            logger.error(f"[ADMIN] Error during news collection: {e}", exc_info=True)
 
     async def _show_admin_status(self, query):
         """📊 System status panel"""
