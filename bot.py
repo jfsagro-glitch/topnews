@@ -94,6 +94,9 @@ class NewsBot:
 
         # Drop reasons counters (domain -> reason -> count)
         self.drop_counters = {}
+
+        # Track last "no news" notification per user to avoid duplicates in short bursts
+        self._last_no_news_sent_at = {}
         
         # Instance lock (prevent double start)
         self._instance_lock_fd = None
@@ -2546,6 +2549,45 @@ class NewsBot:
         for user_id in recipients:
             await self._deliver_to_user(user_id, keyboard, news_id, news_data, message)
 
+    async def _notify_realtime_no_news(self, interval_seconds: int) -> None:
+        """Notify realtime users that there are no news items in the current tick."""
+        if get_app_env() != "prod":
+            return
+
+        recipients = self._get_delivery_user_ids()
+        if not recipients:
+            return
+
+        now_ts = time.time()
+        message = (
+            "🕒 Новостей пока нет.\n"
+            f"Следующая проверка через {interval_seconds} сек."
+        )
+
+        for user_id in recipients:
+            user_id_str = str(user_id)
+            delivery_mode = self.db.get_user_delivery_mode(user_id_str, env="prod")
+            if delivery_mode != "realtime":
+                continue
+            state = self.db.get_delivery_state(user_id_str, env="prod")
+            if state.get("is_paused"):
+                continue
+
+            last_sent = self._last_no_news_sent_at.get(user_id)
+            if last_sent and now_ts - last_sent < max(30, interval_seconds - 1):
+                continue
+
+            try:
+                await self.application.bot.send_message(
+                    chat_id=user_id,
+                    text=message,
+                    disable_web_page_preview=True,
+                    disable_notification=True
+                )
+                self._last_no_news_sent_at[user_id] = now_ts
+            except Exception as e:
+                logger.warning(f"Failed to send no-news update to user {user_id}: {e}")
+
     async def _deliver_to_user(
         self,
         user_id: int,
@@ -3384,6 +3426,9 @@ class NewsBot:
                     )
             
             logger.info("TICK_STATS %s", json.dumps(tick_log, ensure_ascii=True))
+
+            if published_count == 0:
+                await self._notify_realtime_no_news(CHECK_INTERVAL_SECONDS)
             return published_count
         
         except Exception as e:

@@ -189,7 +189,6 @@ SOURCES_CONFIG = {
             'https://russian.rt.com/rss/',
             'https://www.interfax.ru/world/',
             'https://iz.ru/xml/rss/all.xml',
-            'https://ren.tv/news',
         ]
     },
     'yahoo_world_extended': {
@@ -250,7 +249,6 @@ SOURCES_CONFIG = {
         'ai_summary_min_chars': 600,
         'summary_only': True,
         'sources': [
-            'https://www.investing.com/rss/news.rss',
             'https://www.marketwatch.com/rss/topstories',
         ]
     },
@@ -263,7 +261,6 @@ SOURCES_CONFIG = {
             'https://www.gazeta.ru/news/',
             'https://tass.ru/rss/v2.xml',
             'https://rg.ru/',
-            'https://ren.tv/news',
             'https://iz.ru/xml/rss/all.xml',
             'https://russian.rt.com/rss/',
             'https://www.rbc.ru/v10/static/rss/rbc_news.rss',
@@ -302,7 +299,6 @@ SOURCES_CONFIG = {
             'https://tass.ru/moskovskaya-oblast',
             'https://rg.ru/region/cfo/podmoskovie',
             'https://360.ru/rubriki/mosobl/',
-            'https://mosreg.ru/sobytiya/novosti',
             'https://riamo.ru/tag/podmoskove/',
             'https://mosregtoday.ru/news/',
             'https://www.interfax-russia.ru/center/novosti-podmoskovya',
