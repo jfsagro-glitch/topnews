@@ -90,6 +90,10 @@ def compute_simhash(text: str, title: str = "") -> int | None:
     for bit, weight in enumerate(weights):
         if weight > 0:
             fingerprint |= (1 << bit)
+    
+    # Convert unsigned 64-bit to signed 64-bit for SQLite compatibility
+    if fingerprint > 9223372036854775807:  # 2^63-1
+        fingerprint = fingerprint - 18446744073709551616  # 2^64
     return fingerprint
 
 
