@@ -1749,32 +1749,53 @@ class NewsBot:
                 await query.answer("❌ Доступ запрещён", show_alert=True)
                 return
             
-            # Проверяем что мы в песочнице
+            # Получаем текущее окружение и настройки
             try:
-                from config.railway_config import APP_ENV
+                from config.railway_config import APP_ENV, CHECK_INTERVAL_SECONDS
             except (ImportError, ValueError):
-                from config.config import APP_ENV
+                from config.config import APP_ENV, CHECK_INTERVAL_SECONDS
             
-            if APP_ENV != "sandbox":
-                await query.answer("⚠️ Эта функция доступна только в песочнице", show_alert=True)
-                return
+            # Проверяем текущее состояние системы ДО изменения
+            from core.services.global_stop import get_global_stop, set_global_stop
+            was_stopped = get_global_stop()
             
             # Снимаем глобальную остановку (если была установлена)
-            from core.services.global_stop import set_global_stop
             set_global_stop(enabled=False, reason="Resume via admin button", by=f"admin_{query.from_user.id}")
-            logger.warning(f"[ADMIN] WORK RESUMED by {query.from_user.id}")
+            logger.warning(f"[ADMIN] WORK RESUMED by {query.from_user.id}, was_stopped={was_stopped}")
+            
+            # Формируем динамическое сообщение в зависимости от состояния
+            interval_minutes = CHECK_INTERVAL_SECONDS // 60
+            interval_seconds = CHECK_INTERVAL_SECONDS % 60
+            
+            if interval_seconds > 0:
+                time_text = f"{interval_minutes} мин {interval_seconds} сек"
+            else:
+                time_text = f"{interval_minutes} мин"
+            
+            if was_stopped:
+                # Система была остановлена администратором
+                message = (
+                    "🟢 Работа возобновлена!\n\n"
+                    "✅ Остановка снята\n"
+                    "📰 Сбор новостей начнется немедленно\n"
+                    f"⏱ Периодичность: каждые {time_text}\n"
+                    "🤖 AI модули активны"
+                )
+                # Запускаем сбор новостей в фоне только в sandbox
+                if APP_ENV == "sandbox":
+                    asyncio.create_task(self._trigger_news_collection())
+            else:
+                # Система уже работала
+                message = (
+                    "✅ Система работает!\n\n"
+                    "🔄 Сбор новостей активен\n"
+                    f"⏱ Периодичность: каждые {time_text}\n"
+                    f"📰 Новости поступают каждые {time_text}\n"
+                    "🤖 AI модули активны"
+                )
             
             # Показываем модальное уведомление
-            await query.answer(
-                "🟢 Работа возобновлена!\n\n"
-                "✅ Система запущена\n"
-                "📰 Начинается сбор новостей\n"
-                "🤖 AI модули активны",
-                show_alert=True
-            )
-            
-            # Запускаем сбор новостей в фоне
-            asyncio.create_task(self._trigger_news_collection())
+            await query.answer(message, show_alert=True)
             
             # Обновляем клавиатуру
             await query.edit_message_reply_markup(
@@ -4350,7 +4371,7 @@ class NewsBot:
                 "",
                 f"🤖 Окружение: {app_env.upper()}",
                 f"⏹ Глобальная остановка: {stop_status}",
-                f"🔴 Redis статус: {'✅ OK' if redis_ok else '⚠️ Fallback (SQLite)'}",
+                f"� Redis статус: {'✅ OK' if redis_ok else '⚠️ Fallback (SQLite)'}",
                 f"🗄️ БД: SQLite (news.db)",
                 "",
                 "Нажмите кнопки ниже для управления системой."
@@ -4644,7 +4665,7 @@ class NewsBot:
 
             text = (
                 "🧰 ДИАГНОСТИКА\n\n"
-                f"🔴 Redis: {'✅ OK' if redis_ok else '⚠️ Fallback (SQLite)'}\n"
+                f"� Redis: {'✅ OK' if redis_ok else '⚠️ Fallback (SQLite)'}\n"
                 f"⛔ Global stop: {'ON' if global_stop else 'OFF'}\n"
                 f"🗄️ DB: {self.db.db_path}\n"
                 f"🛰 RSSHub: {rsshub_url}\n"
