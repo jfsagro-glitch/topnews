@@ -410,15 +410,16 @@ class NewsBot:
         from core.services.global_stop import get_global_stop
 
         is_stopped = get_global_stop()
-        toggle_text = "✅ ВОЗОБНОВИТЬ ВСЮ СИСТЕМУ" if is_stopped else "⛔ ОСТАНОВИТЬ ВСЮ СИСТЕМУ"
-
-        keyboard = [
-            [InlineKeyboardButton(toggle_text, callback_data="mgmt:toggle_global_stop")],
-        ]
         
-        # Добавляем кнопку "Возобновить работу" только когда система остановлена
+        # Если остановлена - показываем "Возобновить работу", иначе - "Остановить систему"
         if is_stopped:
-            keyboard.append([InlineKeyboardButton("▶️ Возобновить работу", callback_data="mgmt:resume_work")])
+            keyboard = [
+                [InlineKeyboardButton("▶️ Возобновить работу", callback_data="mgmt:resume_work")],
+            ]
+        else:
+            keyboard = [
+                [InlineKeyboardButton("⛔ ОСТАНОВИТЬ ВСЮ СИСТЕМУ", callback_data="mgmt:toggle_global_stop")],
+            ]
         
         keyboard.extend([
             [InlineKeyboardButton("📊 Статус системы", callback_data="mgmt:status")],
