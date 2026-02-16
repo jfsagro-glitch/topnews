@@ -229,6 +229,8 @@ SOURCES_CONFIG = {
             'https://t.me/bazabazon',
             'https://t.me/shot_shot',
             'https://t.me/mod_russia',
+            'https://t.me/moscowach',   # Moscow city news
+            'https://t.me/moscow',      # Moscow official
         ]
     },
     'moscow_region': {
@@ -248,7 +250,7 @@ SOURCES_CONFIG = {
         ]
     },
     'additional': {
-        'category': 'russia',
+        'category': 'world',
         'sources': [
             'https://naked-science.ru/',
             'https://new-science.ru/category/news/',
@@ -259,6 +261,11 @@ SOURCES_CONFIG = {
             'https://t.me/rian_ru',
             'https://t.me/mod_russia',  # Минобороны России
             'https://t.me/frank_media',  # Frank Media
+            # International news sources
+            'https://meduza.io/',          # Russian independent news
+            'https://www.reuters.com/world/',  # Reuters world news
+            'https://apnews.com/',         # Associated Press
+            'https://www.ft.com/',         # Financial Times
             # X (Twitter) accounts - ВРЕМЕННО ОТКЛЮЧЕНЫ (RSSHub и Nitter недоступны)
             # 'https://x.com/kadmitriev',  # Дмитриев
             # 'https://x.com/MedvedevRussia',  # Медведев
