@@ -865,17 +865,12 @@ class NewsBot:
             await update.message.reply_text("❌ Доступно только администраторам")
             return
 
-        await update.message.reply_text(
-            "🛠 Админ-панель",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        
         # Show expanded management menu with all admin panels
         reply_markup = self._build_sandbox_admin_keyboard()
         await update.message.reply_text(
-            "🛠 Управление ботом\n\n"
-            "Выберите раздел:",
-            reply_markup=reply_markup
+            "🛠 Управление системой",
+            reply_markup=reply_markup,
+            reply_to_message_id=update.message.message_id
         )
     
     async def cmd_sync_deepseek(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1531,7 +1526,7 @@ class NewsBot:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
-                text="🛠 Управление ботом\n\nВыберите раздел:",
+                text="🛠 Управление системой",
                 reply_markup=reply_markup
             )
         
@@ -2252,7 +2247,9 @@ class NewsBot:
                     timestamps.append(now)
                     self.user_ai_requests[user_id] = timestamps
 
-                    await query.answer("⏳ Генерирую пересказ...", show_alert=False)
+                    # Не отправляем отдельное сообщение, только query.answer без show_alert
+                    # Это уменьшает количество сообщений и предотвращает flood control
+                    await query.answer()
                     logger.info(f"AI summarize requested for news_id={news_id} by user={user_id}")
 
                     cached_summary = self.db.get_cached_summary(news_id)
@@ -4320,7 +4317,7 @@ class NewsBot:
         """Show main management menu via inline query"""
         reply_markup = self._build_sandbox_admin_keyboard()
         await query.edit_message_text(
-            text="🛠 Управление ботом\n\nВыберите раздел:",
+            text="🛠 Управление системой",
             reply_markup=reply_markup
         )
     
@@ -4593,16 +4590,34 @@ class NewsBot:
 
     async def _show_admin_stats_panel(self, query):
         """📈 Statistics panel"""
-        # Get some basic stats
-        stats = self.db.get_ai_usage()
+        # Get database stats
+        db_stats = self.db.get_stats()
+        ai_stats = self.db.get_ai_usage()
+        
+        # Get top source
+        try:
+            cursor = self.db._conn.cursor()
+            cursor.execute('''
+                SELECT source, COUNT(*) as cnt 
+                FROM published_news 
+                WHERE published_at > datetime('now', '-1 day')
+                GROUP BY source 
+                ORDER BY cnt DESC 
+                LIMIT 1
+            ''')
+            top_source_row = cursor.fetchone()
+            top_source = f"{top_source_row[0]} ({top_source_row[1]})" if top_source_row else "-"
+        except Exception as e:
+            logger.error(f"Error getting top source: {e}")
+            top_source = "-"
         
         text = (
             "📈 СТАТИСТИКА\n\n"
-            f"📊 Опубликовано (24ч): 0 новостей\n"
-            f"🤖 Использование AI: {stats['total_requests']} запросов\n"
-            f"💰 Расходы AI: ${stats.get('total_cost_usd', 0):.4f}\n"
+            f"📊 Опубликовано (24ч): {db_stats.get('today', 0)} новостей\n"
+            f"🤖 Использование AI: {ai_stats['total_requests']} запросов\n"
+            f"💰 Расходы AI: ${ai_stats.get('total_cost_usd', 0):.4f}\n"
             f"⚠ Ошибок/предупреждений: 0\n"
-            f"📰 Топ источник: -\n\n"
+            f"📰 Топ источник: {top_source}\n\n"
             "Обновляется каждые 5 минут."
         )
         
