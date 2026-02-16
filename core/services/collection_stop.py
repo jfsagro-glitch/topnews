@@ -1,14 +1,18 @@
-"""Global collection stop flag stored in Redis.
+"""Global collection stop flag stored in Redis with file fallback.
 
 Hard-stop requirements:
 - If global key is set, ALL envs must stop collection/publishing/AI.
 - Legacy sandbox-only key is still supported for compatibility.
+- Falls back to file storage when Redis is unavailable.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -20,6 +24,9 @@ LEGACY_SANDBOX_REASON_KEY = "jur:stop:global:sandbox:reason"
 GLOBAL_STOP_BY_KEY = "jur:stop:global:by"
 GLOBAL_STOP_REASON_KEY = "jur:stop:global:reason"
 DEFAULT_TTL_SEC = 3600
+
+# File fallback for local development without Redis
+STOP_FLAG_FILE = Path(".global_stop.json")
 
 _redis_client = None
 
@@ -69,23 +76,72 @@ def _ttl(client, key: str) -> int | None:
         return None
 
 
+def _read_stop_file() -> Optional[dict]:
+    """Read stop state from file (fallback when Redis unavailable)"""
+    try:
+        if STOP_FLAG_FILE.exists():
+            data = json.loads(STOP_FLAG_FILE.read_text())
+            # Check if expired
+            if data.get("expires_at"):
+                if time.time() > data["expires_at"]:
+                    STOP_FLAG_FILE.unlink()
+                    return None
+            return data
+    except Exception as e:
+        logger.debug(f"Error reading stop file: {e}")
+    return None
+
+
+def _write_stop_file(enabled: bool, ttl_sec: Optional[int] = None, reason: Optional[str] = None, by: Optional[str] = None) -> None:
+    """Write stop state to file (fallback when Redis unavailable)"""
+    try:
+        if enabled:
+            data = {
+                "enabled": True,
+                "created_at": time.time(),
+                "by": by,
+                "reason": reason
+            }
+            if ttl_sec and ttl_sec > 0:
+                data["expires_at"] = time.time() + ttl_sec
+                data["ttl_sec"] = ttl_sec
+            STOP_FLAG_FILE.write_text(json.dumps(data, indent=2))
+        else:
+            # Remove file to resume
+            if STOP_FLAG_FILE.exists():
+                STOP_FLAG_FILE.unlink()
+    except Exception as e:
+        logger.debug(f"Error writing stop file: {e}")
+
+
 def get_global_collection_stop_state(redis_client=None, app_env: str | None = None) -> StopState:
     """Return effective stop state for this env.
 
     - Global key stops everywhere.
     - Legacy sandbox key only affects sandbox.
+    - Falls back to file when Redis unavailable.
     """
     env = _get_app_env(app_env)
     client = redis_client if redis_client is not None else _get_redis_client()
-    if client is None:
-        return StopState(False, None, None)
-    try:
-        if client.get(GLOBAL_STOP_KEY):
-            return StopState(True, _ttl(client, GLOBAL_STOP_KEY), GLOBAL_STOP_KEY)
-        if env == "sandbox" and client.get(LEGACY_SANDBOX_KEY):
-            return StopState(True, _ttl(client, LEGACY_SANDBOX_KEY), LEGACY_SANDBOX_KEY)
-    except Exception as exc:
-        logger.debug(f"Redis get stop state failed: {exc}")
+    
+    # Try Redis first
+    if client is not None:
+        try:
+            if client.get(GLOBAL_STOP_KEY):
+                return StopState(True, _ttl(client, GLOBAL_STOP_KEY), GLOBAL_STOP_KEY)
+            if env == "sandbox" and client.get(LEGACY_SANDBOX_KEY):
+                return StopState(True, _ttl(client, LEGACY_SANDBOX_KEY), LEGACY_SANDBOX_KEY)
+        except Exception as exc:
+            logger.debug(f"Redis get stop state failed: {exc}")
+    
+    # Fallback to file when Redis unavailable
+    file_data = _read_stop_file()
+    if file_data and file_data.get("enabled"):
+        ttl_remaining = None
+        if file_data.get("expires_at"):
+            ttl_remaining = int(file_data["expires_at"] - time.time())
+        return StopState(True, ttl_remaining, "file")
+    
     return StopState(False, None, None)
 
 
@@ -105,43 +161,49 @@ def set_global_collection_stop(
     by: str | None = None,
 ) -> None:
     client = _get_redis_client()
-    if client is None:
-        return
+    
+    # Try Redis first
+    if client is not None:
+        try:
+            if enabled:
+                ttl_value: int | None
+                if ttl_sec is None or int(ttl_sec) <= 0:
+                    ttl_value = None
+                else:
+                    ttl_value = max(60, int(ttl_sec))
 
-    try:
-        if enabled:
-            ttl_value: int | None
-            if ttl_sec is None or int(ttl_sec) <= 0:
-                ttl_value = None
+                if ttl_value is None:
+                    client.set(GLOBAL_STOP_KEY, "1")
+                    if by:
+                        client.set(GLOBAL_STOP_BY_KEY, by)
+                    if reason:
+                        client.set(GLOBAL_STOP_REASON_KEY, reason)
+                else:
+                    client.set(GLOBAL_STOP_KEY, "1", ex=ttl_value)
+                    if by:
+                        client.set(GLOBAL_STOP_BY_KEY, by, ex=ttl_value)
+                    if reason:
+                        client.set(GLOBAL_STOP_REASON_KEY, reason, ex=ttl_value)
+                # Prefer global key; clear legacy sandbox-only key if present.
+                client.delete(LEGACY_SANDBOX_KEY)
+                client.delete(LEGACY_SANDBOX_BY_KEY)
+                client.delete(LEGACY_SANDBOX_REASON_KEY)
             else:
-                ttl_value = max(60, int(ttl_sec))
-
-            if ttl_value is None:
-                client.set(GLOBAL_STOP_KEY, "1")
-                if by:
-                    client.set(GLOBAL_STOP_BY_KEY, by)
-                if reason:
-                    client.set(GLOBAL_STOP_REASON_KEY, reason)
-            else:
-                client.set(GLOBAL_STOP_KEY, "1", ex=ttl_value)
-                if by:
-                    client.set(GLOBAL_STOP_BY_KEY, by, ex=ttl_value)
-                if reason:
-                    client.set(GLOBAL_STOP_REASON_KEY, reason, ex=ttl_value)
-            # Prefer global key; clear legacy sandbox-only key if present.
-            client.delete(LEGACY_SANDBOX_KEY)
-            client.delete(LEGACY_SANDBOX_BY_KEY)
-            client.delete(LEGACY_SANDBOX_REASON_KEY)
-        else:
-            client.delete(GLOBAL_STOP_KEY)
-            client.delete(GLOBAL_STOP_BY_KEY)
-            client.delete(GLOBAL_STOP_REASON_KEY)
-            # Also clear legacy sandbox-only keys to avoid confusing partial resumes.
-            client.delete(LEGACY_SANDBOX_KEY)
-            client.delete(LEGACY_SANDBOX_BY_KEY)
-            client.delete(LEGACY_SANDBOX_REASON_KEY)
-    except Exception as exc:
-        logger.debug(f"Redis set stop flag failed: {exc}")
+                client.delete(GLOBAL_STOP_KEY)
+                client.delete(GLOBAL_STOP_BY_KEY)
+                client.delete(GLOBAL_STOP_REASON_KEY)
+                # Also clear legacy sandbox-only keys to avoid confusing partial resumes.
+                client.delete(LEGACY_SANDBOX_KEY)
+                client.delete(LEGACY_SANDBOX_BY_KEY)
+                client.delete(LEGACY_SANDBOX_REASON_KEY)
+            logger.debug(f"Redis: set stop={enabled}")
+            return
+        except Exception as exc:
+            logger.debug(f"Redis set stop flag failed: {exc}")
+    
+    # Fallback to file when Redis unavailable
+    logger.debug(f"Using file fallback: set stop={enabled}")
+    _write_stop_file(enabled=enabled, ttl_sec=ttl_sec, reason=reason, by=by)
 
 
 def get_global_collection_stop_meta(redis_client=None, app_env: str | None = None) -> dict:
