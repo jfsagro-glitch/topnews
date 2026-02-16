@@ -10,10 +10,11 @@ import hmac
 import hashlib
 import secrets
 import json
+from contextlib import suppress
 from datetime import datetime
 from net.deepseek_client import DeepSeekClient
 from urllib.parse import urlparse
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters,
     ContextTypes, ConversationHandler
@@ -399,15 +400,43 @@ class NewsBot:
         return self.application
 
     # Persistent reply keyboard for chats (anchored at bottom)
-    # For regular users
+    # For regular users (prod)
     REPLY_KEYBOARD = ReplyKeyboardMarkup(
         [['🔄', '✉️', '⏸️', '▶️'], ['⚙️ Настройки']], resize_keyboard=True, one_time_keyboard=False
     )
-    
-    # For sandbox admin users - includes Management button
-    REPLY_KEYBOARD_ADMIN = ReplyKeyboardMarkup(
-        [['🔄', '✉️', '⏸️', '▶️'], ['⚙️ Настройки', '🛠 Управление']], resize_keyboard=True, one_time_keyboard=False
-    )
+
+    def _build_sandbox_admin_keyboard(self) -> InlineKeyboardMarkup:
+        from core.services.global_stop import get_global_stop
+
+        is_stopped = get_global_stop()
+        toggle_text = "✅ ВОЗОБНОВИТЬ ВСЮ СИСТЕМУ" if is_stopped else "⛔ ОСТАНОВИТЬ ВСЮ СИСТЕМУ"
+
+        keyboard = [
+            [InlineKeyboardButton(toggle_text, callback_data="mgmt:toggle_global_stop")],
+            [InlineKeyboardButton("📊 Статус системы", callback_data="mgmt:status")],
+            [InlineKeyboardButton("🤖 AI управление", callback_data="mgmt:ai")],
+            [InlineKeyboardButton("📰 Источники", callback_data="mgmt:sources")],
+            [InlineKeyboardButton("📈 Статистика", callback_data="mgmt:stats")],
+            [InlineKeyboardButton("⚙ Настройки", callback_data="mgmt:settings")],
+            [InlineKeyboardButton("👥 Пользователи и инвайты", callback_data="mgmt:users")],
+            [InlineKeyboardButton("🧰 Диагностика", callback_data="mgmt:diag")],
+            [InlineKeyboardButton("↩️ Назад", callback_data="mgmt:main")],
+        ]
+
+        return InlineKeyboardMarkup(keyboard)
+
+    def _get_rsshub_telegram_enabled(self) -> bool:
+        try:
+            value = self.db.get_system_setting("rsshub_telegram_enabled")
+        except Exception:
+            value = None
+        if value is None:
+            try:
+                from config.railway_config import RSSHUB_TELEGRAM_ENABLED
+            except (ImportError, ValueError):
+                from config.config import RSSHUB_TELEGRAM_ENABLED
+            return bool(RSSHUB_TELEGRAM_ENABLED)
+        return value.strip() not in ("0", "false", "False")
     
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
@@ -429,7 +458,7 @@ class NewsBot:
                 await update.message.reply_text(
                     "✅ Инвайт-код успешно активирован!\n\n"
                     "Теперь у вас есть доступ к боту. Используйте /help для списка команд.",
-                    reply_markup=self.REPLY_KEYBOARD
+                    reply_markup=ReplyKeyboardRemove() if APP_ENV == "sandbox" else self.REPLY_KEYBOARD
                 )
                 return
 
@@ -448,7 +477,7 @@ class NewsBot:
                     await update.message.reply_text(
                         "✅ Инвайт-код успешно активирован!\n\n"
                         "Теперь у вас есть доступ к боту. Используйте /help для списка команд.",
-                        reply_markup=self.REPLY_KEYBOARD
+                        reply_markup=ReplyKeyboardRemove() if APP_ENV == "sandbox" else self.REPLY_KEYBOARD
                     )
                     return
                 else:
@@ -477,18 +506,37 @@ class NewsBot:
         
         is_admin = self._is_admin(user_id)
         env_marker = "\n🧪 SANDBOX" if APP_ENV == "sandbox" else ""
-        
-        # Choose keyboard based on admin status and environment
-        keyboard = self.REPLY_KEYBOARD_ADMIN if (APP_ENV == "sandbox" and is_admin) else self.REPLY_KEYBOARD
-        
+
+        if APP_ENV == "sandbox":
+            if not is_admin:
+                await update.message.reply_text("❌ Доступ запрещён")
+                return
+            await update.message.reply_text(
+                "🛠 Админ-панель системы" + env_marker,
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await self.cmd_management(update, context)
+            return
+
         await update.message.reply_text(
             "👋 Добро пожаловать в News Aggregator Bot!" + env_marker + "\n\n"
             "Используйте /help для списка команд",
-            reply_markup=keyboard
+            reply_markup=self.REPLY_KEYBOARD
         )
     
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /help"""
+        from core.services.global_stop import get_global_stop
+        if get_app_env() == "prod" and get_global_stop():
+            await update.message.reply_text("🔴 Система временно остановлена администратором.")
+            return
+        if get_app_env() == "sandbox":
+            await update.message.reply_text(
+                "🛠 Админ-режим\n\n"
+                "Используйте кнопки админ-панели для управления системой.",
+                reply_markup=self._build_sandbox_admin_keyboard(),
+            )
+            return
         help_text = (
             "📚 Доступные команды:\n\n"
             "/sync - Принудительно запустить сбор новостей\n"
@@ -505,6 +553,13 @@ class NewsBot:
     
     async def cmd_sync(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /sync - принудительный сбор новостей"""
+        from core.services.global_stop import get_global_stop
+        if get_app_env() == "sandbox":
+            await update.message.reply_text("⛔ Недоступно в админ-режиме")
+            return
+        if get_app_env() == "prod" and get_global_stop():
+            await update.message.reply_text("🔴 Система временно остановлена администратором.")
+            return
         stop_state = get_global_collection_stop_state(app_env=get_app_env())
         if stop_state.enabled:
             ttl = stop_state.ttl_sec_remaining
@@ -543,7 +598,7 @@ class NewsBot:
     async def cmd_my_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /my_selection - показать выбранные новости и экспортировать"""
         if get_app_env() == "sandbox":
-            await update.message.reply_text("⛔ Access denied")
+            await update.message.reply_text("⛔ Недоступно в админ-режиме")
             return
         user_id = update.message.from_user.id
         selected = self.db.get_user_selections(user_id, env="prod")
@@ -568,9 +623,20 @@ class NewsBot:
         type_map: dict[str, str] = {}
         label_map: dict[str, str] = {}
         group_map: dict[str, str] = {}
-        for fetch_url, source_name, _category, src_type in self.collector._configured_sources:
-            if source_name in type_map:
+        for entry in self.collector._configured_sources:
+            if isinstance(entry, dict):
+                fetch_url = entry.get('fetch_url', '')
+                source_name = entry.get('source_name', '')
+                src_type = entry.get('src_type', '')
+            else:
+                try:
+                    fetch_url, source_name, _category, src_type = entry
+                except ValueError:
+                    continue
+
+            if not source_name or source_name in type_map:
                 continue
+
             source_type = src_type
             group = 'site'
             if '/telegram/channel/' in fetch_url:
@@ -718,11 +784,25 @@ class NewsBot:
     
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /status"""
+        from core.services.global_stop import get_global_stop
+        if get_app_env() == "sandbox":
+            await update.message.reply_text("⛔ Недоступно в админ-режиме")
+            return
+        if get_app_env() == "prod" and get_global_stop():
+            await update.message.reply_text("🔴 Система временно остановлена администратором.")
+            return
         status_text = self._build_status_text()
         await update.message.reply_text(status_text, disable_web_page_preview=True)
     
     async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /pause - приостановить новости для пользователя"""
+        from core.services.global_stop import get_global_stop
+        if get_app_env() == "sandbox":
+            await update.message.reply_text("⛔ Недоступно в админ-режиме")
+            return
+        if get_app_env() == "prod" and get_global_stop():
+            await update.message.reply_text("🔴 Система временно остановлена администратором.")
+            return
         if get_app_env() == "sandbox" and not self._is_admin(update.message.from_user.id):
             await update.message.reply_text("⛔ Access denied")
             return
@@ -733,6 +813,13 @@ class NewsBot:
     
     async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /resume - возобновить новости для пользователя"""
+        from core.services.global_stop import get_global_stop
+        if get_app_env() == "sandbox":
+            await update.message.reply_text("⛔ Недоступно в админ-режиме")
+            return
+        if get_app_env() == "prod" and get_global_stop():
+            await update.message.reply_text("🔴 Система временно остановлена администратором.")
+            return
         if get_app_env() == "sandbox" and not self._is_admin(update.message.from_user.id):
             await update.message.reply_text("⛔ Access denied")
             return
@@ -760,17 +847,14 @@ class NewsBot:
         if not is_admin:
             await update.message.reply_text("❌ Доступно только администраторам")
             return
+
+        await update.message.reply_text(
+            "🛠 Админ-панель",
+            reply_markup=ReplyKeyboardRemove()
+        )
         
         # Show expanded management menu with all admin panels
-        keyboard = [
-            [InlineKeyboardButton("📊 Статус системы", callback_data="mgmt:status")],
-            [InlineKeyboardButton("🤖 Управление AI", callback_data="mgmt:ai")],
-            [InlineKeyboardButton("📰 Источники данных", callback_data="mgmt:sources")],
-            [InlineKeyboardButton("📈 Статистика", callback_data="mgmt:stats")],
-            [InlineKeyboardButton("⚙ Настройки", callback_data="mgmt:settings")],
-            [InlineKeyboardButton("👥 Пользователи и инвайты", callback_data="mgmt:users")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = self._build_sandbox_admin_keyboard()
         await update.message.reply_text(
             "🛠 Управление ботом\n\n"
             "Выберите раздел:",
@@ -860,6 +944,13 @@ class NewsBot:
     
     async def cmd_filter(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /filter"""
+        from core.services.global_stop import get_global_stop
+        if get_app_env() == "sandbox":
+            await update.message.reply_text("⛔ Недоступно в админ-режиме")
+            return
+        if get_app_env() == "prod" and get_global_stop():
+            await update.message.reply_text("🔴 Система временно остановлена администратором.")
+            return
         # Создаем inline кнопки для выбора категорий
         ai_status = "✅" if self.ai_verification_enabled else "❌"
         keyboard = [
@@ -932,6 +1023,10 @@ class NewsBot:
             )
             return
         
+        if get_app_env() == "sandbox" and text in {'🔄', '✉️', '⏸️', '▶️'}:
+            await update.message.reply_text("⛔ Недоступно в админ-режиме")
+            return
+
         if text == '🔄':
             await self.cmd_sync(update, context)
         elif text == '✉️':
@@ -948,31 +1043,43 @@ class NewsBot:
     
     async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """⚙️ Меню настроек"""
-    async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """⚙️ Меню настроек"""
+        from core.services.global_stop import get_global_stop
+        if get_app_env() == "sandbox":
+            await update.message.reply_text("⛔ Недоступно в админ-режиме")
+            return
+        if get_app_env() == "prod" and get_global_stop():
+            await update.message.reply_text("🔴 Система временно остановлена администратором.")
+            return
         user_id = update.message.from_user.id
         is_admin = self._is_admin(user_id)
         app_env = get_app_env()
 
         keyboard = []
         keyboard.append([InlineKeyboardButton("🧰 Фильтр", callback_data="settings:filter")])
-        keyboard.append([InlineKeyboardButton("🤖 AI переключатели", callback_data="ai:management")])
-        keyboard.append([InlineKeyboardButton("📊 Статус бота", callback_data="show_status")])
-
+        
+        # PROD mode: only user-friendly buttons
         if app_env == "prod":
             translate_enabled, target_lang = self.db.get_user_translation(str(user_id), env="prod")
             translate_status = "Вкл" if translate_enabled else "Выкл"
-            keyboard.insert(1, [InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")])
-            keyboard.insert(3, [InlineKeyboardButton(f"🌐 Перевод ({target_lang.upper()}): {translate_status}", callback_data="settings:translate_toggle")])
-            keyboard.insert(4, [InlineKeyboardButton("📥 Экспорт новостей", callback_data="export_menu")])
-
-        # Global collection control buttons for admins (prod + sandbox)
-        if is_admin:
-            is_stopped, _ttl = get_global_collection_stop_status(app_env=app_env)
-            if is_stopped:
-                keyboard.append([InlineKeyboardButton("▶️ Возобновить сбор", callback_data="collection:restore")])
-            else:
-                keyboard.append([InlineKeyboardButton("⏸ Остановить сбор", callback_data="collection:stop")])
+            delivery_mode = self.db.get_user_delivery_mode(str(user_id), env="prod")
+            delivery_label = {"realtime": "В реальном времени", "hourly": "Каждый час", "morning": "Утром"}.get(delivery_mode, "В реальном времени")
+            keyboard.append([InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")])
+            keyboard.append([InlineKeyboardButton(f"🌐 Перевод ({target_lang.upper()}): {translate_status}", callback_data="settings:translate_toggle")])
+            keyboard.append([InlineKeyboardButton(f"⏰ Доставка: {delivery_label}", callback_data="settings:delivery_mode")])
+            keyboard.append([InlineKeyboardButton("📥 Экспорт новостей", callback_data="export_menu")])
+            keyboard.append([InlineKeyboardButton("📊 Статус бота", callback_data="show_status")])
+        else:
+            # SANDBOX mode: include admin features
+            keyboard.append([InlineKeyboardButton("🤖 AI переключатели", callback_data="ai:management")])
+            keyboard.append([InlineKeyboardButton("📊 Статус бота", callback_data="show_status")])
+            
+            # Global collection control buttons for sandbox admins
+            if is_admin:
+                is_stopped, _ttl = get_global_collection_stop_status(app_env=app_env)
+                if is_stopped:
+                    keyboard.append([InlineKeyboardButton("▶️ Возобновить сбор", callback_data="collection:restore")])
+                else:
+                    keyboard.append([InlineKeyboardButton("⏸ Остановить сбор", callback_data="collection:stop")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("⚙️ Настройки", reply_markup=reply_markup)
@@ -1026,6 +1133,24 @@ class NewsBot:
         if not await self._sandbox_admin_guard(query=query):
             return
         app_env = get_app_env()
+        
+        # ==================== PROD MODE RESTRICTIONS ====================
+        # Block admin-only callbacks in prod environment
+        if app_env == "prod":
+            data = query.data or ""
+            if data == "collection:stop" or data == "collection:restore":
+                await query.answer(
+                    "⛔ Остановка сбора доступна только в sandbox режиме",
+                    show_alert=True
+                )
+                return
+            if data == "mgmt:ai" or data == "ai:management" or data.startswith("mgmt:ai:"):
+                await query.answer(
+                    "⛔ AI-управление доступно только в sandbox режиме",
+                    show_alert=True
+                )
+                return
+        
         if app_env == "sandbox":
             data = query.data or ""
             if (
@@ -1033,6 +1158,8 @@ class NewsBot:
                 or data.startswith("settings:src_toggle:")
                 or data.startswith("settings:src_page:")
                 or data == "settings:translate_toggle"
+                or data == "settings:delivery_mode"
+                or data.startswith("settings:delivery:")
                 or data == "export_menu"
                 or data.startswith("export_period:")
                 or data == "export_doc"
@@ -1053,6 +1180,11 @@ class NewsBot:
                 return
 
             set_global_collection_stop(True, ttl_sec=3600, by=str(user_id))
+            
+            # Уведомляем asyncio.Event об остановке (локальный эффект)
+            from core.services.global_stop import set_global_stop
+            set_global_stop(True)
+            
             await query.edit_message_text(
                 "⏸ Сбор новостей остановлен глобально\n\n"
                 "Все боты перестали собирать новости.\n"
@@ -1072,6 +1204,8 @@ class NewsBot:
                 return
 
             set_global_collection_stop(False, by=str(user_id))
+            from core.services.global_stop import set_global_stop
+            set_global_stop(False)
             await query.edit_message_text(
                 "▶️ Сбор новостей восстановлен!\n\n"
                 "Боты снова собирают новости в фоне."
@@ -1146,12 +1280,16 @@ class NewsBot:
         if query.data == "settings:back":
             # Вернуться к меню настроек
             await query.answer()
-            translate_enabled, target_lang = self.db.get_user_translation(str(query.from_user.id), env="prod")
+            user_id = str(query.from_user.id)
+            translate_enabled, target_lang = self.db.get_user_translation(user_id, env="prod")
             translate_status = "Вкл" if translate_enabled else "Выкл"
+            delivery_mode = self.db.get_user_delivery_mode(user_id, env="prod")
+            delivery_label = {"realtime": "В реальном времени", "hourly": "Каждый час", "morning": "Утром"}.get(delivery_mode, "В реальном времени")
             keyboard = [
                 [InlineKeyboardButton("🧰 Фильтр", callback_data="settings:filter")],
                 [InlineKeyboardButton("📰 Источники", callback_data="settings:sources:0")],
                 [InlineKeyboardButton(f"🌐 Перевод ({target_lang.upper()}): {translate_status}", callback_data="settings:translate_toggle")],
+                [InlineKeyboardButton(f"⏰ Доставка: {delivery_label}", callback_data="settings:delivery_mode")],
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
@@ -1174,6 +1312,63 @@ class NewsBot:
                     [InlineKeyboardButton("⬅️ Назад", callback_data="settings:back")]
                 ])
             )
+            return
+        
+        if query.data == "settings:delivery_mode":
+            await query.answer()
+            user_id = str(query.from_user.id)
+            current_mode = self.db.get_user_delivery_mode(user_id, env="prod")
+            
+            keyboard = [
+                [InlineKeyboardButton(
+                    f"{'✅' if current_mode == 'realtime' else '⚪'} В реальном времени",
+                    callback_data="settings:delivery:realtime"
+                )],
+                [InlineKeyboardButton(
+                    f"{'✅' if current_mode == 'hourly' else '⚪'} Каждый час",
+                    callback_data="settings:delivery:hourly"
+                )],
+                [InlineKeyboardButton(
+                    f"{'✅' if current_mode == 'morning' else '⚪'} Утром (7:00)",
+                    callback_data="settings:delivery:morning"
+                )],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="settings:back")]
+            ]
+            
+            await query.edit_message_text(
+                text="⏰ Режим доставки новостей:\n\n"
+                     "• В реальном времени — новости приходят сразу\n"
+                     "• Каждый час — новости собираются и отправляются раз в час\n"
+                     "• Утром — новости приходят один раз в 7:00",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
+        
+        if query.data.startswith("settings:delivery:"):
+            await query.answer()
+            user_id = str(query.from_user.id)
+            mode = query.data.split(":")[-1]  # realtime, hourly, morning
+            
+            success = self.db.set_user_delivery_mode(user_id, mode, env="prod")
+            if success:
+                mode_names = {
+                    "realtime": "В реальном времени",
+                    "hourly": "Каждый час",
+                    "morning": "Утром (7:00)"
+                }
+                await query.edit_message_text(
+                    text=f"✅ Режим доставки изменен на: {mode_names.get(mode, mode)}",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Назад", callback_data="settings:back")]
+                    ])
+                )
+            else:
+                await query.edit_message_text(
+                    text="❌ Ошибка при изменении режима доставки",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Назад", callback_data="settings:back")]
+                    ])
+                )
             return
         
         # ==================== AI MANAGEMENT CALLBACKS (ALL ADMINS) ====================
@@ -1502,6 +1697,15 @@ class NewsBot:
                 return
             await self._show_admin_settings_panel(query)
             return
+
+        # Admin panel: Diagnostics
+        if query.data == "mgmt:diag":
+            await query.answer()
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await self._show_admin_diagnostics_panel(query)
+            return
         
         # Back to admin menu
         if query.data == "mgmt:main":
@@ -1514,12 +1718,17 @@ class NewsBot:
             if not self._is_admin(query.from_user.id):
                 await query.answer("❌ Доступ запрещён", show_alert=True)
                 return
-            await query.answer()
             from core.services.global_stop import toggle_global_stop
             new_state = toggle_global_stop()
-            logger.info(f"GLOBAL_STOP toggled to {new_state} by admin_id={query.from_user.id}")
-            await query.answer(f"✅ Система {'остановлена' if new_state else 'запущена'}", show_alert=True)
-            await self._show_admin_status(query)
+            if new_state:
+                logger.warning(f"[ADMIN] SYSTEM FULL STOP by {query.from_user.id}")
+                await query.answer("🔴 Система полностью остановлена", show_alert=True)
+            else:
+                logger.warning(f"[ADMIN] SYSTEM FULL RESUME by {query.from_user.id}")
+                await query.answer("🟢 Система возобновлена", show_alert=True)
+            await query.edit_message_reply_markup(
+                reply_markup=self._build_sandbox_admin_keyboard()
+            )
             return
         
         # AI module selection
@@ -1569,6 +1778,23 @@ class NewsBot:
             logger.info(f"Sources toggle_all by admin_id={query.from_user.id}")
             await self._show_admin_sources_panel(query)
             return
+
+        if query.data == "mgmt:sources:toggle_telegram":
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            enabled = self._get_rsshub_telegram_enabled()
+            new_value = "0" if enabled else "1"
+            try:
+                self.db.set_system_setting("rsshub_telegram_enabled", new_value)
+            except Exception:
+                pass
+            await query.answer(
+                "✅ Telegram RSSHub включен" if new_value == "1" else "⛔ Telegram RSSHub отключен",
+                show_alert=True,
+            )
+            await self._show_admin_sources_panel(query)
+            return
         
         if query.data == "mgmt:sources:rescan":
             if not self._is_admin(query.from_user.id):
@@ -1577,6 +1803,70 @@ class NewsBot:
             await query.answer("🔄 Переоценка источников запущена...", show_alert=False)
             logger.info(f"Sources rescan requested by admin_id={query.from_user.id}")
             await self._show_admin_sources_panel(query)
+            return
+        
+        # Sources pagination
+        if query.data.startswith("mgmt:sources:page:"):
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await query.answer()
+            page = int(query.data.split(":")[-1])
+            await self._show_admin_sources_panel(query, page=page)
+            return
+        
+        # Source detail view
+        if query.data.startswith("mgmt:source:detail:"):
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            await query.answer()
+            source_code = query.data.split(":")[-1]
+            await self._show_source_detail(query, source_code)
+            return
+        
+        # Source toggle enable/disable
+        if query.data.startswith("mgmt:source:toggle:"):
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            source_code = query.data.split(":")[-1]
+            success = self.db.toggle_source_enabled(source_code)
+            if success:
+                await query.answer("✅ Статус изменен", show_alert=False)
+            else:
+                await query.answer("❌ Ошибка изменения статуса", show_alert=True)
+            await self._show_source_detail(query, source_code)
+            return
+        
+        # Source tier change
+        if query.data.startswith("mgmt:source:tier:"):
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            parts = query.data.split(":")
+            source_code = parts[3]
+            new_tier = parts[4]
+            success = self.db.set_source_tier(source_code, new_tier)
+            if success:
+                await query.answer(f"✅ Tier изменен на {new_tier}", show_alert=False)
+            else:
+                await query.answer("❌ Ошибка изменения tier", show_alert=True)
+            await self._show_source_detail(query, source_code)
+            return
+        
+        # Source restore from quarantine
+        if query.data.startswith("mgmt:source:restore:"):
+            if not self._is_admin(query.from_user.id):
+                await query.answer("❌ Доступ запрещён", show_alert=True)
+                return
+            source_code = query.data.split(":")[-1]
+            success = self.db.restore_source(source_code)
+            if success:
+                await query.answer("✅ Источник восстановлен", show_alert=True)
+            else:
+                await query.answer("❌ Ошибка восстановления", show_alert=True)
+            await self._show_source_detail(query, source_code)
             return
         
         # Stats refresh
@@ -1693,6 +1983,14 @@ class NewsBot:
             # Показать статус бота
             await query.answer()
             user_id = query.from_user.id
+
+            from core.services.global_stop import get_global_stop
+            if get_app_env() == "prod" and get_global_stop():
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="🔴 Система временно остановлена администратором.",
+                )
+                return
 
             status_text = self._build_status_text()
             
@@ -2039,6 +2337,50 @@ class NewsBot:
                 
                 return
 
+            elif action == "cluster":
+                # Показать все источники в кластере
+                cluster_id = int(parts[1])
+                user_id = query.from_user.id
+                
+                try:
+                    cluster_info = self.db.get_cluster_info(cluster_id)
+                    if not cluster_info:
+                        await query.answer("❌ Кластер не найден", show_alert=True)
+                        return
+                    
+                    members = self.db.get_cluster_members(cluster_id)
+                    if not members:
+                        await query.answer("❌ Нет источников в кластере", show_alert=True)
+                        return
+                    
+                    # Формируем сообщение со списком источников
+                    message_lines = [
+                        f"📰 Эта новость опубликована в {len(members)} источник{'ах' if len(members) > 4 else ('е' if len(members) == 1 else 'ах')}:\n"
+                    ]
+                    
+                    for idx, member in enumerate(members, 1):
+                        source_name = member.get('source', 'Unknown')
+                        url = member.get('url', '')
+                        # Truncate URL for display
+                        display_url = url if len(url) < 50 else url[:47] + '...'
+                        message_lines.append(f"{idx}. {source_name}\n   {display_url}")
+                    
+                    message_text = "\n".join(message_lines)
+                    
+                    await query.answer()
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=message_text,
+                        disable_web_page_preview=True,
+                        disable_notification=True
+                    )
+                    return
+                    
+                except Exception as e:
+                    logger.error(f"Error showing cluster {cluster_id}: {e}", exc_info=True)
+                    await query.answer("❌ Ошибка при загрузке источников", show_alert=True)
+                    return
+
             await query.answer("❌ Неизвестная команда", show_alert=False)
     
     async def _summarize_with_deepseek(self, text: str, title: str, checksum: str | None = None, user_id: int = None) -> tuple[str | None, dict]:
@@ -2124,6 +2466,16 @@ class NewsBot:
         """Final delivery gate with pause/version checks and idempotency."""
         try:
             user_id_str = str(user_id)
+            
+            # Check delivery mode - if not realtime, buffer to pending digest
+            delivery_mode = self.db.get_user_delivery_mode(user_id_str, env="prod")
+            if delivery_mode in ('hourly', 'morning'):
+                # Add to pending digest instead of immediate delivery
+                buffered = self.db.add_to_pending_digest(user_id_str, news_id, delivery_mode)
+                if buffered:
+                    logger.info(f"DELIVERY_BUFFERED user_id={user_id} news_id={news_id} mode={delivery_mode}")
+                return True
+            
             if get_app_env() == "prod" and news_data:
                 user_filter = self.db.get_user_category_filter(user_id_str, env="prod")
                 if user_filter and news_data.get('category') != user_filter:
@@ -2285,11 +2637,7 @@ class NewsBot:
         stop_state = get_global_collection_stop_state(app_env=get_app_env())
         if stop_state.enabled:
             logger.info(
-                {
-                    "event": "tick_skipped_global_stop",
-                    "ttl_sec_remaining": stop_state.ttl_sec_remaining,
-                    "key": stop_state.key,
-                }
+                f"tick_skipped_global_stop ttl_sec_remaining={stop_state.ttl_sec_remaining} key={stop_state.key}"
             )
             return 0
         
@@ -2304,6 +2652,210 @@ class NewsBot:
         
         async with self.collection_lock:
             return await self._do_collect_and_publish()
+    
+    async def run_tier_adjustment(self):
+        """Periodic task to auto-adjust source tiers based on quality score."""
+        logger.info("Starting tier adjustment scheduler (checks daily)")
+        while True:
+            try:
+                await asyncio.sleep(24 * 60 * 60)  # Run once per day
+                
+                logger.info("Running auto-adjustment of source tiers...")
+                result = self.db.auto_adjust_source_tiers(days=7, promote_threshold=0.8, demote_threshold=0.6)
+                
+                if result['promoted']:
+                    logger.info(f"Promoted sources: {result['promoted']}")
+                if result['demoted']:
+                    logger.info(f"Demoted sources: {result['demoted']}")
+                
+                logger.info(f"Tier adjustment complete: {len(result['promoted'])} promoted, {len(result['demoted'])} demoted")
+            except Exception as e:
+                logger.error(f"Error in tier adjustment: {e}", exc_info=True)
+                await asyncio.sleep(60 * 60)  # Wait 1 hour on error before retry
+
+    async def run_hourly_digest(self):
+        """Periodic task to send hourly digests."""
+        logger.info("Starting hourly digest scheduler")
+        # Initial delay to align with hour boundary
+        import datetime
+        now = datetime.datetime.now()
+        minutes_until_next_hour = 60 - now.minute
+        await asyncio.sleep(minutes_until_next_hour * 60)
+        
+        while True:
+            try:
+                logger.info("Running hourly digest delivery...")
+                await self._send_digest_to_users('hourly')
+            except Exception as e:
+                logger.error(f"Error in hourly digest: {e}", exc_info=True)
+            
+            await asyncio.sleep(60 * 60)  # Run every hour
+
+    async def run_morning_digest(self):
+        """Periodic task to send morning digests at 7:00 AM."""
+        logger.info("Starting morning digest scheduler")
+        
+        while True:
+            try:
+                import datetime
+                now = datetime.datetime.now()
+                target_hour = 7  # 7:00 AM
+                
+                # Calculate seconds until next 7:00 AM
+                target = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+                if now >= target:
+                    target += datetime.timedelta(days=1)
+                
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"Next morning digest in {wait_seconds/3600:.1f} hours")
+                await asyncio.sleep(wait_seconds)
+                
+                logger.info("Running morning digest delivery...")
+                await self._send_digest_to_users('morning')
+            except Exception as e:
+                logger.error(f"Error in morning digest: {e}", exc_info=True)
+                await asyncio.sleep(60 * 60)  # Wait 1 hour on error
+
+    async def _send_digest_to_users(self, delivery_mode: str):
+        """Send pending digest items to all users with the specified delivery mode."""
+        try:
+            user_ids = self.db.get_users_by_delivery_mode(delivery_mode, env="prod")
+            if not user_ids:
+                logger.info(f"No users with {delivery_mode} delivery mode")
+                return
+            
+            logger.info(f"Sending {delivery_mode} digest to {len(user_ids)} users")
+            sent_count = 0
+            
+            for user_id_str in user_ids:
+                try:
+                    pending = self.db.get_pending_digest_items(user_id_str, delivery_mode)
+                    if not pending:
+                        continue
+                    
+                    # Send digest header
+                    if delivery_mode == 'hourly':
+                        header = f"📰 Почасовая подборка ({len(pending)} новостей)"
+                    else:
+                        header = f"☀️ Утренний дайджест ({len(pending)} новостей)"
+                    
+                    user_id = int(user_id_str)
+                    await self.application.bot.send_message(
+                        chat_id=user_id,
+                        text=header,
+                        disable_notification=True
+                    )
+                    
+                    # Send each news item
+                    news_ids_sent = []
+                    for item in pending[:50]:  # Limit to 50 items per digest
+                        news_id = item['news_id']
+                        news_data = self.db.get_news_by_id(news_id)
+                        if not news_data:
+                            continue
+                        
+                        # Check if news passes user filters
+                        user_filter = self.db.get_user_category_filter(user_id_str, env="prod")
+                        if user_filter and news_data.get('category') != user_filter:
+                            continue
+                        
+                        enabled_source_ids = self.db.get_enabled_source_ids_for_user(user_id_str, env="prod")
+                        if enabled_source_ids is not None:
+                            source = news_data.get('source', '')
+                            if source:
+                                if not hasattr(self, '_source_code_to_id_cache'):
+                                    sources = self.db.list_sources()
+                                    self._source_code_to_id_cache = {src['code']: src['id'] for src in sources}
+                                source_id = self._source_code_to_id_cache.get(source)
+                                if source_id and source_id not in enabled_source_ids:
+                                    continue
+                        
+                        # Build message
+                        base_text = (
+                            news_data.get('clean_text')
+                            or news_data.get('text', '')
+                            or news_data.get('lead_text', '')
+                        )
+                        title = news_data.get('title', 'No title')
+                        source_name = news_data.get('source', 'Unknown')
+                        source_url = news_data.get('url', '')
+                        
+                        # Translation if enabled
+                        translate_enabled, target_lang = self.db.get_user_translation(user_id_str, env="prod")
+                        translated_text = None
+                        if translate_enabled and news_data.get('language') == 'en' and base_text:
+                            checksum = news_data.get('checksum') or ''
+                            if checksum:
+                                translated_text = self.db.get_translation_cache(news_id, checksum, target_lang)
+                        
+                        language = news_data.get('language') or 'ru'
+                        tag_language = 'ru' if (translate_enabled and language == 'en') else ('en' if language == 'en' else 'ru')
+                        base_tag = self._get_category_tag(news_data.get('category', 'russia'), tag_language)
+                        extra_tags = news_data.get('hashtags_ru') if tag_language == 'ru' else news_data.get('hashtags_en')
+                        extra_tags = extra_tags or ''
+                        if base_tag and base_tag in extra_tags:
+                            extra_tags = extra_tags.replace(base_tag, '').strip()
+                        
+                        message = format_telegram_message(
+                            title=title,
+                            text=translated_text or base_text,
+                            source_name=source_name,
+                            source_url=source_url,
+                            category=self._get_category_line(
+                                news_data.get('category', 'russia'),
+                                language=tag_language,
+                                extra_tags=extra_tags
+                            )
+                        )
+                        
+                        # Build keyboard with cluster button if applicable
+                        cluster_id = self.db.get_cluster_for_news(news_id)
+                        cluster_info = None
+                        if cluster_id:
+                            cluster_info = self.db.get_cluster_info(cluster_id)
+                        
+                        buttons_row1 = [
+                            InlineKeyboardButton("✨ ИИ", callback_data=f"ai:{news_id}"),
+                            InlineKeyboardButton("✅ Отбор", callback_data=f"select:{news_id}")
+                        ]
+                        buttons_rows = [buttons_row1]
+                        
+                        if cluster_info and cluster_info['member_count'] > 1:
+                            source_count = cluster_info['member_count']
+                            suffix = "ов" if source_count > 4 else ("а" if source_count in (2, 3, 4) else "")
+                            buttons_rows.append([
+                                InlineKeyboardButton(
+                                    f"📰 +{source_count-1} источник{suffix}",
+                                    callback_data=f"cluster:{cluster_id}"
+                                )
+                            ])
+                        
+                        keyboard = InlineKeyboardMarkup(buttons_rows)
+                        
+                        await self.application.bot.send_message(
+                            chat_id=user_id,
+                            text=message,
+                            parse_mode=ParseMode.MARKDOWN,
+                            reply_markup=keyboard,
+                            disable_web_page_preview=True,
+                            disable_notification=True
+                        )
+                        
+                        news_ids_sent.append(news_id)
+                        self.db.update_last_delivered(user_id_str, news_id, env="prod")
+                    
+                    # Clear sent items from pending
+                    if news_ids_sent:
+                        cleared = self.db.clear_pending_digest(user_id_str, news_ids_sent)
+                        logger.info(f"Sent {len(news_ids_sent)} digest items to user {user_id}, cleared {cleared}")
+                        sent_count += len(news_ids_sent)
+                
+                except Exception as e:
+                    logger.error(f"Error sending {delivery_mode} digest to user {user_id_str}: {e}")
+            
+            logger.info(f"Completed {delivery_mode} digest: sent {sent_count} items total")
+        except Exception as e:
+            logger.error(f"Error in _send_digest_to_users: {e}", exc_info=True)
     
     async def _do_collect_and_publish(self) -> int:
         """
@@ -2331,12 +2883,19 @@ class NewsBot:
                 except Exception:
                     cache_hits_start = 0
             news_items = await self.collector.collect_all()
+            
+            # Send admin notifications for quarantined sources
+            if self.collector.quarantined_sources_this_tick:
+                await self._notify_admins_quarantine(self.collector.quarantined_sources_this_tick)
 
             app_env = get_app_env()
             global_category_filter = self._get_global_category_filter() if app_env == "sandbox" else None
             
             published_count = 0
             max_publications = 40  # Лимит публикаций за цикл (защита от rate limiting)
+            
+            # Track per-source statistics for quality metrics
+            source_stats = {}  # {source: {'total': int, 'new': int, 'duplicate': int}}
             
             # Кэш дубликатов в текущей сессии (защита от повторов в одном цикле)
             session_titles = set()  # normalized titles for duplicate detection
@@ -2347,6 +2906,13 @@ class NewsBot:
             
             # Публикуем каждую новость
             for news in news_items:
+                # Track per-source statistics
+                source = news.get('source', '')
+                if source:
+                    if source not in source_stats:
+                        source_stats[source] = {'total': 0, 'new': 0, 'duplicate': 0}
+                    source_stats[source]['total'] += 1
+                
                 # Stop may be toggled while processing a tick.
                 if get_global_collection_stop_state(app_env=get_app_env()).enabled:
                     logger.info({"event": "publish_aborted_global_stop"})
@@ -2406,6 +2972,8 @@ class NewsBot:
                 title = news.get('title', '')
                 normalized = re.sub(r'[^\w\s]', '', title.lower())
                 if normalized in session_titles:
+                    if source:
+                        source_stats[source]['duplicate'] += 1
                     logger.debug(f"Skipping duplicate in session: {title[:50]}")
                     continue
                 session_titles.add(normalized)
@@ -2433,15 +3001,29 @@ class NewsBot:
 
                 # Проверка дубликатов по URL hash / guid / URL canonical
                 if self.db.is_seen_guid_or_url_hash(news.get('guid'), url_hash):
+                    if source:
+                        source_stats[source]['duplicate'] += 1
                     logger.debug(f"Skipping duplicate guid/url_hash: {title[:50]}")
                     continue
                 if url_normalized and self.db.is_url_normalized_seen(url_normalized):
+                    if source:
+                        source_stats[source]['duplicate'] += 1
                     logger.debug(f"Skipping duplicate url_normalized: {title[:50]}")
                     continue
 
                 # Проверка дубликатов по checksum (контент) в окне 48 часов
                 if checksum and self.db.is_checksum_recent(checksum, hours=48):
+                    if source:
+                        source_stats[source]['duplicate'] += 1
                     logger.debug(f"Skipping duplicate checksum: {title[:50]}")
+                    continue
+
+                # Проверка дубликатов по content_hash (нормализованный title+text) в окне 48 часов
+                content_hash = news.get('content_hash') or ''
+                if content_hash and self.db.is_content_hash_recent(content_hash, hours=48):
+                    if source:
+                        source_stats[source]['duplicate'] += 1
+                    logger.debug(f"Skipping duplicate content_hash: {title[:50]}")
                     continue
 
                 # Проверка near-duplicate по simhash
@@ -2457,6 +3039,8 @@ class NewsBot:
                 
                 # Проверяем дубликат по заголовку в БД (защита от одной новости на разных источниках)
                 if self.db.is_similar_title_published(title, threshold=0.85):  # Increased threshold to 0.85
+                    if source:
+                        source_stats[source]['duplicate'] += 1
                     logger.debug(f"Skipping similar title: {title[:50]}")
                     continue
                 
@@ -2477,6 +3061,7 @@ class NewsBot:
                     raw_text=news.get('raw_text'),
                     clean_text=news.get('clean_text') or news.get('text', ''),
                     checksum=news.get('checksum'),
+                    content_hash=news.get('content_hash'),
                     language=news.get('language'),
                     domain=news.get('domain'),
                     extraction_method=news.get('extraction_method'),
@@ -2497,13 +3082,48 @@ class NewsBot:
                 )
 
                 if not news_id:
+                    if source:
+                        source_stats[source]['duplicate'] += 1
                     logger.debug(f"Skipping duplicate URL: {news.get('url')}")
                     continue
+
+                # Successfully added new item
+                if source:
+                    source_stats[source]['new'] += 1
 
                 if isinstance(news.get('simhash'), int):
                     recent_simhashes.insert(0, news['simhash'])
 
                 self.db.record_source_event(news.get('source', ''), "success")
+
+                # Event clustering: group similar news from different sources
+                cluster_id = None
+                if isinstance(news.get('simhash'), int):
+                    try:
+                        # Find similar clusters within 6-hour window (tighter threshold for clustering)
+                        similar_clusters = self.db.find_similar_clusters(
+                            news['simhash'], 
+                            hours=6, 
+                            hamming_threshold=3
+                        )
+                        
+                        if similar_clusters:
+                            # Add to existing cluster (use first match)
+                            cluster_id = similar_clusters[0]
+                            self.db.add_news_to_cluster(cluster_id, news_id)
+                            cluster_info = self.db.get_cluster_info(cluster_id)
+                            if cluster_info:
+                                logger.info(
+                                    f"Added news {news_id} to cluster {cluster_id} "
+                                    f"(now {cluster_info['member_count']} sources)"
+                                )
+                        else:
+                            # Create new cluster with this news as representative
+                            cluster_id = self.db.create_cluster(news_id)
+                            if cluster_id:
+                                logger.debug(f"Created new cluster {cluster_id} for news {news_id}")
+                    except Exception as e:
+                        logger.debug(f"Error in event clustering: {e}")
 
                 # Check if we need auto-summarization for lenta.ru and ria.ru (cleanup_level=5)
                 from core.services.access_control import AILevelManager
@@ -2587,13 +3207,29 @@ class NewsBot:
                     'hashtags_en': hashtags_en,
                 }
 
-                # Создаем кнопки: ИИ пересказ и Выбрать
-                keyboard = InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton("🤖 ИИ", callback_data=f"ai:{news_id}"),
-                        InlineKeyboardButton("📌 Выбрать", callback_data=f"select:{news_id}")
-                    ]
-                ])
+                # Получаем информацию о кластере (если новость в кластере)
+                cluster_info = None
+                if cluster_id:
+                    cluster_info = self.db.get_cluster_info(cluster_id)
+
+                # Создаем кнопки: ИИ пересказ, Выбрать, и опционально Источники
+                buttons_row1 = [
+                    InlineKeyboardButton("🤖 ИИ", callback_data=f"ai:{news_id}"),
+                    InlineKeyboardButton("📌 Выбрать", callback_data=f"select:{news_id}")
+                ]
+                
+                # Если в кластере больше 1 источника, добавляем кнопку "Источники"
+                buttons_rows = [buttons_row1]
+                if cluster_info and cluster_info['member_count'] > 1:
+                    source_count = cluster_info['member_count']
+                    buttons_rows.append([
+                        InlineKeyboardButton(
+                            f"📰 +{source_count - 1} источник{'ов' if source_count > 4 else ('а' if source_count <= 3 else 'ов')}", 
+                            callback_data=f"cluster:{cluster_id}"
+                        )
+                    ])
+                
+                keyboard = InlineKeyboardMarkup(buttons_rows)
 
                 try:
                     # ВРЕМЕННО ОТКЛЮЧЕНА: пересылка новостей в канал
@@ -2647,12 +3283,63 @@ class NewsBot:
                 "ai_cache_hits": cache_hits_tick,
                 "budget_state": budget_state,
             }
+            
+            # Record source quality statistics
+            for source_name, stats in source_stats.items():
+                if stats['total'] > 0:  # Only record if source had items
+                    self.db.update_source_quality_stats(
+                        source_name,
+                        stats['total'],
+                        stats['new'],
+                        stats['duplicate']
+                    )
+            
             logger.info("TICK_STATS %s", json.dumps(tick_log, ensure_ascii=True))
             return published_count
         
         except Exception as e:
             logger.error(f"Error in collect_and_publish: {e}")
             return 0
+    
+    async def _notify_admins_quarantine(self, quarantined: list):
+        """Send notifications to admins about quarantined sources."""
+        if not quarantined:
+            return
+        
+        try:
+            # Build notification message
+            message_lines = ["🔴 ИСТОЧНИКИ В КАРАНТИНЕ\n"]
+            for info in quarantined:
+                source = info.get('source', 'Unknown')
+                reason = info.get('reason', 'unknown')
+                error_streak = info.get('error_streak', 0)
+                error_code = info.get('last_error_code', 'N/A')
+                
+                message_lines.append(
+                    f"📰 {source}\n"
+                    f"   Причина: {reason}\n"
+                    f"   Ошибок подряд: {error_streak}\n"
+                    f"   Код ошибки: {error_code}\n"
+                )
+            
+            message_lines.append("\nИсточники автоматически отключены. Используйте /admin → Источники для восстановления.")
+            message = "\n".join(message_lines)
+            
+            # Send to all admins
+            for admin_id in self.admin_ids:
+                try:
+                    await self.application.bot.send_message(
+                        chat_id=admin_id,
+                        text=message,
+                        disable_notification=False  # Important notification
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin_id} about quarantine: {e}")
+            
+            logger.info(f"Sent quarantine notifications for {len(quarantined)} sources to {len(self.admin_ids)} admins")
+        
+        except Exception as e:
+            logger.error(f"Error sending quarantine notifications: {e}")
     
     def _get_category_emoji(self, category: str) -> str:
         """Возвращает категорию с эмодзи и хештегом"""
@@ -2719,7 +3406,7 @@ class NewsBot:
         }
         emoji = emoji_map.get(category, '🗞')
         base_tag = self._get_category_tag(category, language)
-        tags = f"{base_tag} {extra_tags}".strip() if extra_tags else base_tag
+        tags = extra_tags.strip() if extra_tags else base_tag
         return f"{emoji} {tags}".strip()
 
     async def _generate_hashtags_snapshot(self, news: dict) -> tuple[str, str]:
@@ -2758,7 +3445,7 @@ class NewsBot:
     
     async def run_periodic_collection(self):
         """Запускает периодический сбор новостей"""
-        from core.services.global_stop import get_global_stop
+        from core.services.global_stop import get_global_stop, wait_global_stop, wait_for_resume
         
         logger.info("Starting periodic news collection")
         
@@ -2766,13 +3453,43 @@ class NewsBot:
             try:
                 # Проверяем глобальный стоп
                 if get_global_stop():
-                    logger.debug("Global stop is ON, skipping collection cycle")
-                    await asyncio.sleep(5)  # Проверяем стоп каждые 5 сек
-                elif not self.is_paused:
-                    await self.collect_and_publish()
-                
+                    logger.info("⏸️  Global stop activated - waiting for resume signal...")
+                    await wait_for_resume()
+                    logger.info("⏯️  Resuming collection after signal")
+                    continue
+
+                if self.is_paused:
+                    try:
+                        await asyncio.wait_for(wait_global_stop(), timeout=CHECK_INTERVAL_SECONDS)
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+
+                collection_task = asyncio.create_task(self.collect_and_publish())
+                stop_task = asyncio.create_task(wait_global_stop())
+                done, pending = await asyncio.wait(
+                    {collection_task, stop_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if stop_task in done:
+                    logger.info("⏹️  Global stop during collection - cancelling in-flight work")
+                    collection_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await collection_task
+                    await wait_for_resume()
+                    continue
+
+                stop_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await stop_task
+
                 # Ждем перед следующей проверкой
-                await asyncio.sleep(CHECK_INTERVAL_SECONDS)
+                # (Если стоп активируется, wait_global_stop() сработает мгновенно)
+                try:
+                    await asyncio.wait_for(wait_global_stop(), timeout=CHECK_INTERVAL_SECONDS)
+                except asyncio.TimeoutError:
+                    pass
             
             except Exception as e:
                 logger.error(f"Error in periodic collection: {e}")
@@ -2799,14 +3516,25 @@ class NewsBot:
         # Инициализируем админов в БД (при первом запуске)
         self._init_admins_access()
         
+        # Инициализируем asyncio.Event для глобального стопа (мгновенная отмена задач)
+        from core.services.global_stop import init_global_stop_event
+        await init_global_stop_event()
+        logger.info("Global stop event initialized (tasks will respond immediately to stop signal)")
+        
         # Создаем приложение
         self.create_application()
         
         # Запускаем периодический сбор в фоне (только в prod)
         collection_task = None
+        tier_adjustment_task = None
+        hourly_digest_task = None
+        morning_digest_task = None
         from config.config import APP_ENV
         if APP_ENV == "prod":
             collection_task = asyncio.create_task(self.run_periodic_collection())
+            tier_adjustment_task = asyncio.create_task(self.run_tier_adjustment())
+            hourly_digest_task = asyncio.create_task(self.run_hourly_digest())
+            morning_digest_task = asyncio.create_task(self.run_morning_digest())
         mgmt_runner = None
         
         # Запускаем приложение
@@ -2818,19 +3546,34 @@ class NewsBot:
         except (ImportError, ValueError):
             from config.config import TG_MODE, WEBHOOK_BASE_URL, WEBHOOK_PATH, WEBHOOK_SECRET, PORT
 
-        if TG_MODE == "webhook":
+        tg_mode = (TG_MODE or "").strip().lower()
+        if tg_mode in ("", "auto", "autodetect"):
+            tg_mode = "webhook" if WEBHOOK_BASE_URL else "polling"
+        elif tg_mode not in {"webhook", "polling"}:
+            logger.warning(f"Unknown TG_MODE '{TG_MODE}', auto-detecting mode")
+            tg_mode = "webhook" if WEBHOOK_BASE_URL else "polling"
+
+        if tg_mode == "webhook":
             if not WEBHOOK_BASE_URL:
-                raise ValueError("WEBHOOK_BASE_URL is required for TG_MODE=webhook")
-            webhook_url = WEBHOOK_BASE_URL.rstrip('/') + WEBHOOK_PATH
-            await self.application.updater.start_webhook(
-                listen="0.0.0.0",
-                port=PORT,
-                url_path=WEBHOOK_PATH.lstrip('/'),
-                webhook_url=webhook_url,
-                secret_token=WEBHOOK_SECRET,
-            )
-            logger.info(f"Bot started with webhook: {webhook_url}")
-        else:
+                logger.warning("WEBHOOK_BASE_URL missing for webhook mode, falling back to polling")
+                tg_mode = "polling"
+            else:
+                webhook_url = WEBHOOK_BASE_URL.rstrip('/') + WEBHOOK_PATH
+                await self.application.updater.start_webhook(
+                    listen="0.0.0.0",
+                    port=PORT,
+                    url_path=WEBHOOK_PATH.lstrip('/'),
+                    webhook_url=webhook_url,
+                    secret_token=WEBHOOK_SECRET,
+                )
+                logger.info(f"Bot started with webhook: {webhook_url}")
+
+        if tg_mode == "polling":
+            try:
+                await self.application.bot.delete_webhook(drop_pending_updates=False)
+                logger.info("Deleted webhook before polling")
+            except Exception as e:
+                logger.warning(f"Failed to delete webhook before polling: {e}")
             await self.application.updater.start_polling()
             logger.info("Bot started with polling")
 
@@ -3504,15 +4247,7 @@ class NewsBot:
 
     async def cmd_management_inline(self, query):
         """Show main management menu via inline query"""
-        keyboard = [
-            [InlineKeyboardButton("📊 Статус системы", callback_data="mgmt:status")],
-            [InlineKeyboardButton("🤖 Управление AI", callback_data="mgmt:ai")],
-            [InlineKeyboardButton("📰 Источники данных", callback_data="mgmt:sources")],
-            [InlineKeyboardButton("📈 Статистика", callback_data="mgmt:stats")],
-            [InlineKeyboardButton("⚙ Настройки", callback_data="mgmt:settings")],
-            [InlineKeyboardButton("👥 Пользователи и инвайты", callback_data="mgmt:users")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = self._build_sandbox_admin_keyboard()
         await query.edit_message_text(
             text="🛠 Управление ботом\n\nВыберите раздел:",
             reply_markup=reply_markup
@@ -3543,8 +4278,10 @@ class NewsBot:
             
             # Build keyboard with toggle global stop button
             keyboard = [
-                [InlineKeyboardButton("🔴 Остановить сервис" if not is_stopped else "🟢 Запустить сервис", 
-                                    callback_data="mgmt:toggle_global_stop")],
+                [InlineKeyboardButton(
+                    "⛔ ОСТАНОВИТЬ ВСЮ СИСТЕМУ" if not is_stopped else "✅ ВОЗОБНОВИТЬ ВСЮ СИСТЕМУ",
+                    callback_data="mgmt:toggle_global_stop",
+                )],
                 [InlineKeyboardButton("⬅️ Назад в меню", callback_data="mgmt:main")],
             ]
             
@@ -3577,24 +4314,194 @@ class NewsBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text=text, reply_markup=reply_markup)
 
-    async def _show_admin_sources_panel(self, query):
-        """📰 Sources management panel"""
-        all_enabled = True  # Placeholder - check actual status
+    async def _show_admin_sources_panel(self, query, page: int = 0):
+        """📰 Sources management panel with paginated list"""
+        sources = self.db.list_sources()
+        if not sources:
+            await query.edit_message_text(
+                text="📰 Нет источников в базе данных",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Назад в меню", callback_data="mgmt:main")]
+                ])
+            )
+            return
         
+        # Sort by quality_score DESC
+        sources_with_quality = []
+        for src in sources:
+            quality = self.db.get_source_quality(src['code']) or {}
+            quality_score = quality.get('quality_score', 0.0)
+            error_streak = quality.get('error_streak', 0)
+            last_success = quality.get('last_success_at', 'никогда')
+            tier = self.db.get_source_tier(src['code'])
+            sources_with_quality.append({
+                **src,
+                'quality_score': quality_score,
+                'error_streak': error_streak,
+                'last_success': last_success,
+                'tier': tier
+            })
+        
+        sources_with_quality.sort(key=lambda x: x['quality_score'], reverse=True)
+        
+        # Pagination
+        per_page = 8
+        total_pages = (len(sources_with_quality) + per_page - 1) // per_page
+        page = max(0, min(page, total_pages - 1))
+        start_idx = page * per_page
+        end_idx = min(start_idx + per_page, len(sources_with_quality))
+        page_sources = sources_with_quality[start_idx:end_idx]
+        
+        # Build message
+        text_lines = [
+            f"📰 ИСТОЧНИКИ ({len(sources)} всего)\n",
+            f"Страница {page + 1}/{total_pages}\n"
+        ]
+        
+        keyboard = []
+        
+        for src in page_sources:
+            # Status indicator
+            if src.get('enabled_global'):
+                if src['error_streak'] >= 5:
+                    status = "🔴"  # Enabled but failing
+                elif src['error_streak'] > 0:
+                    status = "🟡"  # Enabled with some errors
+                else:
+                    status = "🟢"  # OK
+            else:
+                status = "⚫"  # Disabled
+            
+            # Format source line
+            name = src['name'][:20] if len(src['name']) > 20 else src['name']
+            tier = src.get('tier', 'B')
+            score = src.get('quality_score', 0.0)
+            
+            button_text = f"{status} {name} [{'A' if tier=='A' else 'B' if tier=='B' else 'C'}] {score:.2f}"
+            keyboard.append([InlineKeyboardButton(
+                button_text,
+                callback_data=f"mgmt:source:detail:{src['code']}"
+            )])
+        
+        # Pagination buttons
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"mgmt:sources:page:{page-1}"))
+        nav_buttons.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"mgmt:sources:page:{page+1}"))
+        keyboard.append(nav_buttons)
+        
+        # Action buttons
+        keyboard.append([
+            InlineKeyboardButton("🔍 Тест всех", callback_data="mgmt:sources:test_all"),
+            InlineKeyboardButton("🔄 Авто-тюнинг", callback_data="mgmt:sources:auto_tune")
+        ])
+        keyboard.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data="mgmt:main")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        text = "\n".join(text_lines) + "\n\nЛегенда:\n🟢 OK | 🟡 Ошибки | 🔴 Много ошибок | ⚫ Выключен\n[A/B/C] = tier"
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+
+    async def _show_source_detail(self, query, source_code: str):
+        """Show detailed information about a source with action buttons."""
+        # Get source info
+        sources = self.db.list_sources()
+        source = next((s for s in sources if s['code'] == source_code), None)
+        if not source:
+            await query.answer("❌ Источник не найден", show_alert=True)
+            return
+        
+        # Check if quarantined
+        is_quarantined = self.db.is_source_quarantined(source_code)
+        quarantine_at = source.get('quarantined_at')
+        quarantine_reason = source.get('quarantine_reason', 'unknown')
+        
+        # Get quality metrics
+        quality = self.db.get_source_quality(source_code) or {}
+        quality_score = quality.get('quality_score', 0.0)
+        success_count = quality.get('success_count', 0)
+        error_count = quality.get('error_count', 0)
+        error_streak = quality.get('error_streak', 0)
+        items_total = quality.get('items_total', 0)
+        items_new = quality.get('items_new', 0)
+        items_duplicate = quality.get('items_duplicate', 0)
+        last_success = quality.get('last_success_at', 'никогда')
+        last_error = quality.get('last_error_at', 'нет')
+        last_error_code = quality.get('last_error_code', '-')
+        
+        # Get tier
+        tier = self.db.get_source_tier(source_code)
+        tier_params = self.db.get_tier_params(tier)
+        
+        # Status indicator
+        if is_quarantined:
+            status = "🔴 В КАРАНТИНЕ"
+        elif source.get('enabled_global'):
+            if error_streak >= 5:
+                status = "🔴 Активен (много ошибок)"
+            elif error_streak > 0:
+                status = "🟡 Активен (есть ошибки)"
+            else:
+                status = "🟢 Активен"
+        else:
+            status = "⚫ Отключен"
+        
+        # Format message
         text = (
-            "📰 УПРАВЛЕНИЕ ИСТОЧНИКАМИ\n\n"
-            "Активные источники: 5\n"
-            "Последнее обновление: сейчас\n"
-            "Ошибок: 0\n\n"
-            "Действия:"
+            f"📰 {source['name']}\n\n"
+            f"Код: {source_code}\n"
+            f"Статус: {status}\n"
+            f"Tier: {tier} (интервал: {tier_params['min_interval_seconds']//60} мин, "
+            f"лимит: {tier_params.get('max_items_per_fetch', 'нет')})\n\n"
         )
         
-        keyboard = [
-            [InlineKeyboardButton("✅ Включить все" if not all_enabled else "❌ Отключить все", 
-                                callback_data="mgmt:sources:toggle_all")],
-            [InlineKeyboardButton("🔍 Переоценить сейчас", callback_data="mgmt:sources:rescan")],
-            [InlineKeyboardButton("⬅️ Назад в меню", callback_data="mgmt:main")],
-        ]
+        # Add quarantine info if quarantined
+        if is_quarantined:
+            text += (
+                f"⚠️ КАРАНТИН:\n"
+                f"   Причина: {quarantine_reason}\n"
+                f"   С: {quarantine_at or 'N/A'}\n\n"
+            )
+        
+        text += (
+            f"📊 Качество: {quality_score:.3f}\n"
+            f"✅ Успехов: {success_count}\n"
+            f"❌ Ошибок: {error_count} (streak: {error_streak})\n\n"
+            f"📈 Статистика:\n"
+            f"  Всего получено: {items_total}\n"
+            f"  Новых: {items_new}\n"
+            f"  Дубликатов: {items_duplicate}\n\n"
+            f"🕐 Последний успех: {last_success}\n"
+            f"❗ Последняя ошибка: {last_error}\n"
+            f"   Код ошибки: {last_error_code}"
+        )
+        
+        # Build keyboard
+        keyboard = []
+        
+        # If quarantined, show restore button
+        if is_quarantined:
+            keyboard.append([InlineKeyboardButton("🔓 Восстановить", callback_data=f"mgmt:source:restore:{source_code}")])
+        else:
+            # Toggle enable/disable
+            toggle_text = "⛔ Отключить" if source.get('enabled_global') else "✅ Включить"
+            keyboard.append([InlineKeyboardButton(toggle_text, callback_data=f"mgmt:source:toggle:{source_code}")])
+        
+        # Tier change buttons
+        tier_buttons = []
+        for t in ['A', 'B', 'C']:
+            if t == tier:
+                tier_buttons.append(InlineKeyboardButton(f"[{t}]", callback_data="noop"))
+            else:
+                tier_buttons.append(InlineKeyboardButton(f"{t}", callback_data=f"mgmt:source:tier:{source_code}:{t}"))
+        keyboard.append(tier_buttons)
+        
+        # Test fetch button
+        keyboard.append([InlineKeyboardButton("🧪 Тест сбора", callback_data=f"mgmt:source:test:{source_code}")])
+        
+        # Back button
+        keyboard.append([InlineKeyboardButton("⬅️ К списку", callback_data="mgmt:sources")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text=text, reply_markup=reply_markup)
@@ -3621,6 +4528,36 @@ class NewsBot:
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text=text, reply_markup=reply_markup)
+
+    async def _show_admin_diagnostics_panel(self, query):
+        """🧰 Diagnostics panel"""
+        from core.services.global_stop import is_redis_available, get_global_stop
+        try:
+            try:
+                from config.railway_config import RSSHUB_BASE_URL
+            except (ImportError, ValueError):
+                from config.config import RSSHUB_BASE_URL
+
+            redis_ok = is_redis_available()
+            global_stop = get_global_stop()
+            rsshub_url = RSSHUB_BASE_URL or "-"
+
+            text = (
+                "🧰 ДИАГНОСТИКА\n\n"
+                f"🔴 Redis: {'✅ OK' if redis_ok else '⚠️ Fallback (SQLite)'}\n"
+                f"⛔ Global stop: {'ON' if global_stop else 'OFF'}\n"
+                f"🗄️ DB: {self.db.db_path}\n"
+                f"🛰 RSSHub: {rsshub_url}\n"
+            )
+
+            keyboard = [
+                [InlineKeyboardButton("⬅️ Назад в меню", callback_data="mgmt:main")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(text=text, reply_markup=reply_markup)
+        except Exception as e:
+            logger.error(f"Diagnostics panel error: {e}")
+            await query.answer("❌ Ошибка диагностики", show_alert=True)
 
     async def _show_admin_settings_panel(self, query):
         """⚙ Settings panel"""

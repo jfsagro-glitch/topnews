@@ -81,7 +81,7 @@ INVITE_SECRET = env_str('INVITE_SECRET', None)
 # Интервалы
 CHECK_INTERVAL_SECONDS = env_int('CHECK_INTERVAL_SECONDS', 300)  # 5 минут для оптимизации Railway
 TIMEOUT_SECONDS = env_int('TIMEOUT_SECONDS', 30)
-SOURCE_COLLECT_TIMEOUT_SECONDS = env_int('SOURCE_COLLECT_TIMEOUT_SECONDS', 60)
+SOURCE_COLLECT_TIMEOUT_SECONDS = env_int('SOURCE_COLLECT_TIMEOUT_SECONDS', 120)  # Увеличен для медленных источников
 SOURCE_ERROR_STREAK_LIMIT = env_int('SOURCE_ERROR_STREAK_LIMIT', 3)
 SOURCE_ERROR_STREAK_WINDOW_SECONDS = env_int('SOURCE_ERROR_STREAK_WINDOW_SECONDS', 600)
 SOURCE_ERROR_COOLDOWN_SECONDS = env_int('SOURCE_ERROR_COOLDOWN_SECONDS', 900)
@@ -157,6 +157,12 @@ LOG_FILE = env_str('LOG_FILE', f"logs/bot_{APP_ENV}.log")
 RSSHUB_BASE_URL = env_str('RSSHUB_BASE_URL', 'https://rsshub-production-a367.up.railway.app')
 _RSSHUB_MIRROR_RAW = env_str('RSSHUB_MIRROR_URLS', 'https://rsshub.railway.internal')
 RSSHUB_MIRROR_URLS = [url.strip() for url in (_RSSHUB_MIRROR_RAW or '').split(',') if url.strip()]
+RSSHUB_MIN_INTERVAL_SECONDS = env_int('RSSHUB_MIN_INTERVAL_SECONDS', 900)
+RSS_MIN_INTERVAL_SECONDS = env_int('RSS_MIN_INTERVAL_SECONDS', 120)  # 2 min - allow multiple fetches within 5-min check interval
+RSSHUB_CONCURRENCY = env_int('RSSHUB_CONCURRENCY', 2)
+RSSHUB_SOURCE_COOLDOWN_SECONDS = env_int('RSSHUB_SOURCE_COOLDOWN_SECONDS', 600)
+RSSHUB_DISABLED_CHANNELS = env_str('RSSHUB_DISABLED_CHANNELS', 'rian_ru') or ''
+RSSHUB_TELEGRAM_ENABLED = env_bool('RSSHUB_TELEGRAM_ENABLED', True)
 
 # Категории
 CATEGORIES = {
@@ -164,6 +170,9 @@ CATEGORIES = {
     'russia': '#Россия',
     'moscow': '#Москва',
     'moscow_region': '#Подмосковье',
+    'tech': '#Технологии',
+    'crypto': '#Криптовалюты',
+    'finance': '#Финансы',
 }
 
 # Источники по категориям
@@ -185,6 +194,7 @@ SOURCES_CONFIG = {
     },
     'yahoo_world_extended': {
         'category': 'world',
+        'max_items_per_fetch': 20,
         'sources': [
             'https://news.yahoo.com/rss/world',
             'https://news.yahoo.com/rss/world/europe',
@@ -206,8 +216,48 @@ SOURCES_CONFIG = {
             'https://news.yahoo.com/rss/health',
         ]
     },
+    'world_premium': {
+        'category': 'world',
+        'max_items_per_fetch': 15,
+        'timeout': 8,
+        'retry': 2,
+        'sources': [
+            # Reuters and AP News removed - require authentication or unavailable
+            'https://www.ft.com/rss/world',
+            'https://www.politico.eu/feed/',
+            'https://www.theguardian.com/world/rss',  # Added as replacement
+        ]
+    },
+    'tech_ai_crypto': {
+        'category': 'tech',
+        'max_items_per_fetch': 10,
+        'timeout': 8,
+        'retry': 2,
+        'ai_hashtags_level': 2,
+        'enable_entity_extraction': True,
+        'priority_keywords': ['OpenAI', 'Ethereum', 'Tesla', 'Bitcoin', 'AI', 'ChatGPT', 'cryptocurrency'],
+        'sources': [
+            'https://techcrunch.com/feed/',
+            'https://www.theverge.com/rss/index.xml',
+            'https://www.coindesk.com/arc/outboundfeeds/rss/',
+            'https://www.wired.com/feed/rss',
+        ]
+    },
+    'finance_markets': {
+        'category': 'finance',
+        'max_items_per_fetch': 8,
+        'timeout': 8,
+        'retry': 2,
+        'ai_summary_min_chars': 600,
+        'summary_only': True,
+        'sources': [
+            'https://www.investing.com/rss/news.rss',
+            'https://www.marketwatch.com/rss/topstories',
+        ]
+    },
     'russia': {
         'category': 'russia',
+        'strong_markers': ['Москва', 'Кремль', 'ЦБ РФ', 'Госдума', 'Президент России', 'Правительство РФ', 'Минфин', 'МИД России'],
         'sources': [
             'https://ria.ru/',
             'https://lenta.ru/',
@@ -220,6 +270,7 @@ SOURCES_CONFIG = {
             'https://www.rbc.ru/v10/static/rss/rbc_news.rss',
             'https://rss.kommersant.ru/K40/',
             'https://www.interfax.ru/rss',
+            'https://meduza.io/rss/all',
         ]
     },
     'telegram': {
@@ -229,6 +280,18 @@ SOURCES_CONFIG = {
             'https://t.me/bazabazon',
             'https://t.me/shot_shot',
             'https://t.me/mod_russia',
+        ]
+    },
+    'twitter_rsshub': {
+        'category': 'world',
+        'src_type': 'rsshub',
+        'min_likes': 300,
+        'min_retweets': 100,
+        'ignore_replies': True,
+        'sources': [
+            '/twitter/user/elonmusk',
+            '/twitter/user/durov',
+            '/twitter/user/realDonaldTrump',
         ]
     },
     'moscow_region': {

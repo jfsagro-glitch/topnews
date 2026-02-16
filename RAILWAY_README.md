@@ -142,6 +142,10 @@ LOG_LEVEL=INFO
 # Путь к БД (по умолч. db/news.db, для Railway используйте /persist/news.db)
 DATABASE_PATH=/persist/news.db
 
+# Redis для глобального стопа между prod/sandbox
+# ВАЖНО: задайте REDIS_URL как Shared Variable и подключите к обоим сервисам
+REDIS_URL=redis://:password@host:6379/0
+
 # Прокси (если требуется)
 USE_PROXY=False
 PROXY_URL=http://proxy.example.com:8080

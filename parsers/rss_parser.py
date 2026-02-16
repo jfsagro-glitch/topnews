@@ -9,6 +9,7 @@ from datetime import datetime
 from net.http_client import get_http_client
 from utils.lead_extractor import extract_lead_from_rss, extract_lead_from_html
 from utils.date_parser import parse_datetime_value, split_date_time
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -20,12 +21,15 @@ class RSSParser:
         self.timeout = timeout
         self.db = db  # Optional database for conditional GET state
     
-    async def parse(self, url: str, source_name: str) -> List[Dict]:
+    async def parse(self, url: str, source_name: str, max_items: int = 10) -> List[Dict]:
         """
         Парсит RSS фид и возвращает новости
         Использует conditional GET (ETag/Last-Modified) если доступно
         """
         news_items = []
+        
+        # Yahoo RSS has no descriptions and redirects to consent page - use title as text
+        is_yahoo = source_name in ('news.yahoo.com', 'rss.news.yahoo.com')
         
         try:
             http_client = await get_http_client()
@@ -55,7 +59,11 @@ class RSSParser:
             # Check for error status codes
             if response.status_code != 200:
                 logger.error(f"RSS {url} returned status {response.status_code}")
-                return news_items
+                raise httpx.HTTPStatusError(
+                    f"HTTP {response.status_code}",
+                    request=response.request,
+                    response=response,
+                )
             
             # Store new ETag and Last-Modified for next request
             if self.db:
@@ -74,7 +82,7 @@ class RSSParser:
                 return news_items
             
             # Обрабатываем каждую запись
-            for entry in feed.entries[:10]:  # Берём до 10 последних
+            for entry in feed.entries[:max_items]:  # Берём до max_items последних
                 lead = extract_lead_from_rss(entry, max_len=800)
                 published_info = self._parse_date_info(entry)
                 published_at = published_info.get('published_at')
@@ -97,9 +105,13 @@ class RSSParser:
                 }
                 
                 if news_item['url']:  # Только если есть ссылка
+                    # Yahoo RSS has no description and redirects to consent page - use title
+                    if is_yahoo and not news_item.get('text'):
+                        news_item['text'] = news_item['title']
+                        logger.debug(f"Yahoo source: using title as text")
                     # Если в RSS нет текста или он слишком короткий — пробуем получить абзац со страницы
                     # For sources like ria.ru that don't provide text in RSS, always fetch
-                    if not news_item.get('text') or len(news_item['text']) < 60:
+                    elif not news_item.get('text') or len(news_item['text']) < 60:
                         logger.debug(f"Text too short or missing ({len(news_item.get('text', ''))} chars), fetching from page...")
                         preview = await self._fetch_article_preview(news_item['url'])
                         if preview:

@@ -56,6 +56,7 @@ class NewsDatabase:
                     raw_text TEXT,
                     clean_text TEXT,
                     checksum TEXT,
+                    content_hash TEXT,
                     language TEXT,
                     domain TEXT,
                     extraction_method TEXT,
@@ -217,6 +218,44 @@ class NewsDatabase:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+
+            # Table for per-source quality metrics (for auto-tuning)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS source_quality (
+                    source TEXT PRIMARY KEY,
+                    success_count INTEGER NOT NULL DEFAULT 0,
+                    error_count INTEGER NOT NULL DEFAULT 0,
+                    items_total INTEGER NOT NULL DEFAULT 0,
+                    items_new INTEGER NOT NULL DEFAULT 0,
+                    items_duplicate INTEGER NOT NULL DEFAULT 0,
+                    quality_score REAL NOT NULL DEFAULT 0.0,
+                    last_error_code TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Table for per-source fetch scheduling (RSS/RSSHub throttling)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS source_fetch_state (
+                    url TEXT PRIMARY KEY,
+                    source_name TEXT,
+                    next_fetch_at REAL,
+                    last_fetch_at REAL,
+                    last_status TEXT,
+                    error_streak INTEGER DEFAULT 0,
+                    last_error_code TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # System settings (shared: global stop, RSSHub toggles)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS system_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_source_events_source_time
                 ON source_events(source, created_at)
@@ -257,6 +296,35 @@ class NewsDatabase:
                 )
             ''')
 
+            # Tables for event clustering (group same story from multiple sources)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS news_clusters (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    representative_news_id INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    member_count INTEGER DEFAULT 1,
+                    FOREIGN KEY (representative_news_id) REFERENCES published_news(id) ON DELETE CASCADE
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_news_clusters_created ON news_clusters(created_at)
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS news_cluster_members (
+                    cluster_id INTEGER NOT NULL,
+                    news_id INTEGER NOT NULL,
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (cluster_id, news_id),
+                    FOREIGN KEY (cluster_id) REFERENCES news_clusters(id) ON DELETE CASCADE,
+                    FOREIGN KEY (news_id) REFERENCES published_news(id) ON DELETE CASCADE
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_cluster_members_news ON news_cluster_members(news_id)
+            ''')
+
             # Table for approved users (who have access to prod bot)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS approved_users (
@@ -282,6 +350,7 @@ class NewsDatabase:
                     translate_enabled INTEGER DEFAULT 0,
                     translate_lang TEXT DEFAULT 'ru',
                     category_filter TEXT,
+                    delivery_mode TEXT DEFAULT 'realtime',
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -294,6 +363,25 @@ class NewsDatabase:
                     delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (user_id, news_id)
                 )
+            ''')
+
+            # Table for pending digest items (buffered news for hourly/morning delivery)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS pending_digests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    news_id INTEGER NOT NULL,
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    delivery_mode TEXT NOT NULL,
+                    FOREIGN KEY (news_id) REFERENCES published_news(id),
+                    UNIQUE(user_id, news_id)
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_pending_digests_user ON pending_digests(user_id)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_pending_digests_added ON pending_digests(added_at)
             ''')
 
             # Table for cached translations (by news_id + checksum + target language)
@@ -361,6 +449,7 @@ class NewsDatabase:
                 raw_text TEXT,
                 clean_text TEXT,
                 checksum TEXT,
+                content_hash TEXT,
                 language TEXT,
                 domain TEXT,
                 extraction_method TEXT,
@@ -432,6 +521,7 @@ class NewsDatabase:
                 'raw_text': 'TEXT',
                 'clean_text': 'TEXT',
                 'checksum': 'TEXT',
+                'content_hash': 'TEXT',
                 'language': 'TEXT',
                 'domain': 'TEXT',
                 'extraction_method': 'TEXT',
@@ -470,6 +560,7 @@ class NewsDatabase:
                 'translate_lang': "TEXT DEFAULT 'ru'",
                 'env': "TEXT DEFAULT 'prod'",
                 'category_filter': 'TEXT',
+                'delivery_mode': "TEXT DEFAULT 'realtime'",
             }
             for column, col_type in required.items():
                 if column not in existing:
@@ -509,6 +600,36 @@ class NewsDatabase:
         except Exception as e:
             logger.debug(f"Error ensuring approved_users columns: {e}")
 
+        try:
+            cursor.execute("PRAGMA table_info(sources)")
+            existing = {row[1] for row in cursor.fetchall()}
+            required = {
+                'tier': "TEXT DEFAULT 'B'",
+                'min_interval_seconds': 'INTEGER',
+                'max_items_per_fetch': 'INTEGER',
+                'quarantined_at': 'TIMESTAMP',
+                'quarantine_reason': 'TEXT',
+            }
+            for column, col_type in required.items():
+                if column not in existing:
+                    cursor.execute(f"ALTER TABLE sources ADD COLUMN {column} {col_type}")
+        except Exception as e:
+            logger.debug(f"Error ensuring sources columns: {e}")
+
+        try:
+            cursor.execute("PRAGMA table_info(source_quality)")
+            existing = {row[1] for row in cursor.fetchall()}
+            required = {
+                'error_streak': 'INTEGER DEFAULT 0',
+                'last_success_at': 'TIMESTAMP',
+                'last_error_at': 'TIMESTAMP',
+            }
+            for column, col_type in required.items():
+                if column not in existing:
+                    cursor.execute(f"ALTER TABLE source_quality ADD COLUMN {column} {col_type}")
+        except Exception as e:
+            logger.debug(f"Error ensuring source_quality columns: {e}")
+
     def _ensure_indexes(self, cursor):
         """Ensure indexes exist after columns are added."""
         try:
@@ -527,6 +648,9 @@ class NewsDatabase:
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_checksum ON published_news(checksum)
             ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_content_hash ON published_news(content_hash)
+            ''')
         except Exception as e:
             logger.debug(f"Error ensuring indexes: {e}")
     
@@ -540,6 +664,7 @@ class NewsDatabase:
         raw_text: str | None = None,
         clean_text: str | None = None,
         checksum: str | None = None,
+        content_hash: str | None = None,
         language: str | None = None,
         domain: str | None = None,
         extraction_method: str | None = None,
@@ -564,6 +689,10 @@ class NewsDatabase:
         """
         if published_at is None:
             published_at = datetime.now(timezone.utc).isoformat()
+        if isinstance(simhash, int):
+            # SQLite INTEGER is signed 64-bit; normalize unsigned 64-bit simhash
+            if simhash > 0x7FFFFFFFFFFFFFFF:
+                simhash = simhash - (1 << 64)
         # Retry loop to handle transient "database is locked" errors
         attempts = 3
         for attempt in range(1, attempts + 1):
@@ -573,16 +702,16 @@ class NewsDatabase:
                     cursor.execute('''
                         INSERT INTO published_news (
                             url, title, source, category, lead_text,
-                            raw_text, clean_text, checksum, language, domain,
+                            raw_text, clean_text, checksum, content_hash, language, domain,
                             extraction_method, published_at, published_date,
                             published_time, published_confidence, published_source,
                             fetched_at, first_seen_at, url_hash, url_normalized, guid, simhash,
                             quality_score, hashtags_ru, hashtags_en
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         url, title, source, category, lead_text,
-                        raw_text, clean_text, checksum, language, domain,
+                        raw_text, clean_text, checksum, content_hash, language, domain,
                         extraction_method, published_at, published_date,
                         published_time, published_confidence, published_source,
                         fetched_at, first_seen_at, url_hash, url_normalized, guid, simhash,
@@ -692,6 +821,24 @@ class NewsDatabase:
             logger.error(f"Error checking checksum: {e}")
             return False
 
+    def is_content_hash_recent(self, content_hash: str | None, hours: int = 48) -> bool:
+        if not content_hash:
+            return False
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT 1 FROM published_news
+                WHERE content_hash = ? AND published_at > datetime('now', '-{int(hours)} hour')
+                LIMIT 1
+                """,
+                (content_hash,)
+            )
+            return cursor.fetchone() is not None
+        except Exception as e:
+            logger.error(f"Error checking content_hash: {e}")
+            return False
+
     def get_recent_simhashes(self, hours: int = 48, limit: int = 1000) -> List[int]:
         try:
             cursor = self._conn.cursor()
@@ -704,7 +851,16 @@ class NewsDatabase:
                 """,
                 (limit,)
             )
-            return [row[0] for row in cursor.fetchall() if row and row[0] is not None]
+            results = []
+            for row in cursor.fetchall():
+                if not row or row[0] is None:
+                    continue
+                value = int(row[0])
+                # Convert signed 64-bit back to unsigned for simhash comparisons
+                if value < 0:
+                    value = value + (1 << 64)
+                results.append(value)
+            return results
         except Exception as e:
             logger.error(f"Error fetching simhashes: {e}")
             return []
@@ -929,6 +1085,725 @@ class NewsDatabase:
         except Exception as e:
             logger.debug(f"Error recording source event for {source}: {e}")
 
+    def update_source_quality_fetch(self, source: str, ok: bool, error_code: str | None = None) -> dict | None:
+        """
+        Update source quality metrics after fetch attempt.
+        
+        Args:
+            source: Source code
+            ok: Whether fetch was successful
+            error_code: Error code if fetch failed
+        
+        Returns:
+            Dict with quarantine info if source was quarantined, None otherwise
+        """
+        if not source:
+            return None
+        
+        quarantine_info = None
+        
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                
+                # Get current error_streak
+                cursor.execute("SELECT error_streak FROM source_quality WHERE source = ?", (source,))
+                row = cursor.fetchone()
+                current_streak = row[0] if row else 0
+                
+                # Calculate new error_streak
+                if ok:
+                    new_streak = 0  # Reset on success
+                else:
+                    new_streak = current_streak + 1
+                
+                # Update quality metrics
+                cursor.execute(
+                    """
+                    INSERT INTO source_quality(source, success_count, error_count, error_streak, 
+                                              last_success_at, last_error_at, last_error_code)
+                    VALUES(?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(source) DO UPDATE SET
+                        success_count = success_count + ?,
+                        error_count = error_count + ?,
+                        error_streak = ?,
+                        last_success_at = ?,
+                        last_error_at = ?,
+                        last_error_code = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        source,
+                        1 if ok else 0,
+                        0 if ok else 1,
+                        new_streak,
+                        datetime.now(timezone.utc) if ok else None,
+                        None if ok else datetime.now(timezone.utc),
+                        None if ok else error_code,
+                        1 if ok else 0,
+                        0 if ok else 1,
+                        new_streak,
+                        datetime.now(timezone.utc) if ok else None,
+                        None if ok else datetime.now(timezone.utc),
+                        None if ok else error_code,
+                    ),
+                )
+                self._conn.commit()
+                
+                # Auto-quarantine if error_streak >= 5 and not already quarantined
+                if new_streak >= 5 and not self.is_source_quarantined(source):
+                    reason = f"error_streak_{new_streak}"
+                    if error_code:
+                        reason += f"_{error_code}"
+                    
+                    if self.quarantine_source(source, reason):
+                        quarantine_info = {
+                            'source': source,
+                            'reason': reason,
+                            'error_streak': new_streak,
+                            'last_error_code': error_code
+                        }
+                        logger.warning(f"AUTO-QUARANTINE: {source} after {new_streak} consecutive errors")
+                
+                return quarantine_info
+                
+        except Exception as e:
+            logger.debug(f"Error updating source quality fetch for {source}: {e}")
+            return None
+
+    def update_source_quality_stats(
+        self,
+        source: str,
+        items_total: int,
+        items_new: int,
+        items_duplicate: int,
+    ) -> None:
+        if not source:
+            return
+        items_total = max(0, int(items_total))
+        items_new = max(0, int(items_new))
+        items_duplicate = max(0, int(items_duplicate))
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO source_quality(source, items_total, items_new, items_duplicate)
+                    VALUES(?, ?, ?, ?)
+                    ON CONFLICT(source) DO UPDATE SET
+                        items_total = items_total + ?,
+                        items_new = items_new + ?,
+                        items_duplicate = items_duplicate + ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        source,
+                        items_total,
+                        items_new,
+                        items_duplicate,
+                        items_total,
+                        items_new,
+                        items_duplicate,
+                    ),
+                )
+                cursor.execute(
+                    """
+                    SELECT success_count, error_count, items_total, items_new, items_duplicate
+                    FROM source_quality WHERE source = ?
+                    """,
+                    (source,),
+                )
+                row = cursor.fetchone() or (0, 0, 0, 0, 0)
+                success_count, error_count, total, new, dup = row
+                quality_score = self._compute_source_quality_score(success_count, error_count, total, new, dup)
+                cursor.execute(
+                    """
+                    UPDATE source_quality
+                    SET quality_score = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE source = ?
+                    """,
+                    (quality_score, source),
+                )
+                self._conn.commit()
+        except Exception as e:
+            logger.debug(f"Error updating source quality stats for {source}: {e}")
+
+    def _compute_source_quality_score(
+        self,
+        success_count: int,
+        error_count: int,
+        items_total: int,
+        items_new: int,
+        items_duplicate: int,
+    ) -> float:
+        uptime_total = max(0, int(success_count)) + max(0, int(error_count))
+        uptime = (success_count / uptime_total) if uptime_total > 0 else 1.0
+        dedup_total = max(0, int(items_new)) + max(0, int(items_duplicate))
+        uniqueness = (items_new / dedup_total) if dedup_total > 0 else 1.0
+        yield_ratio = (items_new / items_total) if items_total > 0 else 0.0
+        score = (0.5 * uptime) + (0.3 * uniqueness) + (0.2 * yield_ratio)
+        return max(0.0, min(1.0, float(score)))
+
+    def get_source_quality(self, source: str) -> dict | None:
+        if not source:
+            return None
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                """
+                SELECT success_count, error_count, items_total, items_new, items_duplicate, quality_score
+                FROM source_quality WHERE source = ?
+                """,
+                (source,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "success_count": row[0] or 0,
+                "error_count": row[1] or 0,
+                "items_total": row[2] or 0,
+                "items_new": row[3] or 0,
+                "items_duplicate": row[4] or 0,
+                "quality_score": row[5] if row[5] is not None else 0.0,
+            }
+        except Exception as e:
+            logger.debug(f"Error getting source quality for {source}: {e}")
+            return None
+
+    def get_source_tier(self, source_code: str) -> str:
+        """Get tier for source (A/B/C), defaults to B if not found."""
+        if not source_code:
+            return 'B'
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                "SELECT tier FROM sources WHERE code = ?",
+                (source_code,)
+            )
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else 'B'
+        except Exception as e:
+            logger.debug(f"Error getting source tier for {source_code}: {e}")
+            return 'B'
+
+    def set_source_tier(self, source_code: str, tier: str) -> bool:
+        """Set tier for source (must be A/B/C)."""
+        if tier not in ('A', 'B', 'C'):
+            logger.warning(f"Invalid tier {tier}, must be A/B/C")
+            return False
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    "UPDATE sources SET tier = ? WHERE code = ?",
+                    (tier, source_code)
+                )
+                self._conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error setting source tier for {source_code}: {e}")
+            return False
+
+    def get_tier_params(self, tier: str) -> dict:
+        """Get tier-specific parameters (interval, max_items)."""
+        params = {
+            'A': {'min_interval_seconds': 300, 'max_items_per_fetch': None},   # 5min, unlimited
+            'B': {'min_interval_seconds': 900, 'max_items_per_fetch': 50},     # 15min, 50 items
+            'C': {'min_interval_seconds': 3600, 'max_items_per_fetch': 20},    # 1hour, 20 items
+        }
+        return params.get(tier, params['B'])
+
+    def toggle_source_enabled(self, source_code: str) -> bool:
+        """Toggle enabled_global flag for a source."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                # Get current state
+                cursor.execute("SELECT enabled_global FROM sources WHERE code = ?", (source_code,))
+                row = cursor.fetchone()
+                if not row:
+                    logger.warning(f"Source {source_code} not found")
+                    return False
+                
+                current_state = row[0]
+                new_state = 0 if current_state else 1
+                
+                # Update state
+                cursor.execute(
+                    "UPDATE sources SET enabled_global = ? WHERE code = ?",
+                    (new_state, source_code)
+                )
+                self._conn.commit()
+                logger.info(f"Toggled source {source_code} enabled_global: {current_state} -> {new_state}")
+                return True
+        except Exception as e:
+            logger.error(f"Error toggling source enabled for {source_code}: {e}")
+            return False
+
+    # ========================
+    # Auto-Quarantine Functions
+    # ========================
+
+    def quarantine_source(self, source_code: str, reason: str = "auto") -> bool:
+        """
+        Quarantine a source: disable it and mark quarantine timestamp.
+        
+        Args:
+            source_code: Source code to quarantine
+            reason: Reason for quarantine (e.g., "error_streak", "http_403")
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute("""
+                    UPDATE sources
+                    SET enabled_global = 0,
+                        quarantined_at = CURRENT_TIMESTAMP,
+                        quarantine_reason = ?
+                    WHERE code = ?
+                """, (reason, source_code))
+                self._conn.commit()
+                
+                if cursor.rowcount > 0:
+                    logger.warning(f"QUARANTINED source {source_code}: reason={reason}")
+                    return True
+                else:
+                    logger.warning(f"Source {source_code} not found for quarantine")
+                    return False
+        except Exception as e:
+            logger.error(f"Error quarantining source {source_code}: {e}")
+            return False
+
+    def restore_source(self, source_code: str) -> bool:
+        """
+        Restore a quarantined source: clear quarantine fields and optionally re-enable.
+        
+        Args:
+            source_code: Source code to restore
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute("""
+                    UPDATE sources
+                    SET quarantined_at = NULL,
+                        quarantine_reason = NULL,
+                        enabled_global = 1
+                    WHERE code = ?
+                """, (source_code,))
+                self._conn.commit()
+                
+                if cursor.rowcount > 0:
+                    logger.info(f"RESTORED source {source_code} from quarantine")
+                    return True
+                else:
+                    logger.warning(f"Source {source_code} not found for restore")
+                    return False
+        except Exception as e:
+            logger.error(f"Error restoring source {source_code}: {e}")
+            return False
+
+    def is_source_quarantined(self, source_code: str) -> bool:
+        """Check if a source is currently quarantined."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                SELECT quarantined_at FROM sources WHERE code = ?
+            """, (source_code,))
+            row = cursor.fetchone()
+            return row and row[0] is not None
+        except Exception as e:
+            logger.error(f"Error checking quarantine status for {source_code}: {e}")
+            return False
+
+    def get_quarantined_sources(self) -> list:
+        """Get list of all quarantined sources with details."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                SELECT code, title, quarantined_at, quarantine_reason
+                FROM sources
+                WHERE quarantined_at IS NOT NULL
+                ORDER BY quarantined_at DESC
+            """)
+            return [
+                {
+                    'code': row[0],
+                    'title': row[1],
+                    'quarantined_at': row[2],
+                    'reason': row[3]
+                }
+                for row in cursor.fetchall()
+            ]
+        except Exception as e:
+            logger.error(f"Error getting quarantined sources: {e}")
+            return []
+
+    def auto_adjust_source_tiers(self, days: int = 7, promote_threshold: float = 0.8, demote_threshold: float = 0.6) -> dict:
+        """
+        Auto-adjust source tiers based on quality_score over specified days.
+        
+        Args:
+            days: Number of days to consider for quality score
+            promote_threshold: Score >= this value → promote tier (e.g., B→A)
+            demote_threshold: Score < this value → demote tier (e.g., B→C)
+        
+        Returns:
+            Dict with {'promoted': [...], 'demoted': [...], 'unchanged': [...]}
+        """
+        result = {'promoted': [], 'demoted': [], 'unchanged': []}
+        try:
+            cursor = self._conn.cursor()
+            # Get all sources with their current tier and quality score
+            cursor.execute("""
+                SELECT s.code, s.tier, q.quality_score
+                FROM sources s
+                LEFT JOIN source_quality q ON s.code = q.source
+                WHERE s.enabled_global = 1
+            """)
+            rows = cursor.fetchall()
+            
+            with self._write_lock:
+                for row in rows:
+                    source_code, current_tier, quality_score = row[0], row[1] or 'B', row[2] or 0.0
+                    new_tier = current_tier
+                    
+                    # Promotion logic
+                    if current_tier == 'C' and quality_score >= promote_threshold:
+                        new_tier = 'B'
+                    elif current_tier == 'B' and quality_score >= promote_threshold:
+                        new_tier = 'A'
+                    
+                    # Demotion logic
+                    elif current_tier == 'A' and quality_score < demote_threshold:
+                        new_tier = 'B'
+                    elif current_tier == 'B' and quality_score < demote_threshold:
+                        new_tier = 'C'
+                    
+                    if new_tier != current_tier:
+                        cursor.execute("UPDATE sources SET tier = ? WHERE code = ?", (new_tier, source_code))
+                        if new_tier < current_tier:  # Alphabetically earlier = promoted
+                            result['promoted'].append({'source': source_code, 'from': current_tier, 'to': new_tier, 'score': quality_score})
+                        else:
+                            result['demoted'].append({'source': source_code, 'from': current_tier, 'to': new_tier, 'score': quality_score})
+                    else:
+                        result['unchanged'].append(source_code)
+                
+                self._conn.commit()
+            
+            logger.info(f"Auto-adjusted tiers: promoted={len(result['promoted'])}, demoted={len(result['demoted'])}")
+            return result
+        except Exception as e:
+            logger.error(f"Error auto-adjusting source tiers: {e}")
+            return result
+
+    def find_similar_clusters(self, simhash: int, hours: int = 6, hamming_threshold: int = 3) -> List[int]:
+        """
+        Find clusters with similar simhash within time window.
+        
+        Args:
+            simhash: Simhash value to compare
+            hours: Time window in hours
+            hamming_threshold: Maximum Hamming distance (default 3 for clustering)
+        
+        Returns:
+            List of cluster IDs
+        """
+        if not simhash:
+            return []
+        try:
+            from utils.deduplication import hamming_distance
+            cursor = self._conn.cursor()
+            
+            # Get recent clusters with their representative news simhash
+            cursor.execute("""
+                SELECT DISTINCT c.id, n.simhash
+                FROM news_clusters c
+                JOIN published_news n ON c.representative_news_id = n.id
+                WHERE c.created_at > datetime('now', ? || ' hours')
+                AND n.simhash IS NOT NULL
+            """, (f'-{hours}',))
+            
+            rows = cursor.fetchall()
+            similar_clusters = []
+            
+            for cluster_id, cluster_simhash in rows:
+                if cluster_simhash and hamming_distance(simhash, cluster_simhash) <= hamming_threshold:
+                    similar_clusters.append(cluster_id)
+            
+            return similar_clusters
+        except Exception as e:
+            logger.debug(f"Error finding similar clusters: {e}")
+            return []
+
+    def create_cluster(self, representative_news_id: int) -> int | None:
+        """Create new cluster with given news as representative."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute("""
+                    INSERT INTO news_clusters (representative_news_id, member_count)
+                    VALUES (?, 1)
+                """, (representative_news_id,))
+                cluster_id = cursor.lastrowid
+                
+                # Add representative as first member
+                cursor.execute("""
+                    INSERT INTO news_cluster_members (cluster_id, news_id)
+                    VALUES (?, ?)
+                """, (cluster_id, representative_news_id))
+                
+                self._conn.commit()
+                return cluster_id
+        except Exception as e:
+            logger.error(f"Error creating cluster: {e}")
+            return None
+
+    def add_news_to_cluster(self, cluster_id: int, news_id: int) -> bool:
+        """Add news to existing cluster."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                
+                # Check if already in cluster
+                cursor.execute("""
+                    SELECT 1 FROM news_cluster_members 
+                    WHERE cluster_id = ? AND news_id = ?
+                """, (cluster_id, news_id))
+                if cursor.fetchone():
+                    return True
+                
+                # Add to cluster
+                cursor.execute("""
+                    INSERT INTO news_cluster_members (cluster_id, news_id)
+                    VALUES (?, ?)
+                """, (cluster_id, news_id))
+                
+                # Update member count
+                cursor.execute("""
+                    UPDATE news_clusters 
+                    SET member_count = member_count + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (cluster_id,))
+                
+                self._conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error adding news to cluster: {e}")
+            return False
+
+    def get_cluster_for_news(self, news_id: int) -> int | None:
+        """Get cluster ID for given news item."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                SELECT cluster_id FROM news_cluster_members
+                WHERE news_id = ?
+            """, (news_id,))
+            row = cursor.fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            logger.debug(f"Error getting cluster for news: {e}")
+            return None
+
+    def get_cluster_info(self, cluster_id: int) -> dict | None:
+        """Get cluster information including all members."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                SELECT c.id, c.representative_news_id, c.member_count, c.created_at,
+                       n.title, n.source, n.url
+                FROM news_clusters c
+                JOIN published_news n ON c.representative_news_id = n.id
+                WHERE c.id = ?
+            """, (cluster_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            
+            # Get all member news IDs
+            cursor.execute("""
+                SELECT news_id FROM news_cluster_members
+                WHERE cluster_id = ?
+                ORDER BY added_at
+            """, (cluster_id,))
+            member_ids = [r[0] for r in cursor.fetchall()]
+            
+            return {
+                'cluster_id': row[0],
+                'representative_news_id': row[1],
+                'member_count': row[2],
+                'created_at': row[3],
+                'title': row[4],
+                'source': row[5],
+                'url': row[6],
+                'member_ids': member_ids,
+            }
+        except Exception as e:
+            logger.error(f"Error getting cluster info: {e}")
+            return None
+
+    def get_cluster_members(self, cluster_id: int) -> List[dict]:
+        """Get all news items in a cluster with details."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                SELECT n.id, n.title, n.source, n.url, n.published_at
+                FROM news_cluster_members cm
+                JOIN published_news n ON cm.news_id = n.id
+                WHERE cm.cluster_id = ?
+                ORDER BY cm.added_at
+            """, (cluster_id,))
+            
+            return [
+                {
+                    'id': row[0],
+                    'title': row[1],
+                    'source': row[2],
+                    'url': row[3],
+                    'published_at': row[4],
+                }
+                for row in cursor.fetchall()
+            ]
+        except Exception as e:
+            logger.error(f"Error getting cluster members: {e}")
+            return []
+
+    # ========================
+    # Delivery Mode Functions
+    # ========================
+
+    def get_user_delivery_mode(self, user_id: str, env: str = 'prod') -> str:
+        """Get user's delivery mode preference (realtime/hourly/morning)."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                SELECT delivery_mode FROM user_preferences
+                WHERE user_id = ? AND (env = ? OR env IS NULL)
+            """, (str(user_id), env))
+            row = cursor.fetchone()
+            return row[0] if row else 'realtime'
+        except Exception as e:
+            logger.error(f"Error getting user delivery mode: {e}")
+            return 'realtime'
+
+    def set_user_delivery_mode(self, user_id: str, mode: str, env: str = 'prod') -> bool:
+        """Set user's delivery mode (realtime/hourly/morning)."""
+        if mode not in ('realtime', 'hourly', 'morning'):
+            logger.error(f"Invalid delivery mode: {mode}")
+            return False
+        
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute("""
+                    INSERT INTO user_preferences (user_id, env, delivery_mode, updated_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        delivery_mode = excluded.delivery_mode,
+                        updated_at = excluded.updated_at
+                """, (str(user_id), env, mode))
+                self._conn.commit()
+                logger.info(f"Set delivery mode for user {user_id} to {mode}")
+                return True
+        except Exception as e:
+            logger.error(f"Error setting user delivery mode: {e}")
+            return False
+
+    def add_to_pending_digest(self, user_id: str, news_id: int, delivery_mode: str) -> bool:
+        """Add news item to user's pending digest."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute("""
+                    INSERT OR IGNORE INTO pending_digests (user_id, news_id, delivery_mode, added_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                """, (str(user_id), news_id, delivery_mode))
+                self._conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error adding to pending digest: {e}")
+            return False
+
+    def get_pending_digest_items(self, user_id: str, delivery_mode: str = None) -> List[dict]:
+        """Get pending digest items for a user, optionally filtered by delivery_mode."""
+        try:
+            cursor = self._conn.cursor()
+            if delivery_mode:
+                cursor.execute("""
+                    SELECT pd.id, pd.news_id, pd.added_at, n.title, n.source, n.url, n.category
+                    FROM pending_digests pd
+                    JOIN published_news n ON pd.news_id = n.id
+                    WHERE pd.user_id = ? AND pd.delivery_mode = ?
+                    ORDER BY pd.added_at
+                """, (str(user_id), delivery_mode))
+            else:
+                cursor.execute("""
+                    SELECT pd.id, pd.news_id, pd.added_at, n.title, n.source, n.url, n.category
+                    FROM pending_digests pd
+                    JOIN published_news n ON pd.news_id = n.id
+                    WHERE pd.user_id = ?
+                    ORDER BY pd.added_at
+                """, (str(user_id),))
+            
+            return [
+                {
+                    'digest_id': row[0],
+                    'news_id': row[1],
+                    'added_at': row[2],
+                    'title': row[3],
+                    'source': row[4],
+                    'url': row[5],
+                    'category': row[6],
+                }
+                for row in cursor.fetchall()
+            ]
+        except Exception as e:
+            logger.error(f"Error getting pending digest items: {e}")
+            return []
+
+    def clear_pending_digest(self, user_id: str, news_ids: List[int] = None) -> int:
+        """Clear pending digest items. If news_ids provided, clear only those; else clear all."""
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                if news_ids:
+                    placeholders = ','.join(['?'] * len(news_ids))
+                    cursor.execute(f"""
+                        DELETE FROM pending_digests
+                        WHERE user_id = ? AND news_id IN ({placeholders})
+                    """, (str(user_id), *news_ids))
+                else:
+                    cursor.execute("""
+                        DELETE FROM pending_digests WHERE user_id = ?
+                    """, (str(user_id),))
+                self._conn.commit()
+                return cursor.rowcount
+        except Exception as e:
+            logger.error(f"Error clearing pending digest: {e}")
+            return 0
+
+    def get_users_by_delivery_mode(self, delivery_mode: str, env: str = 'prod') -> List[str]:
+        """Get all user IDs with a specific delivery mode."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                SELECT user_id FROM user_preferences
+                WHERE delivery_mode = ? AND (env = ? OR env IS NULL)
+            """, (delivery_mode, env))
+            return [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting users by delivery mode: {e}")
+            return []
+
     def get_source_event_counts(self, sources: List[str], window_hours: int = 24) -> dict:
         if not sources:
             return {}
@@ -1149,6 +2024,88 @@ class NewsDatabase:
                 return True
         except Exception as e:
             logger.debug(f"Error caching RSS items for {url}: {e}")
+            return False
+
+    def get_system_setting(self, key: str, default: str | None = None) -> str | None:
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute('SELECT value FROM system_settings WHERE key = ?', (key,))
+            row = cursor.fetchone()
+            return row[0] if row else default
+        except Exception as e:
+            logger.debug(f"Error getting system setting {key}: {e}")
+            return default
+
+    def set_system_setting(self, key: str, value: str) -> bool:
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    '''INSERT INTO system_settings(key, value) VALUES(?, ?)
+                       ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP''',
+                    (key, value)
+                )
+                self._conn.commit()
+            return True
+        except Exception as e:
+            logger.debug(f"Error setting system setting {key}: {e}")
+            return False
+
+    def get_source_fetch_state(self, url: str) -> dict | None:
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                '''SELECT url, source_name, next_fetch_at, last_fetch_at, last_status, error_streak, last_error_code
+                   FROM source_fetch_state WHERE url = ?''',
+                (url,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "url": row[0],
+                "source_name": row[1],
+                "next_fetch_at": row[2],
+                "last_fetch_at": row[3],
+                "last_status": row[4],
+                "error_streak": row[5] or 0,
+                "last_error_code": row[6],
+            }
+        except Exception as e:
+            logger.debug(f"Error getting source fetch state for {url}: {e}")
+            return None
+
+    def set_source_fetch_state(
+        self,
+        url: str,
+        source_name: str | None,
+        next_fetch_at: float | None,
+        last_fetch_at: float | None,
+        last_status: str | None,
+        error_streak: int | None,
+        last_error_code: str | None,
+    ) -> bool:
+        try:
+            with self._write_lock:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    '''INSERT INTO source_fetch_state(
+                           url, source_name, next_fetch_at, last_fetch_at, last_status, error_streak, last_error_code
+                       ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(url) DO UPDATE SET
+                           source_name=excluded.source_name,
+                           next_fetch_at=excluded.next_fetch_at,
+                           last_fetch_at=excluded.last_fetch_at,
+                           last_status=excluded.last_status,
+                           error_streak=excluded.error_streak,
+                           last_error_code=excluded.last_error_code,
+                           updated_at=CURRENT_TIMESTAMP''',
+                    (url, source_name, next_fetch_at, last_fetch_at, last_status, error_streak, last_error_code)
+                )
+                self._conn.commit()
+            return True
+        except Exception as e:
+            logger.debug(f"Error setting source fetch state for {url}: {e}")
             return False
 
     def get_rss_cached_items(self, url: str) -> List | None:

@@ -90,7 +90,7 @@ INVITE_SECRET = env_str('INVITE_SECRET', None)
 # Интервалы
 CHECK_INTERVAL_SECONDS = env_int('CHECK_INTERVAL_SECONDS', 300)  # 5 минут для оптимизации Railway
 TIMEOUT_SECONDS = env_int('TIMEOUT_SECONDS', 30)
-SOURCE_COLLECT_TIMEOUT_SECONDS = env_int('SOURCE_COLLECT_TIMEOUT_SECONDS', 60)
+SOURCE_COLLECT_TIMEOUT_SECONDS = env_int('SOURCE_COLLECT_TIMEOUT_SECONDS', 120)  # Увеличен для медленных источников
 SOURCE_ERROR_STREAK_LIMIT = env_int('SOURCE_ERROR_STREAK_LIMIT', 3)
 SOURCE_ERROR_STREAK_WINDOW_SECONDS = env_int('SOURCE_ERROR_STREAK_WINDOW_SECONDS', 600)
 SOURCE_ERROR_COOLDOWN_SECONDS = env_int('SOURCE_ERROR_COOLDOWN_SECONDS', 900)
@@ -175,6 +175,12 @@ CATEGORIES = {
 RSSHUB_BASE_URL = env_str('RSSHUB_BASE_URL', 'https://rsshub-production-a367.up.railway.app')
 _RSSHUB_MIRROR_RAW = env_str('RSSHUB_MIRROR_URLS', 'https://rsshub.railway.internal')
 RSSHUB_MIRROR_URLS = [url.strip() for url in (_RSSHUB_MIRROR_RAW or '').split(',') if url.strip()]
+RSSHUB_MIN_INTERVAL_SECONDS = env_int('RSSHUB_MIN_INTERVAL_SECONDS', 900)
+RSS_MIN_INTERVAL_SECONDS = env_int('RSS_MIN_INTERVAL_SECONDS', 120)  # 2 min - allow multiple fetches within 5-min check interval
+RSSHUB_CONCURRENCY = env_int('RSSHUB_CONCURRENCY', 2)
+RSSHUB_SOURCE_COOLDOWN_SECONDS = env_int('RSSHUB_SOURCE_COOLDOWN_SECONDS', 600)
+RSSHUB_DISABLED_CHANNELS = env_str('RSSHUB_DISABLED_CHANNELS', 'rian_ru') or ''
+RSSHUB_TELEGRAM_ENABLED = env_bool('RSSHUB_TELEGRAM_ENABLED', True)
 
 # Источники по категориям
 SOURCES_CONFIG = {
@@ -195,6 +201,7 @@ SOURCES_CONFIG = {
     },
     'yahoo_world_extended': {
         'category': 'world',
+        'max_items_per_fetch': 20,
         'sources': [
             # World
             'https://news.yahoo.com/rss/world',
