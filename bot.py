@@ -20,7 +20,7 @@ from telegram.ext import (
     ContextTypes, ConversationHandler
 )
 from telegram.constants import ParseMode
-from telegram.error import Conflict
+from telegram.error import Conflict, RetryAfter, TimedOut
 import asyncio
 from config.config import TELEGRAM_TOKEN, TELEGRAM_CHANNEL_ID, CHECK_INTERVAL_SECONDS, ADMIN_IDS, AI_CALLS_PER_TICK_MAX
 from utils.env import get_app_env
@@ -2261,18 +2261,25 @@ class NewsBot:
                         is_selected = self.db.is_news_selected(user_id, news_id, env="prod")
                         select_btn_text = "✅ Выбрано" if is_selected else "📌 Выбрать"
                         
-                        await context.bot.send_message(
-                            chat_id=user_id,
-                            text=(
-                                f"🤖 Пересказ сгенерирован ИИ\n\n{cached_summary}\n\n"
-                                f"📰 Источник: {news.get('source', '')}\n{news.get('url', '')}"
-                            ),
-                            disable_web_page_preview=True,
-                            disable_notification=True,
-                            reply_markup=InlineKeyboardMarkup([[
-                                InlineKeyboardButton(select_btn_text, callback_data=f"select:{news_id}")
-                            ]])
-                        )
+                        try:
+                            await context.bot.send_message(
+                                chat_id=user_id,
+                                text=(
+                                    f"🤖 Пересказ сгенерирован ИИ\n\n{cached_summary}\n\n"
+                                    f"📰 Источник: {news.get('source', '')}\n{news.get('url', '')}"
+                                ),
+                                disable_web_page_preview=True,
+                                disable_notification=True,
+                                reply_markup=InlineKeyboardMarkup([[
+                                    InlineKeyboardButton(select_btn_text, callback_data=f"select:{news_id}")
+                                ]])
+                            )
+                        except RetryAfter as e:
+                            # Flood control при отправке кешированного пересказа
+                            await query.answer(
+                                f"⏳ Слишком много сообщений.\nПопробуйте через {int(e.retry_after)} секунд.",
+                                show_alert=True
+                            )
                         return
 
                     lead_text = (
@@ -2307,35 +2314,60 @@ class NewsBot:
                         is_selected = self.db.is_news_selected(user_id, news_id, env="prod")
                         select_btn_text = "✅ Выбрано" if is_selected else "📌 Выбрать"
                         
-                        await context.bot.send_message(
-                            chat_id=user_id,
-                            text=(
-                                f"🤖 Пересказ сгенерирован ИИ\n\n{summary}\n\n"
-                                f"📰 Источник: {news.get('source', '')}\n{news.get('url', '')}"
-                            ),
-                            disable_web_page_preview=True,
-                            disable_notification=True,
-                            reply_markup=InlineKeyboardMarkup([[
-                                InlineKeyboardButton(select_btn_text, callback_data=f"select:{news_id}")
-                            ]])
-                        )
+                        try:
+                            await context.bot.send_message(
+                                chat_id=user_id,
+                                text=(
+                                    f"🤖 Пересказ сгенерирован ИИ\n\n{summary}\n\n"
+                                    f"📰 Источник: {news.get('source', '')}\n{news.get('url', '')}"
+                                ),
+                                disable_web_page_preview=True,
+                                disable_notification=True,
+                                reply_markup=InlineKeyboardMarkup([[
+                                    InlineKeyboardButton(select_btn_text, callback_data=f"select:{news_id}")
+                                ]])
+                            )
+                        except RetryAfter as e:
+                            # Flood control при отправке нового пересказа
+                            # Не бросаем исключение дальше, т.к. пересказ уже сохранён в кеш
+                            logger.warning(f"Flood control when sending summary for {news_id}: retry after {e.retry_after}s")
+                            await query.answer(
+                                f"✅ Пересказ готов и сохранён!\n⏳ Показать через {int(e.retry_after)} сек (flood control)",
+                                show_alert=True
+                            )
                     else:
                         logger.warning(f"AI summarize failed for news_id={news_id}, no summary returned")
-                        await context.bot.send_message(
-                            chat_id=user_id,
-                            text="ИИ временно недоступен. Попробуйте позже.",
-                            disable_web_page_preview=True,
-                            disable_notification=True
-                        )
+                        try:
+                            await context.bot.send_message(
+                                chat_id=user_id,
+                                text="ИИ временно недоступен. Попробуйте позже.",
+                                disable_web_page_preview=True,
+                                disable_notification=True
+                            )
+                        except RetryAfter as e:
+                            await query.answer(
+                                f"⚠️ ИИ недоступен.\n⏳ Повторите через {int(e.retry_after)} сек",
+                                show_alert=True
+                            )
                     
+                except RetryAfter as e:
+                    # Telegram flood control - показываем сколько ждать
+                    wait_seconds = int(e.retry_after)
+                    logger.warning(f"Flood control for user {user_id}: retry after {wait_seconds}s")
+                    try:
+                        await query.answer(
+                            f"⏳ Слишком много запросов.\nПопробуйте через {wait_seconds} секунд.",
+                            show_alert=True
+                        )
+                    except:
+                        pass
                 except Exception as e:
                     logger.error(f"Error in AI summarize for news_id={news_id}: {e}", exc_info=True)
                     try:
-                        await context.bot.send_message(
-                            chat_id=user_id,
-                            text=f"❌ Ошибка при генерации пересказа: {str(e)[:100]}",
-                            disable_web_page_preview=True,
-                            disable_notification=True
+                        # Используем query.answer вместо send_message чтобы избежать flood control
+                        await query.answer(
+                            f"❌ Ошибка: {str(e)[:80]}",
+                            show_alert=True
                         )
                     except:
                         pass
