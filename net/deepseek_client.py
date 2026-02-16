@@ -367,7 +367,7 @@ class DeepSeekClient:
                 f"Instance key set: {bool(self.api_key)}. "
                 f"Please add DEEPSEEK_API_KEY to environment variables."
             )
-            return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False}
+            return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False, "api_key_missing": True}
 
         cleaned = compact_text(text, AI_MAX_INPUT_CHARS)
         if not cleaned:

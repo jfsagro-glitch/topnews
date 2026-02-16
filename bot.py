@@ -1966,10 +1966,24 @@ class NewsBot:
                             ]])
                         )
                     else:
-                        logger.warning(f"AI summarize failed for news_id={news_id}, no summary returned")
+                        logger.warning(f"AI summarize failed for news_id={news_id}, no summary returned, usage: {token_usage}")
+                        
+                        # Provide more specific error message
+                        error_msg = "ИИ временно недоступен."
+                        if token_usage.get('api_key_missing'):
+                            error_msg += "\n⚙️ Требуется настройка API ключа DeepSeek"
+                        elif token_usage.get('budget_exceeded'):
+                            error_msg += "\n💰 Достигнут лимит бюджета на день"
+                        elif token_usage.get('circuit_open'):
+                            error_msg += "\n🔴 Слишком много ошибок, повторите позже"
+                        elif token_usage.get('too_short'):
+                            error_msg += "\n📝 Текст слишком короткий для пересказа"
+                        
+                        error_msg += " Попробуйте позже."
+                        
                         await context.bot.send_message(
                             chat_id=user_id,
-                            text="ИИ временно недоступен. Попробуйте позже.",
+                            text=error_msg,
                             disable_web_page_preview=True,
                             disable_notification=True
                         )
