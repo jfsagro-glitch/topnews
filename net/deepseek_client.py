@@ -372,8 +372,9 @@ class DeepSeekClient:
         cleaned = compact_text(text, AI_MAX_INPUT_CHARS)
         if not cleaned:
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False}
-        min_chars = 50 if allow_short else AI_SUMMARY_MIN_CHARS
+        min_chars = 20 if allow_short else AI_SUMMARY_MIN_CHARS
         if len(cleaned) < min_chars:
+            logger.warning(f"[{request_id}] Text too short: {len(cleaned)} chars (min={min_chars}, allow_short={allow_short})")
             return None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_hit": False, "too_short": True}
 
         # Cache key by fingerprint of compacted text for better hit rate
