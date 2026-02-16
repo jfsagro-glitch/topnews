@@ -2051,7 +2051,8 @@ class NewsBot:
                 title=title,
                 text=text,
                 level=level,
-                checksum=checksum
+                checksum=checksum,
+                allow_short=True
             )
             if summary:
                 logger.debug(f"DeepSeek summary created (level={level}): {summary[:50]}...")
