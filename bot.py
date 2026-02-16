@@ -2686,11 +2686,8 @@ class NewsBot:
 
                 language = news_data.get('language') or 'ru'
                 tag_language = 'ru' if (translate_enabled and language == 'en') else ('en' if language == 'en' else 'ru')
-                base_tag = self._get_category_tag(news_data.get('category', 'russia'), tag_language)
                 extra_tags = news_data.get('hashtags_ru') if tag_language == 'ru' else news_data.get('hashtags_en')
                 extra_tags = extra_tags or ''
-                if base_tag and base_tag in extra_tags:
-                    extra_tags = extra_tags.replace(base_tag, '').strip()
 
                 message_to_send = format_telegram_message(
                     title=title,
@@ -2923,11 +2920,8 @@ class NewsBot:
                         
                         language = news_data.get('language') or 'ru'
                         tag_language = 'ru' if (translate_enabled and language == 'en') else ('en' if language == 'en' else 'ru')
-                        base_tag = self._get_category_tag(news_data.get('category', 'russia'), tag_language)
                         extra_tags = news_data.get('hashtags_ru') if tag_language == 'ru' else news_data.get('hashtags_en')
                         extra_tags = extra_tags or ''
-                        if base_tag and base_tag in extra_tags:
-                            extra_tags = extra_tags.replace(base_tag, '').strip()
                         
                         message = format_telegram_message(
                             title=title,
@@ -3550,16 +3544,17 @@ class NewsBot:
         language = news.get('language') or 'ru'
         category = news.get('category', 'russia')
         from core.services.access_control import get_effective_level
-        from utils.hashtags_taxonomy import build_hashtags, build_hashtags_en
+        from utils.hashtags import build_hashtags, build_hashtags_en
 
         level = get_effective_level(self.db, 'global', 'hashtags')
 
         try:
             tags_ru = await build_hashtags(
                 title=title,
-                text=text,
+                lead_text=text,
+                source='global',
+                existing_category=category,
                 language=language,
-                chat_id='global',
                 ai_client=self.deepseek_client,
                 level=level,
                 ai_call_guard=self._ai_tick_allow,

@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import asyncio
 
-from utils.hashtags_taxonomy import build_hashtags, get_allowlist
+from utils.hashtags import build_hashtags
+from utils.hashtags_taxonomy import get_allowlist
 
 
 def _allowed_set() -> set[str]:
@@ -21,21 +22,14 @@ async def _run() -> None:
         for tag in tag_list:
             assert tag in allow
 
-    tags = await build_hashtags("В Москве открылся форум", "В Москве прошла встреча.")
+    tags = await build_hashtags("В Москве открылся форум", "В Москве прошла встреча.", source="ria")
     assert tags[0] == "#Россия"
     assert tags[1] == "#ЦФО"
     assert tags[2] == "#Москва"
     assert tags[3].startswith("#")
     assert_allowed(tags)
 
-    tags = await build_hashtags("В Тверской области обновили трассу", "В Тверской области завершили ремонт.")
-    assert tags[0] == "#Россия"
-    assert tags[1] == "#ЦФО"
-    assert tags[2] == "#ТверскаяОбласть"
-    assert tags[3] == "#Тверь"
-    assert_allowed(tags)
-
-    tags = await build_hashtags("В Берлине прошла конференция", "В Берлине обсудили вопросы безопасности.")
+    tags = await build_hashtags("В Берлине прошла конференция", "В Берлине обсудили вопросы безопасности.", source="dw")
     assert tags[0] == "#Мир"
     assert tags[-1].startswith("#")
     assert_allowed(tags)

@@ -1,8 +1,11 @@
 """Hashtag taxonomy and deterministic tagging with optional AI fallback."""
 from __future__ import annotations
 
+import logging
 import re
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 G0_TAGS = ["#Россия", "#Мир"]
 G1_DISTRICTS = ["#ЦФО", "#СЗФО", "#ЮФО", "#СКФО", "#ПФО", "#УФО", "#СФО", "#ДФО"]
@@ -141,16 +144,15 @@ CITY_TO_REGION = {
     "#Ярославль": "#ЯрославскаяОбласть",
 }
 
-WORLD_MARKERS = [
-    "берлин", "германи", "сша", "китай", "франц", "итал", "испан",
-    "британ", "англи", "украин", "израил", "турц", "париж", "лондон",
-    "евросоюз", "нато", "оон",
-]
-
 _RUSSIA_STRONG = re.compile(
     r"(\bросси|\bрф\b|москв|кремл|госдум|совфед|президент\b|"
     r"правительств|минфин|центробанк|цб\b|фсб\b|мвд\b|ск\s*рф|"
     r"роскомнадзор|федерац)",
+    re.IGNORECASE,
+)
+
+_MOSCOW_MARKERS = re.compile(
+    r"(москв|кремл|мэр\s+москвы|собянин|столиц)",
     re.IGNORECASE,
 )
 
@@ -210,43 +212,37 @@ def detect_geo_tags(title: str, text: str, language: str = "ru") -> dict:
     g2 = None
     g3 = None
 
-    is_world = any(marker in combined for marker in WORLD_MARKERS)
-    is_russia = bool(_RUSSIA_STRONG.search(combined))
+    matched_russia = bool(_RUSSIA_STRONG.search(combined))
+    matched_moscow = bool(_MOSCOW_MARKERS.search(combined))
 
-    region_tag = _find_alias(combined, CFO_REGION_ALIASES)
-    city_tag = _find_alias(combined, CFO_CITY_ALIASES)
-
-    if region_tag or city_tag:
-        is_russia = True
-
-    if is_russia:
+    if matched_russia:
         g0 = "#Россия"
     else:
         g0 = "#Мир"
 
-    if g0 == "#Россия":
-        if region_tag or city_tag:
-            g1 = "#ЦФО"
-        if region_tag:
-            g2 = region_tag
-        if city_tag:
-            g3 = city_tag
-        if g2 is None and g3:
-            if g3 == "#Москва":
-                g2 = "#Москва"
-            else:
-                g2 = CITY_TO_REGION.get(g3)
-        if g2 == "#Москва" and not g3:
-            g3 = "#Москва"
-        if g2 and not g3:
-            g3 = REGION_CAPITALS.get(g2)
-    return {"g0": g0, "g1": g1, "g2": g2, "g3": g3, "needs_ai": False}
+    if g0 == "#Россия" and matched_moscow:
+        g1 = "#ЦФО"
+        g2 = "#Москва"
+
+    return {
+        "g0": g0,
+        "g1": g1,
+        "g2": g2,
+        "g3": g3,
+        "needs_ai": False,
+        "matched_russia_strong": matched_russia,
+        "matched_moscow": matched_moscow,
+    }
 
 
 def detect_rubric_tags(title: str, text: str) -> dict:
     combined = f"{title} {text}".lower()
     for tag, keywords in RUBRIC_KEYWORDS.items():
         for keyword in keywords:
+            if keyword == "it":
+                if re.search(r"\bit\b", combined):
+                    return {"r0": tag, "needs_ai": False}
+                continue
             if keyword in combined:
                 return {"r0": tag, "needs_ai": False}
     return {"r0": "#Общество", "needs_ai": False}
@@ -298,6 +294,14 @@ async def build_hashtags(
     geo = detect_geo_tags(title, text, language=language)
     rubric = detect_rubric_tags(title, text)
 
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "Hashtag rules: russia=%s moscow=%s rubric=%s",
+            geo.get("matched_russia_strong"),
+            geo.get("matched_moscow"),
+            rubric.get("r0"),
+        )
+
     allow = get_allowlist()
     g0 = _validate_allowed(geo.get("g0"), allow["g0"])
     g1 = _validate_allowed(geo.get("g1"), allow["g1"])
@@ -321,9 +325,6 @@ async def build_hashtags(
                 g3 = g3 or validated.get("g3")
                 r0 = r0 or validated.get("r0")
 
-    if g0 == "#Россия" and g1 is None:
-        if g2 or g3:
-            g1 = "#ЦФО"
     if r0 is None:
         r0 = "#Общество"
 
@@ -332,19 +333,21 @@ async def build_hashtags(
         g2 = None
         g3 = None
 
-    # Only ЦФО has region/city taxonomy enabled for now.
+    # Only ЦФО + Москва are enabled for MVP regional tagging.
     if g1 != "#ЦФО":
+        g1 = None
+    if g1 is None:
         g2 = None
-        g3 = None
-
-    if g2 and g3 and _normalize_key(g2) == _normalize_key(g3):
         g3 = None
 
     tags = [g0]
     if g0 == "#Россия":
-        tags.append(g1)
-        if g1 == "#ЦФО":
-            tags.extend([g2, g3])
+        if g1:
+            tags.append(g1)
+        if g2:
+            tags.append(g2)
+        if g3:
+            tags.append(g3)
     tags.append(r0)
 
     deduped = []
