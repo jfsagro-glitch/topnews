@@ -99,12 +99,11 @@ def _estimate_tokens(text: str) -> int:
 
 
 def _build_messages(title: str, text: str) -> list[dict]:
-    system_prompt = (
-        "Кратко перескажи новость для радионовостей. "
-        "Только факты из текста, без домыслов. "
-        "1-2 абзаца, предложения до 12 слов. "
-        "В конце укажи источник текстом."
-    )
+    from core.ai.prompts.news_rewrite_prompt import NEWS_REWRITE_PROMPT, NEWS_REWRITE_PROMPT_VERSION
+    
+    logger.info(f"Using NEWS_REWRITE_PROMPT v{NEWS_REWRITE_PROMPT_VERSION}")
+    
+    system_prompt = NEWS_REWRITE_PROMPT
     user_content = f"Заголовок: {title}\n\nТекст: {text}"
     return [
         {"role": "system", "content": system_prompt},
@@ -461,6 +460,26 @@ class DeepSeekClient:
                     
                     # Store in cache
                     result_text = truncate_text(summary.strip(), max_length=800)
+                    
+                    # Validate result according to news rewrite rules
+                    from core.ai.validation import validate_news_text
+                    validation_result = validate_news_text(result_text)
+                    
+                    if validation_result != "ok":
+                        logger.warning(
+                            f"[{request_id}] AI result validation failed: {validation_result}. "
+                            f"Text length: {len(result_text.split())} words"
+                        )
+                        
+                        # If this is the first attempt (attempt == 1), retry generation
+                        if attempt == 1:
+                            logger.info(f"[{request_id}] Retrying generation due to validation failure")
+                            await asyncio.sleep(backoff)
+                            backoff *= 2
+                            continue
+                        else:
+                            logger.warning(f"[{request_id}] Max regeneration attempts reached, returning result as-is")
+                    
                     if self.cache:
                         cache_key = self.cache.generate_cache_key('summarize', title, cleaned, level=level, checksum=cache_checksum)
                         self.cache.set(cache_key, 'summarize', result_text, input_tokens, output_tokens, ttl_hours=72)
@@ -471,7 +490,8 @@ class DeepSeekClient:
                         "output_tokens": output_tokens,
                         "total_tokens": total_tokens,
                         "cache_hit": False,
-                        "cost_usd": cost_usd
+                        "cost_usd": cost_usd,
+                        "validation": validation_result
                     }
                     return result_text, token_usage
 
